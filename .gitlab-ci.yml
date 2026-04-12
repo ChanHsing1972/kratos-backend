@@ -1,0 +1,22 @@
+image: python:3.11
+
+stages:
+  - test
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+before_script:
+  - python -V
+  - pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+  - pip install -U pip
+  - pip install -r requirements.txt
+
+test:
+  stage: test
+  script:
+    - pytest -q || true
+  artifacts:
+    when: always
+    paths:
+      - .pytest_cache/
