@@ -16,7 +16,6 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
     description="Kratos Fitness Agent Backend",
 )
 app.include_router(api_router, prefix=settings.API_V1_STR)

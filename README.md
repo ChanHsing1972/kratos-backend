@@ -16,7 +16,7 @@ pip install -r requirements.txt
 cp .env.example .env
 
 # 通过 ssh 隧道连接远程 PostgreSQL
-ssh -L 5432:localhost:5432 root@192.0.2.1
+ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 5432:localhost:5432 root@192.0.2.1
 
 # 启动服务器，默认端口 8000
 uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
