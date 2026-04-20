@@ -1,27 +1,30 @@
 """
 核心配置文件
 
-注意：所有敏感信息应通过 .env 文件管理，而不是硬编码在代码中！
-如果项目根目录没有 `.env`，会尝试加载 `.env.example` 中的占位变量到环境中（不覆盖已有环境变量）。
+优先从项目根目录 `.env` 读取配置；若不存在，则回退到 `.env.example`。
 """
 
 from pathlib import Path
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _load_env_fallback():
-    env_path = Path(".env")
-    example_path = Path(".env.example")
-    if env_path.exists():
+BASE_DIR = Path(__file__).resolve().parents[2]
+ENV_FILE = BASE_DIR / ".env"
+ENV_EXAMPLE_FILE = BASE_DIR / ".env.example"
+
+
+def _load_env_fallback() -> None:
+    if ENV_FILE.exists():
         return
-    if not example_path.exists():
+    if not ENV_EXAMPLE_FILE.exists():
         return
-    # Read simple KEY=VALUE lines and set into os.environ if missing
-    for line in example_path.read_text().splitlines():
+
+    for line in ENV_EXAMPLE_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+
         key, val = line.split("=", 1)
         key = key.strip()
         val = val.strip().strip('"').strip("'")
@@ -29,25 +32,36 @@ def _load_env_fallback():
             os.environ[key] = val
 
 
+_load_env_fallback()
+
+
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
     PROJECT_NAME: str = "Kratos Agent Backend"
     API_V1_STR: str = "/api/v1"
 
     MYSQL_USER: str = "root"
-    MYSQL_PASSWORD: str = "password"
-    MYSQL_SERVER: str = "localhost"
+    MYSQL_PASSWORD: str = ""
+    MYSQL_SERVER: str = "127.0.0.1"
     MYSQL_PORT: int = 3306
-    MYSQL_DB: str = "kratos_db"
+    MYSQL_DB: str = "agent_db"
+
+    SECRET_KEY: str = "dev-secret-key-change-me"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     @property
     def DATABASE_URI(self) -> str:
-        port_part = f":{self.MYSQL_PORT}" if self.MYSQL_PORT else ""
-        return f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}@{self.MYSQL_SERVER}{port_part}/{self.MYSQL_DB}"
+        return (
+            f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"@{self.MYSQL_SERVER}:{self.MYSQL_PORT}/{self.MYSQL_DB}?charset=utf8mb4"
+        )
 
-    class Config:
-        env_file = ".env"
 
-
-# Ensure fallback from .env.example when .env is missing
-_load_env_fallback()
 settings = Settings()
