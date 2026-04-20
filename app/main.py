@@ -32,8 +32,8 @@ def health():
     """Health check: returns service status and database connectivity."""
     db_ok = False
     database_uri = (
-        f"mysql+pymysql://{settings.MYSQL_USER}:***@"
-        f"{settings.MYSQL_SERVER}:{settings.MYSQL_PORT}/{settings.MYSQL_DB}"
+        f"postgresql+psycopg2://{settings.PG_USER}:***@"
+        f"{settings.PG_SERVER}:{settings.PG_PORT}/{settings.PG_DB}"
     )
     try:
         db = SessionLocal()
@@ -44,10 +44,10 @@ def health():
             "status": "error",
             "db": False,
             "database": {
-                "host": settings.MYSQL_SERVER,
-                "port": settings.MYSQL_PORT,
-                "name": settings.MYSQL_DB,
-                "user": settings.MYSQL_USER,
+                "host": settings.PG_SERVER,
+                "port": settings.PG_PORT,
+                "name": settings.PG_DB,
+                "user": settings.PG_USER,
                 "uri": database_uri,
             },
             "detail": str(exc),
@@ -62,10 +62,10 @@ def health():
         "status": "ok",
         "db": db_ok,
         "database": {
-            "host": settings.MYSQL_SERVER,
-            "port": settings.MYSQL_PORT,
-            "name": settings.MYSQL_DB,
-            "user": settings.MYSQL_USER,
+            "host": settings.PG_SERVER,
+            "port": settings.PG_PORT,
+            "name": settings.PG_DB,
+            "user": settings.PG_USER,
             "uri": database_uri,
         },
     }

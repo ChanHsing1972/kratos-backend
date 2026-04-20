@@ -46,22 +46,18 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Kratos Agent Backend"
     API_V1_STR: str = "/api/v1"
 
-    MYSQL_USER: str = "root"
-    MYSQL_PASSWORD: str = ""
-    MYSQL_SERVER: str = "127.0.0.1"
-    MYSQL_PORT: int = 3306
-    MYSQL_DB: str = "agent_db"
-
-    SECRET_KEY: str = "dev-secret-key-change-me"
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    PG_USER: str
+    PG_PASSWORD: str
+    PG_SERVER: str
+    PG_PORT: int
+    PG_DB: str
 
     @property
     def DATABASE_URI(self) -> str:
         return (
-            f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
-            f"@{self.MYSQL_SERVER}:{self.MYSQL_PORT}/{self.MYSQL_DB}?charset=utf8mb4"
+            f"postgresql+psycopg2://{self.PG_USER}:{self.PG_PASSWORD}"
+            f"@{self.PG_SERVER}:{self.PG_PORT}/{self.PG_DB}"
         )
 
 
-settings = Settings()
+settings = Settings()  # type: ignore
