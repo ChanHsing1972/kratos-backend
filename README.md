@@ -11,6 +11,7 @@
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+(win的是.venv/Scripts/activate)
 pip install -r requirements.txt
 
 cp .env.example .env
@@ -23,6 +24,7 @@ uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
 
 # 验证连接，应返回：{"status":"ok","db":true}
 curl -sS http://127.0.0.1:8000/health
+(win的要去掉 -sS)
 ```
 
 ## 项目结构
