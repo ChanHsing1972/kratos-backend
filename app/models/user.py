@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
 
@@ -18,3 +18,30 @@ class User(Base):
     dietary_habits: Mapped[str | None] = mapped_column(Text, nullable=True)
     fitness_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    profile: Mapped["UserProfile | None"] = relationship(
+        "UserProfile",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    training_plans: Mapped[list["TrainingPlan"]] = relationship(
+        "TrainingPlan",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    workout_logs: Mapped[list["WorkoutLog"]] = relationship(
+        "WorkoutLog",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    body_metrics: Mapped[list["BodyMetric"]] = relationship(
+        "BodyMetric",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    agent_checkins: Mapped[list["AgentCheckin"]] = relationship(
+        "AgentCheckin",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
