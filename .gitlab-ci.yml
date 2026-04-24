@@ -1,22 +1,67 @@
-image: python:3.11
+image: python:3.11-slim
 
 stages:
-  - test
+  - verify
+  - deploy
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "master"'
+    - when: never
 
 variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  DEPLOY_HOST: "192.0.2.1"
+  DEPLOY_USER: "root"
+  DEPLOY_PORT: "22"
+  SERVICE_NAME: "agent-backend"
+  APP_PORT: "8000"
+  REMOTE_DIR: "/srv/se3/agent-backend"
 
-before_script:
-  - python -V
-  - pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-  - pip install -U pip
-  - pip install -r requirements.txt
+cache:
+  key:
+    files:
+      - requirements.txt
+  paths:
+    - .cache/pip/
 
-test:
-  stage: test
+verify:
+  stage: verify
+  before_script:
+    - python -V
+    - python -m pip config set global.index-url "$PIP_INDEX_URL"
+    - python -m pip install -U pip
+    - python -m pip install -r requirements.txt
   script:
-    - pytest -q || true
+    - python -m compileall app
+    - |
+      set +e
+      python -m pytest -q
+      status=$?
+      set -e
+      if [ "$status" -ne 0 ] && [ "$status" -ne 5 ]; then
+        exit "$status"
+      fi
   artifacts:
     when: always
     paths:
       - .pytest_cache/
+    expire_in: 1 week
+
+deploy:
+  stage: deploy
+  image: alpine:3.20
+  needs:
+    - verify
+  resource_group: agent-backend-production
+  before_script:
+    - sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+    - apk add --no-cache bash openssh-client sshpass tar
+  script:
+    - chmod +x ci/deploy_backend.sh
+    - ci/deploy_backend.sh
+  environment:
+    name: $CI_COMMIT_BRANCH
+    url: http://192.0.2.1/
