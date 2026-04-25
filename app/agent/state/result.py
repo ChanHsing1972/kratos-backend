@@ -10,4 +10,4 @@ class ResultState(BaseModel):
     diet_plan: Any | None = None
 
     # 生成回答
-    reply: Any | None = None
+    response: Any | None = None

@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic.v1 import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskStatus(str, Enum):
@@ -15,15 +15,15 @@ class Task(BaseModel):
     description: str | None = None
     status: TaskStatus = TaskStatus.pending
 
-    need_tool: bool = False
-    tool_name: str | None = None
-    args: dict[str, Any] | None = None
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    tool_results: list[Any] = Field(default_factory=list)
+
     result: Any | None = None
 
 class ReasoningState(BaseModel):
-    intent: str | None = None
+    intent: list[str] = Field(default_factory=list)
 
-    tasks: list[Task] = []
-    current_task_id: int | None = None
+    tasks: list[Task] = Field(default_factory=list)
+    current_task_index: int | None = None
 
     need_replan: bool = False

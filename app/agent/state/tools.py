@@ -1,8 +1,8 @@
-import datetime
+from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
-from pydantic.v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 
 
 class ToolStatus(str, Enum):
@@ -19,9 +19,12 @@ class ToolCall(BaseModel):
     status: ToolStatus = ToolStatus.planned
     result: Any | None = None
 
-    timestamp: datetime = Field(default_factory=datetime.datetime.now)
+    error: str | None = None
+    retry_count: int = 0
+
+    timestamp: datetime = Field(default_factory=datetime.now)
 
 class ToolsState(BaseModel):
-    available_tools: dict[str, Any] = {}
+    available_tools: dict[str, Any] = Field(default_factory=dict)
 
-    history: list[ToolCall] = []
+    history: list[ToolCall] = Field(default_factory=list)
