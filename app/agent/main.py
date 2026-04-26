@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.agent.graph import build_graph
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolsState
+from app.agent.tools import load_tools
 
 
 def main():
@@ -16,9 +17,7 @@ def main():
         temperature=settings.AGENT_LLM_TEMPERATURE,
     )
 
-    tools = [TavilySearch(max_results=2, tavily_api_key=settings.TAVILY_API_KEY)]
-
-    available_tools = {tool.name: tool for tool in tools}
+    available_tools = load_tools()
 
     initial_state = SessionState(
         session_id="1",
