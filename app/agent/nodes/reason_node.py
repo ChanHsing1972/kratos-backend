@@ -22,9 +22,12 @@ class ReasonNode(BaseNode):
         
         查询工具之前，先查看过往会话，看有没有什么有用信息:
         {convs}
+
+        tool_name 必须严格等于工具注册名，不允许添加任何前缀或后缀。
         
         判断是否需要调用工具来完成任务，如果需要，选择合适的工具并提供必要的参数，result则为空。
         如果不需要调用工具，则直接生成result，tool_calls则为空
+
         
         输出纯JSON:
         (你的回答必须严格只输出纯JSON字符串，绝对不要添加```json)
@@ -62,7 +65,9 @@ class ReasonNode(BaseNode):
         if not tool_results and not tool_calls:
             result = self.llm.invoke(prompt_reason)
 
-            print("ReasonNode1：")
+            print("=" * 20)
+            print("ReasonNode1")
+            print("=" * 20)
             print(result)
 
             data = json.loads(result.content)
@@ -71,7 +76,9 @@ class ReasonNode(BaseNode):
         else:
             result = self.llm.invoke(prompt_observation)
 
-            print("ReasonNode2：")
+            print("=" * 20)
+            print("ReasonNode2")
+            print("=" * 20)
             print(result)
 
             data = json.loads(result.content)

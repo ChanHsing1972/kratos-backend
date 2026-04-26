@@ -8,7 +8,7 @@ class IntentNode(BaseNode):
     def __call__(self, state: SessionState) -> SessionState:
         user_message = state.conversation.messages[-1].content
         prompt = f"""
-        识别用户意图（健身/饮食/调整/反馈/闲聊）
+        识别用户意图（健身/饮食/调整/反馈/闲聊/实时信息查询）
         允许输出多个意图，用列表返回
         
         输入:{user_message}
@@ -22,7 +22,9 @@ class IntentNode(BaseNode):
 
         result = self.llm.invoke(prompt)
 
-        print("IntentNode：")
+        print("=" * 20)
+        print("IntentNode")
+        print("=" * 20)
         print(result)
 
         data = json.loads(result.content)

@@ -22,7 +22,9 @@ class ReflectNode(BaseNode):
 
         result = self.llm.invoke(prompt)
 
-        print("ReflectNode：")
+        print("=" * 20)
+        print("ReflectNode")
+        print("=" * 20)
         print(result)
 
         data = json.loads(result.content)

@@ -35,7 +35,9 @@ class PlanNode(BaseNode):
 
         result = self.llm.invoke(prompt)
 
-        print("PlanNode：")
+        print("=" * 20)
+        print("PlanNode")
+        print("=" * 20)
         print(result)
 
         data = json.loads(result.content)
@@ -44,4 +46,3 @@ class PlanNode(BaseNode):
         state.reasoning.current_task_index = 0
 
         return state
-
