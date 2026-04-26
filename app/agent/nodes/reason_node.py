@@ -45,7 +45,12 @@ class ReasonNode(BaseNode):
                     "tool_name": "工具名",
                     "args": {{}},
                     "id": "..."
-                }}
+                }},
+                {{
+                    "tool_name": "...",
+                    "args": {{}},
+                    "id": "..."
+                }},
             ],
             "result": null
         }}
