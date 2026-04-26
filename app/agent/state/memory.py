@@ -22,5 +22,5 @@ class MidTermMemory(BaseModel):
 
 
 class MemoryState(BaseModel):
-    long_term_memory: LongTermMemory = LongTermMemory()
-    mid_term_memory: MidTermMemory = MidTermMemory()
+    long_term_memory: LongTermMemory = Field(default_factory=LongTermMemory)
+    mid_term_memory: MidTermMemory = Field(default_factory=MidTermMemory)

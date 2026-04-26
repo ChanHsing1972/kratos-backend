@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     AGENT_LLM_MODEL: str = "qwen-turbo"
     AGENT_LLM_API_KEY: str | None = None
     AGENT_LLM_TEMPERATURE: float = 0.5
+    TAVILY_API_KEY: str | None = None
 
     # Backward compatibility for existing local .env files.
     QWEN_API_KEY: str | None = None

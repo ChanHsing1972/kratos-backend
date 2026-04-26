@@ -16,7 +16,7 @@ def main():
         temperature=settings.AGENT_LLM_TEMPERATURE,
     )
 
-    tools = [TavilySearch(max_results=2)]
+    tools = [TavilySearch(max_results=2, tavily_api_key=settings.TAVILY_API_KEY)]
 
     available_tools = {tool.name: tool for tool in tools}
 

@@ -11,3 +11,4 @@ class ResultState(BaseModel):
 
     # 生成回答
     response: Any | None = None
+    reflection_suggestions: Any | None = None

@@ -17,8 +17,8 @@ class SessionState(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
-    conversation: ConversationState = ConversationState()
-    memory: MemoryState = MemoryState()
-    reasoning: ReasoningState = ReasoningState()
-    tools: ToolsState = ToolsState()
-    result: ResultState = ResultState()
+    conversation: ConversationState = Field(default_factory=ConversationState)
+    memory: MemoryState = Field(default_factory=MemoryState)
+    reasoning: ReasoningState = Field(default_factory=ReasoningState)
+    tools: ToolsState = Field(default_factory=ToolsState)
+    result: ResultState = Field(default_factory=ResultState)
