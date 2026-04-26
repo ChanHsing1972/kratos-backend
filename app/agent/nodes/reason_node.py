@@ -33,12 +33,12 @@ class ReasonNode(BaseNode):
                 {{
                     "tool_name": "...",
                     "args": {{}},
-                    "id": “...”
+                    "id": "..."
                 }},
                 {{
                     "tool_name": "...",
                     "args": {{}},
-                    "id": “...”
+                    "id": "..."
                 }},
             ],
             "result": "...",
@@ -81,6 +81,5 @@ class ReasonNode(BaseNode):
             task.status = TaskStatus.done
 
             state.reasoning.current_task_index += 1
-
 
         return state

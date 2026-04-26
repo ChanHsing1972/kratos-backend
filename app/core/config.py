@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
+    AGENT_LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    AGENT_LLM_MODEL: str = "qwen-turbo"
+    AGENT_LLM_API_KEY: str | None = None
+    AGENT_LLM_TEMPERATURE: float = 0.5
+
+    # Backward compatibility for existing local .env files.
+    QWEN_API_KEY: str | None = None
+
+    @property
+    def AGENT_LLM_EFFECTIVE_API_KEY(self) -> str:
+        return self.AGENT_LLM_API_KEY or self.QWEN_API_KEY or "EMPTY"
+
     @property
     def DATABASE_URI(self) -> str:
         return (

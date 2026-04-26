@@ -1,23 +1,19 @@
-import os
-
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langchain_tavily import TavilySearch
-from langgraph.checkpoint.memory import MemorySaver
 
+from app.core.config import settings
 from app.agent.graph import build_graph
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolsState
 
-load_dotenv()
 
 def main():
     llm = ChatOpenAI(
-        api_key=os.getenv("QWEN_API_KEY"),
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model="qwen-turbo",
-        temperature=0.5,
+        api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
+        base_url=settings.AGENT_LLM_BASE_URL,
+        model=settings.AGENT_LLM_MODEL,
+        temperature=settings.AGENT_LLM_TEMPERATURE,
     )
 
     tools = [TavilySearch(max_results=2)]
@@ -58,5 +54,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
