@@ -3,6 +3,7 @@ from langgraph.graph import StateGraph
 
 from app.agent.nodes.act_node import ActNode
 from app.agent.nodes.end_node import EndNode
+from app.agent.nodes.finish_node import FinishNode
 from app.agent.nodes.generate_node import GenerateNode
 from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.plan_node import PlanNode
@@ -19,6 +20,7 @@ def build_graph(llm):
     builder.add_node("plan", PlanNode(llm))
     builder.add_node("reason", ReasonNode(llm))
     builder.add_node("act", ActNode(llm))
+    builder.add_node("finish", FinishNode(llm))
     builder.add_node("generate", GenerateNode(llm))
     builder.add_node("reflect", ReflectNode(llm))
     builder.add_node("end", EndNode())
@@ -34,18 +36,32 @@ def build_graph(llm):
             return "generate"
         if task.status == TaskStatus.waiting_for_tool:
             return "act"
-        return "reason"
+        return "finish"
 
     builder.add_conditional_edges(
         "reason",
         route_after_reason,
         {
-            "reason": "reason",
+            "finish": "finish",
             "act": "act",
             "generate": "generate",
         }
     )
     builder.add_edge("act", "reason")
+
+    def route_after_finish(state: SessionState):
+        if state.reasoning.current_task() is None:
+            return "generate"
+        return "reason"
+
+    builder.add_conditional_edges(
+        "finish",
+        route_after_finish,
+        {
+            "reason": "reason",
+            "generate": "generate",
+        }
+    )
 
     builder.add_edge("generate", "reflect")
 
@@ -66,4 +82,3 @@ def build_graph(llm):
     builder.add_edge("end", END)
 
     return builder.compile()
-

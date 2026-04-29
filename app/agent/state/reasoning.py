@@ -29,6 +29,7 @@ class Task(BaseModel):
 
 class ReasoningState(BaseModel):
     intent: list[str] = Field(default_factory=list)
+    extracted_info: dict[str, Any] = Field(default_factory=dict)
 
     tasks: list[Task] = Field(default_factory=list)
     current_task_index: int = 0
@@ -46,3 +47,16 @@ class ReasoningState(BaseModel):
 
     def advance_task(self) -> None:
         self.current_task_index += 1
+
+    def reset_tasks(self) -> None:
+        self.tasks = []
+        self.current_task_index = 0
+
+    def reset_runtime(self) -> None:
+        self.intent = []
+        self.extracted_info = {}
+        self.reset_tasks()
+        self.need_replan = False
+        self.replan_count = 0
+        self.reflection = None
+        self.errors = []

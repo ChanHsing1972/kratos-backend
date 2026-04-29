@@ -13,8 +13,13 @@ def parse_json_object(text: str) -> dict[str, Any]:
 
     try:
         data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        data = json.loads(_extract_first_json_object(cleaned))
+    except json.JSONDecodeError as first_error:
+        try:
+            data = json.loads(_extract_first_json_object(cleaned))
+        except (json.JSONDecodeError, LLMJsonParseError) as second_error:
+            raise LLMJsonParseError(
+                f"Could not parse JSON object from LLM response: {second_error}"
+            ) from first_error
 
     if not isinstance(data, dict):
         raise LLMJsonParseError("Expected a JSON object from LLM response.")

@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     AGENT_LLM_TEMPERATURE: float = 0.5
     TAVILY_API_KEY: str | None = None
 
+    MUSCLEWIKI_API_BASE_URL: str = "https://api.musclewiki.com"
+    MUSCLEWIKI_API_KEY: str | None = None
+    MUSCLEWIKI_TIMEOUT_SECONDS: int = 30
+
+    SPOONACULAR_API_BASE_URL: str = "https://api.spoonacular.com"
+    SPOONACULAR_API_KEY: str | None = None
+    SPOONACULAR_TIMEOUT_SECONDS: int = 30
+
+    HEWEATHER_API_BASE_URL: str = "https://api.qweather.com"
+    HEWEATHER_API_KEY: str | None = None
+    HEWEATHER_TIMEOUT_SECONDS: int = 30
+
     # Backward compatibility for existing local .env files.
     QWEN_API_KEY: str | None = None
 

@@ -7,6 +7,7 @@ class GenerateNode(BaseNode):
     def __call__(self, state: SessionState):
         user_message = self.latest_user_text(state)
         tasks = state.reasoning.tasks
+        intents = state.reasoning.intent
 
         task_results = "\n".join(
             [
@@ -17,7 +18,7 @@ class GenerateNode(BaseNode):
 
         prompt = f"""
         你是 Kratos 智能健身 Agent。
-        请根据用户问题和子任务结果生成最终回复。
+        请根据用户问题、识别意图和所有子任务结果生成最终回复。
         要求：
         - 中文回答。
         - 具体、可执行，避免空泛建议。
@@ -26,6 +27,9 @@ class GenerateNode(BaseNode):
 
         用户问题:
         {user_message}
+
+        用户意图:
+        {intents}
 
         子任务结果:
         {task_results}

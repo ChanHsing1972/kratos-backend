@@ -1,5 +1,6 @@
-from pydantic import BaseModel
 from typing import Any
+
+from pydantic import BaseModel
 
 
 class ResultState(BaseModel):
@@ -8,6 +9,9 @@ class ResultState(BaseModel):
 
     # 饮食计划
     diet_plan: Any | None = None
+
+    # 第一轮阶段性回答
+    first_response: Any | None = None
 
     # 生成回答
     response: Any | None = None
