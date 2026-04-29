@@ -21,9 +21,6 @@ cp .env.example .env
 # 通过 ssh 隧道连接远程 PostgreSQL
 ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 5432:localhost:5432 root@192.0.2.1
 
-# 连接大模型接口
-ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 root@192.0.2.1
-
 # 连接大模型端口
 ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 root@192.0.2.1
 
