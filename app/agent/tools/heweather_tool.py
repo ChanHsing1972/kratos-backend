@@ -6,6 +6,7 @@ from urllib import error, parse, request
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.config import settings
+from app.agent.tools.http_utils import redact_url
 
 
 class HeWeatherInput(BaseModel):
@@ -83,7 +84,7 @@ class HeWeatherTool:
                 data = self._load_json_or_text(raw_body)
                 return {
                     "ok": self._is_success(data),
-                    "url": url,
+                    "url": redact_url(url),
                     "endpoint": payload.endpoint,
                     "days": payload.days,
                     "location": payload.location,
@@ -96,7 +97,7 @@ class HeWeatherTool:
             parsed_error = self._load_json_or_text(error_body)
             return {
                 "ok": False,
-                "url": url,
+                "url": redact_url(url),
                 "endpoint": payload.endpoint,
                 "days": payload.days,
                 "location": payload.location,
@@ -108,7 +109,7 @@ class HeWeatherTool:
         except error.URLError as exc:
             return {
                 "ok": False,
-                "url": url,
+                "url": redact_url(url),
                 "endpoint": payload.endpoint,
                 "days": payload.days,
                 "location": payload.location,

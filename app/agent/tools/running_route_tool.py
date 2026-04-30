@@ -15,7 +15,7 @@ class RunningRouteAdvisorInput(BaseModel):
         description="Preferred running environment.",
     )
     radius_m: int = Field(default=5000, ge=500, le=10000, description="Nearby search radius in meters.")
-    max_candidates: int = Field(default=5, ge=1, le=10, description="Maximum nearby candidate places to evaluate.")
+    max_candidates: int = Field(default=3, ge=1, le=5, description="Maximum nearby candidate places to evaluate.")
 
 
 class RunningRouteAdvisorTool:
@@ -34,8 +34,9 @@ class RunningRouteAdvisorTool:
 
     def invoke(self, args: dict[str, Any]) -> dict[str, Any]:
         payload = RunningRouteAdvisorInput(**args)
+        request_budget = _RequestBudget(limit=10)
 
-        geocode_result, start = self._resolve_start_location(payload.start_location, payload.city)
+        geocode_result, start = self._resolve_start_location(payload.start_location, payload.city, request_budget)
         if not geocode_result.get("ok"):
             return {
                 "ok": False,
@@ -70,6 +71,7 @@ class RunningRouteAdvisorTool:
             route_preference=payload.route_preference,
             radius_m=payload.radius_m,
             max_candidates=payload.max_candidates,
+            request_budget=request_budget,
         )
         if not search_result.get("ok"):
             return {
@@ -93,7 +95,9 @@ class RunningRouteAdvisorTool:
 
         recommendations: list[dict[str, Any]] = []
         for poi in pois[: payload.max_candidates]:
-            candidate = self._build_candidate(start_coord, poi, payload.target_distance_km)
+            if not request_budget.allow(2):
+                break
+            candidate = self._build_candidate(start_coord, poi, payload.target_distance_km, request_budget)
             if candidate is None:
                 continue
             recommendations.append(candidate)
@@ -127,11 +131,17 @@ class RunningRouteAdvisorTool:
             "recommended_routes": top_routes,
             "summary": summary,
             "running_tips": self._build_running_tips(payload.target_distance_km, top_routes[0]),
+            "request_budget": request_budget.summary(),
             "geocode_result": geocode_result,
             "search_result": search_result,
         }
 
-    def _resolve_start_location(self, start_location: str, city: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def _resolve_start_location(
+        self,
+        start_location: str,
+        city: str | None,
+        request_budget: "_RequestBudget",
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         candidates = self._build_location_candidates(start_location)
         last_result: dict[str, Any] | None = None
 
@@ -148,6 +158,8 @@ class RunningRouteAdvisorTool:
 
         for location_candidate in candidates:
             for city_candidate in deduped_city_candidates:
+                if not request_budget.consume():
+                    return {"ok": False, "message": "路线规划调用次数已达上限，请提供更明确的起点或城市后再试。"}, None
                 result = self.geocode_tool.invoke(
                     {
                         "address": location_candidate,
@@ -171,6 +183,7 @@ class RunningRouteAdvisorTool:
         route_preference: str,
         radius_m: int,
         max_candidates: int,
+        request_budget: "_RequestBudget",
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         keyword_candidates = self._build_keyword_candidates(route_preference)
         radius_candidates = [radius_m, min(max(radius_m + 2000, radius_m), 10000)]
@@ -178,6 +191,8 @@ class RunningRouteAdvisorTool:
 
         for radius in radius_candidates:
             for keywords in keyword_candidates:
+                if not request_budget.consume():
+                    return last_result or {"ok": False, "message": "附近地点搜索调用次数已达上限，请提供更明确的地点偏好后再试。"}, []
                 result = self.place_search_tool.invoke(
                     {
                         "location": start_coord,
@@ -199,11 +214,19 @@ class RunningRouteAdvisorTool:
         return last_result or {"ok": False, "message": "附近地点搜索失败。"}, []
 
 
-    def _build_candidate(self, start_coord: str, poi: dict[str, Any], target_distance_km: float) -> dict[str, Any] | None:
+    def _build_candidate(
+        self,
+        start_coord: str,
+        poi: dict[str, Any],
+        target_distance_km: float,
+        request_budget: "_RequestBudget",
+    ) -> dict[str, Any] | None:
         poi_location = poi.get("location")
         if not poi_location:
             return None
 
+        if not request_budget.consume():
+            return None
         distance_result = self.distance_tool.invoke(
             {
                 "origins": start_coord,
@@ -216,14 +239,17 @@ class RunningRouteAdvisorTool:
         if distance_m is None:
             return None
 
-        walking_result = self.walking_tool.invoke(
-            {
-                "origin": start_coord,
-                "destination": poi_location,
-                "output": "JSON",
-            }
-        )
-        walking_summary = self._extract_walking_summary(walking_result)
+        if not request_budget.consume():
+            walking_summary = None
+        else:
+            walking_result = self.walking_tool.invoke(
+                {
+                    "origin": start_coord,
+                    "destination": poi_location,
+                    "output": "JSON",
+                }
+            )
+            walking_summary = self._extract_walking_summary(walking_result)
 
         one_way_km = distance_m / 1000
         round_trip_km = round(one_way_km * 2, 2)
@@ -387,3 +413,21 @@ class RunningRouteAdvisorTool:
 
 def get_running_route_advisor_tool():
     return RunningRouteAdvisorTool()
+
+
+class _RequestBudget:
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.used = 0
+
+    def allow(self, cost: int = 1) -> bool:
+        return self.used + cost <= self.limit
+
+    def consume(self, cost: int = 1) -> bool:
+        if not self.allow(cost):
+            return False
+        self.used += cost
+        return True
+
+    def summary(self) -> dict[str, int]:
+        return {"used": self.used, "limit": self.limit}

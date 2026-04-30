@@ -6,6 +6,7 @@ from urllib import error, parse, request
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.agent.tools.http_utils import redact_url
 
 
 class HeWeatherGeoLookupInput(BaseModel):
@@ -81,7 +82,7 @@ class HeWeatherGeoLookupTool:
                 data = self._load_json_or_text(raw_body)
                 return {
                     "ok": self._is_success(data),
-                    "url": url,
+                    "url": redact_url(url),
                     "location": payload.location,
                     "status_code": response.status,
                     "headers": dict(response.headers.items()),
@@ -92,7 +93,7 @@ class HeWeatherGeoLookupTool:
             parsed_error = self._load_json_or_text(error_body)
             return {
                 "ok": False,
-                "url": url,
+                "url": redact_url(url),
                 "location": payload.location,
                 "status_code": exc.code,
                 "error_type": self._classify_error(exc.code, parsed_error),
@@ -102,7 +103,7 @@ class HeWeatherGeoLookupTool:
         except error.URLError as exc:
             return {
                 "ok": False,
-                "url": url,
+                "url": redact_url(url),
                 "location": payload.location,
                 "status_code": None,
                 "error_type": "network_error",

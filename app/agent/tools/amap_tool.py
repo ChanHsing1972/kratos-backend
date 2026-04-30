@@ -5,6 +5,7 @@ from urllib import error, parse, request
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.agent.tools.http_utils import redact_url
 
 
 class AMapIpLocationInput(BaseModel):
@@ -76,7 +77,7 @@ class AMapIpLocationTool:
                     )
                 return {
                     "ok": ok,
-                    "url": url,
+                    "url": redact_url(url),
                     "status_code": response.status,
                     "headers": dict(response.headers.items()),
                     "data": data,
@@ -90,7 +91,7 @@ class AMapIpLocationTool:
             parsed_error = self._load_json_or_text(error_body)
             return {
                 "ok": False,
-                "url": url,
+                "url": redact_url(url),
                 "status_code": exc.code,
                 "error_type": self._classify_error(exc.code),
                 "message": self._extract_error_message(parsed_error, exc.reason),
@@ -99,7 +100,7 @@ class AMapIpLocationTool:
         except error.URLError as exc:
             return {
                 "ok": False,
-                "url": url,
+                "url": redact_url(url),
                 "status_code": None,
                 "error_type": "network_error",
                 "message": f"AMap IP API request failed: {exc.reason}",

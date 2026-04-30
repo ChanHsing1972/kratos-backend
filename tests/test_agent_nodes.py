@@ -10,6 +10,9 @@ from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolStatus, ToolsState
+from app.agent.tools.http_utils import redact_url
+from app.agent.tools.running_route_tool import RunningRouteAdvisorTool
+from app.agent.tools.weather_fitness_tool import WeatherFitnessAdvisorTool
 
 
 class FakeLLM:
@@ -29,10 +32,113 @@ class FakeTool:
         return {"query": args["query"], "answer": "工具结果"}
 
 
+class CountingTool:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def invoke(self, args):
+        self.calls.append(args)
+        if not self.responses:
+            return {"ok": False, "message": "no response"}
+        return self.responses.pop(0)
+
+
 def test_parse_json_object_handles_markdown_fence():
     data = parse_json_object('```json\n{"ok": true}\n```')
 
     assert data == {"ok": True}
+
+
+def test_redact_url_removes_sensitive_query_values():
+    url = "https://example.com/path?location=101010100&key=secret&apiKey=another&unit=m"
+
+    redacted = redact_url(url)
+
+    assert "secret" not in redacted
+    assert "another" not in redacted
+    assert "key=***REDACTED***" in redacted
+    assert "apiKey=***REDACTED***" in redacted
+    assert "location=101010100" in redacted
+
+
+def test_weather_fitness_advice_respects_today_label():
+    advice = WeatherFitnessAdvisorTool._build_fitness_advice(
+        {
+            "textDay": "晴",
+            "precip": "0.0",
+            "tempMax": "24",
+            "tempMin": "18",
+            "uvIndex": "3",
+            "humidity": "45",
+            "windSpeedDay": "8",
+        },
+        when="today",
+    )
+
+    assert any("今天" in item for item in advice)
+    assert all("明天" not in item for item in advice)
+
+
+def test_running_route_advisor_caps_external_calls():
+    tool = RunningRouteAdvisorTool()
+    tool.geocode_tool = CountingTool(
+        [
+            {
+                "ok": True,
+                "data": {
+                    "geocodes": [
+                        {
+                            "formatted_address": "苏州金鸡湖",
+                            "location": "120.704,31.302",
+                            "city": "苏州市",
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+    tool.place_search_tool = CountingTool(
+        [
+            {
+                "ok": True,
+                "data": {
+                    "pois": [
+                        {"name": f"公园{i}", "location": f"120.70{i},31.30{i}", "type": "公园"}
+                        for i in range(10)
+                    ]
+                },
+            }
+        ]
+    )
+    tool.distance_tool = CountingTool(
+        [
+            {"ok": True, "data": {"results": [{"distance": "1500"}]}},
+            {"ok": True, "data": {"results": [{"distance": "2200"}]}},
+            {"ok": True, "data": {"results": [{"distance": "2800"}]}},
+            {"ok": True, "data": {"results": [{"distance": "3500"}]}},
+        ]
+    )
+    tool.walking_tool = CountingTool(
+        [
+            {"ok": True, "data": {"route": {"paths": [{"distance": "1500", "duration": "900", "steps": []}]}}},
+            {"ok": True, "data": {"route": {"paths": [{"distance": "2200", "duration": "1200", "steps": []}]}}},
+            {"ok": True, "data": {"route": {"paths": [{"distance": "2800", "duration": "1500", "steps": []}]}}},
+        ]
+    )
+
+    result = tool.invoke(
+        {
+            "start_location": "苏州金鸡湖",
+            "target_distance_km": 5,
+            "max_candidates": 5,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["request_budget"]["used"] <= result["request_budget"]["limit"]
+    assert len(tool.distance_tool.calls) <= 4
+    assert len(result["recommended_routes"]) <= 3
 
 
 def test_intent_and_plan_nodes_fill_reasoning_state():

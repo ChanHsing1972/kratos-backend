@@ -107,7 +107,7 @@ class WeatherFitnessAdvisorTool:
 
         target_day = daily[target_index]
         weather_summary = self._build_weather_summary(best_location, target_day, payload.when)
-        fitness_advice = self._build_fitness_advice(target_day) if payload.include_fitness_advice else []
+        fitness_advice = self._build_fitness_advice(target_day, payload.when) if payload.include_fitness_advice else []
 
         return {
             "ok": True,
@@ -152,8 +152,9 @@ class WeatherFitnessAdvisorTool:
         }
 
     @staticmethod
-    def _build_fitness_advice(target_day: dict[str, Any]) -> list[str]:
+    def _build_fitness_advice(target_day: dict[str, Any], when: str = "tomorrow") -> list[str]:
         tips: list[str] = []
+        label = "今天" if when == "today" else "明天"
 
         text_day = str(target_day.get("textDay") or "")
         precip = WeatherFitnessAdvisorTool._to_float(target_day.get("precip")) or 0.0
@@ -165,10 +166,10 @@ class WeatherFitnessAdvisorTool:
 
         rainy_keywords = ["雨", "雪", "雷"]
         if any(keyword in text_day for keyword in rainy_keywords) or precip >= 5:
-            tips.append("明天有明显降水，更建议选择室内训练，如力量训练、划船机、动感单车或自重循环。")
+            tips.append(f"{label}有明显降水，更建议选择室内训练，如力量训练、划船机、动感单车或自重循环。")
             tips.append("如果必须外出运动，建议缩短时长并做好防滑、防雨和保暖准备。")
         else:
-            tips.append("如果你计划慢跑、快走或骑行，明天整体具备一定户外训练条件。")
+            tips.append(f"如果你计划慢跑、快走或骑行，{label}整体具备一定户外训练条件。")
 
         if temp_max is not None and temp_max <= 10:
             tips.append("气温偏低，运动前建议延长热身时间，重点活动膝踝和髋部。")
@@ -188,7 +189,7 @@ class WeatherFitnessAdvisorTool:
             tips.append("紫外线较强，若安排白天户外训练，建议做好防晒并尽量避开中午时段。")
 
         if not tips:
-            tips.append("明天天气对一般训练影响不大，可以按原计划进行，并注意常规补水和热身。")
+            tips.append(f"{label}天气对一般训练影响不大，可以按原计划进行，并注意常规补水和热身。")
 
         return tips
 
