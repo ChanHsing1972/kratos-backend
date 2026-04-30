@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     HEWEATHER_API_KEY: str | None = None
     HEWEATHER_TIMEOUT_SECONDS: int = 30
 
+    AMAP_WEB_API_BASE_URL: str = "https://restapi.amap.com"
+    AMAP_WEB_API_KEY: str | None = None
+    AMAP_WEB_API_TIMEOUT_SECONDS: int = 30
+
+    RAPIDAPI_PORTAL_URL: str = "https://rapidapi.com"
+    RAPIDAPI_BASE_URL: str = "https://edb-with-videos-and-images-by-ascendapi.p.rapidapi.com"
+    RAPIDAPI_HOST: str = "edb-with-videos-and-images-by-ascendapi.p.rapidapi.com"
+    RAPIDAPI_KEY: str | None = None
+    RAPIDAPI_TIMEOUT_SECONDS: int = 30
+
     # Backward compatibility for existing local .env files.
     QWEN_API_KEY: str | None = None
 

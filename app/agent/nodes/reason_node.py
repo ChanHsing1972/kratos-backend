@@ -1,4 +1,5 @@
 import json
+import re
 
 from app.agent.json_utils import LLMJsonParseError
 from app.agent.nodes.base_node import BaseNode
@@ -67,6 +68,9 @@ class ReasonNode(BaseNode):
         - 如果用户要求根据身体状态、训练强度、可用时间、饮食限制制定饮食计划，优先调用 diet_plan_generator。
         - 如果用户询问某个城市今天/明天/未来几天的天气，或询问某天气是否适合运动、跑步、健身，优先调用 weather_fitness_advisor。
         - 对天气相关问题，优先把自然语言城市名放入 weather_fitness_advisor 的 city 参数；when 根据“今天/明天”选择 today 或 tomorrow。
+        - 如果用户要求规划附近适合的跑步路线、晨跑路线、夜跑路线、5公里/10公里跑步路线，优先调用 running_route_advisor。
+        - 对跑步路线相关问题，优先把自然语言地点放入 running_route_advisor 的 start_location；若用户提到城市，也可填 city；若提到 3公里/5公里/10公里等距离，填 target_distance_km。
+        - 如果用户询问有哪些训练部位、身体部位列表、可训练的身体区域，优先调用 rapidapi_bodyparts。
         - 如果需要工具：
           - tool_name 必须严格等于可用工具名之一，不允许添加任何前缀或后缀。
           - args 必须严格满足该工具的参数 schema。
@@ -189,6 +193,50 @@ class ReasonNode(BaseNode):
             keyword in user_message
             for keyword in ["饮食", "吃", "食谱", "增肌期间", "减脂期间", "控制饮食"]
         )
+        is_running_route_request = any(
+            keyword in user_message
+            for keyword in ["跑步路线", "跑步", "晨跑", "夜跑", "路线规划", "公里路线", "适合跑步"]
+        )
+        is_bodyparts_request = any(
+            keyword in user_message
+            for keyword in ["训练部位", "身体部位", "锻炼部位", "部位列表", "有哪些部位", "可练部位"]
+        )
+
+        if is_bodyparts_request and "rapidapi_bodyparts" in available_tools:
+            return {
+                "tool_calls": [
+                    {
+                        "tool_name": "rapidapi_bodyparts",
+                        "args": ReasonNode._repair_tool_args(
+                            "rapidapi_bodyparts",
+                            {},
+                            user_message,
+                            task,
+                        ),
+                        "id": "fallback-bodyparts",
+                    }
+                ],
+                "result": None,
+                "fallback_reason": error_message,
+            }
+
+        if is_running_route_request and "running_route_advisor" in available_tools:
+            return {
+                "tool_calls": [
+                    {
+                        "tool_name": "running_route_advisor",
+                        "args": ReasonNode._repair_tool_args(
+                            "running_route_advisor",
+                            {},
+                            user_message,
+                            task,
+                        ),
+                        "id": "fallback-running-route",
+                    }
+                ],
+                "result": None,
+                "fallback_reason": error_message,
+            }
 
         if is_diet_plan_request and "diet_plan_generator" in available_tools:
             long_term = state.memory.long_term_memory
@@ -280,6 +328,60 @@ class ReasonNode(BaseNode):
         if tool_name == "tavily_search" and not args.get("query"):
             query_parts = [user_message, task.name, task.description]
             args["query"] = " ".join(str(part) for part in query_parts if part)
+
+        if tool_name == "rapidapi_bodyparts" and not args.get("query_params"):
+            args["query_params"] = {}
+
+        if tool_name == "weather_fitness_advisor":
+            if not args.get("city"):
+                city_match = re.search(r"([\u4e00-\u9fff]{2,12}?)(?:今天|明天|天气)", user_message)
+                if city_match:
+                    args["city"] = city_match.group(1)
+            if not args.get("when"):
+                args["when"] = "tomorrow" if "明天" in user_message else "today"
+
+        if tool_name == "running_route_advisor":
+            normalized_message = user_message.replace("，", " ").replace("。", " ").strip()
+
+            if not args.get("start_location"):
+                location_match = re.search(r"(?:我在|在)(.+?)(?:附近|周边|帮我|请|想|需要|，|。|$)", normalized_message)
+                if location_match:
+                    args["start_location"] = location_match.group(1).strip()
+                else:
+                    cleaned = re.sub(r"帮我|请|规划|推荐|设计|安排|一条|一个|合适的|适合的|附近的", "", normalized_message)
+                    cleaned = re.sub(r"(晨跑|夜跑|跑步)路线", "", cleaned)
+                    cleaned = re.sub(r"(晨跑|夜跑|跑步)", "", cleaned)
+                    cleaned = re.sub(r"\d+(?:\.\d+)?\s*公里", "", cleaned)
+                    cleaned = cleaned.strip(" ，。,.？?在")
+                    args["start_location"] = cleaned or user_message
+
+            if not args.get("city"):
+                city_match = re.search(r"([\u4e00-\u9fff]{2,12}?(?:市|区|县))", normalized_message)
+                if city_match:
+                    args["city"] = city_match.group(1)
+                else:
+                    start_location = str(args.get("start_location") or "")
+                    fallback_city_match = re.search(r"([\u4e00-\u9fff]{2,12}?(?:市|区|县))", start_location)
+                    if fallback_city_match:
+                        args["city"] = fallback_city_match.group(1)
+
+            if not args.get("target_distance_km"):
+                distance_match = re.search(r"(\d+(?:\.\d+)?)\s*公里", user_message)
+                if distance_match:
+                    args["target_distance_km"] = float(distance_match.group(1))
+                else:
+                    args["target_distance_km"] = 5.0
+
+            if not args.get("route_preference"):
+                if "绿道" in user_message or "江边" in user_message or "湖边" in user_message:
+                    args["route_preference"] = "greenway"
+                elif "操场" in user_message or "田径场" in user_message:
+                    args["route_preference"] = "track"
+                elif "公园" in user_message or "环线" in user_message or "湖" in user_message:
+                    args["route_preference"] = "park_loop"
+                else:
+                    args["route_preference"] = "general"
+
         return args
 
     @staticmethod
