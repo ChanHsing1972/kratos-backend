@@ -3,6 +3,7 @@ from app.schemas.agent_checkin import (
     AgentCheckinResponse,
     AgentCheckinUpdate,
 )
+from app.schemas.agent_chat import AgentChatRequest, AgentChatResponse, AgentTraceStep
 from app.schemas.body_metric import BodyMetricCreate, BodyMetricResponse, BodyMetricUpdate
 from app.schemas.training_plan import (
     TrainingPlanCreate,
@@ -21,6 +22,9 @@ __all__ = [
     "AgentCheckinCreate",
     "AgentCheckinResponse",
     "AgentCheckinUpdate",
+    "AgentChatRequest",
+    "AgentChatResponse",
+    "AgentTraceStep",
     "BodyMetricCreate",
     "BodyMetricResponse",
     "BodyMetricUpdate",
