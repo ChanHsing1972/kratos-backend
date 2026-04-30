@@ -27,11 +27,6 @@ def create_user(db: Session, user_in: UserCreate) -> User:
     user = User(
         username=user_in.username,
         password_hash=get_password_hash(user_in.password),
-        gender=user_in.gender,
-        age=user_in.age,
-        location=user_in.location,
-        dietary_habits=user_in.dietary_habits,
-        fitness_status=user_in.fitness_status,
     )
     db.add(user)
     db.commit()

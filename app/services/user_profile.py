@@ -14,7 +14,19 @@ def create_profile_for_user(
     user: User,
     profile_in: UserProfileCreate,
 ) -> UserProfile:
-    profile = UserProfile(user_id=user.id, **profile_in.model_dump())
+    profile_data = profile_in.model_dump()
+    legacy_defaults = {
+        "gender": user.gender,
+        "age": user.age,
+        "location": user.location,
+        "dietary_habits": user.dietary_habits,
+        "fitness_summary": user.fitness_status,
+    }
+    for field, value in legacy_defaults.items():
+        if profile_data.get(field) is None and value is not None:
+            profile_data[field] = value
+
+    profile = UserProfile(user_id=user.id, **profile_data)
     db.add(profile)
     db.commit()
     db.refresh(profile)

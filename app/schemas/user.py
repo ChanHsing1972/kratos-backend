@@ -1,15 +1,10 @@
-from typing import Any
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserBase(BaseModel):
     username: str = Field(min_length=3, max_length=50)
-    gender: str | None = Field(default=None, max_length=20)
-    age: int | None = Field(default=None, ge=0, le=120)
-    location: str | None = Field(default=None, max_length=100)
-    dietary_habits: str | None = None
-    fitness_status: str | None = None
 
 
 class UserCreate(UserBase):
@@ -22,21 +17,16 @@ class UserLogin(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    gender: str | None = Field(default=None, max_length=20)
-    age: int | None = Field(default=None, ge=0, le=120)
-    location: str | None = Field(default=None, max_length=100)
-    dietary_habits: str | None = None
-    fitness_status: str | None = None
-
     model_config = ConfigDict(extra="forbid")
 
-    def to_update_dict(self) -> dict[str, Any]:
+    def to_update_dict(self) -> dict[str, object]:
         return self.model_dump(exclude_unset=True)
 
 
 class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    created_at: datetime
 
 
 class Token(BaseModel):
