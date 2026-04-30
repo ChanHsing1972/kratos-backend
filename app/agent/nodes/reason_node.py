@@ -17,6 +17,7 @@ class ReasonNode(BaseNode):
         if memory_answer is not None:
             task.status = TaskStatus.done
             task.result = memory_answer
+            state.reasoning.advance_task()
 
             print("=" * 20)
             print("ReasonNode - Memory Result")
@@ -152,6 +153,7 @@ class ReasonNode(BaseNode):
 
         if task.result:
             task.status = TaskStatus.done
+            state.reasoning.advance_task()
 
             print("=" * 20)
             print("ReasonNode - Task Result")
