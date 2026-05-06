@@ -13,6 +13,7 @@ from app.agent.tools import load_tools
 from app.core.config import settings
 from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import create_agent_run
+from app.services.body_data_ingest import ingest_body_data_from_message
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +33,11 @@ def run_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
+    persisted_body_data = (
+        ingest_body_data_from_message(db, user_id, message)
+        if db is not None
+        else None
+    )
     state = SessionState(
         session_id=session_id or str(uuid4()),
         user_id=str(user_id),
@@ -42,6 +48,15 @@ def run_agent_chat(
     result = get_agent_graph().invoke(state)
     final_state = result if isinstance(result, SessionState) else SessionState(**result)
     trace = build_trace(final_state)
+    if persisted_body_data:
+        trace.insert(
+            0,
+            AgentTraceStep(
+                type="observation",
+                content=f"已写入身体数据：{_format_persisted_body_data(persisted_body_data)}",
+                raw=persisted_body_data,
+            ),
+        )
 
     if db is not None:
         create_agent_run(db, user_id, message, final_state, trace)
@@ -55,6 +70,11 @@ def stream_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
+    persisted_body_data = (
+        ingest_body_data_from_message(db, user_id, message)
+        if db is not None
+        else None
+    )
     state = SessionState(
         session_id=session_id or str(uuid4()),
         user_id=str(user_id),
@@ -67,6 +87,12 @@ def stream_agent_chat(
         "content": "Agent 已开始处理请求",
         "session_id": state.session_id,
     }
+    if persisted_body_data:
+        yield {
+            "type": "observation",
+            "content": f"已写入身体数据：{_format_persisted_body_data(persisted_body_data)}",
+            "session_id": state.session_id,
+        }
 
     emitted_keys: set[tuple[str, str]] = set()
     final_state = state
@@ -100,7 +126,17 @@ def stream_agent_chat(
             yield event
 
     if db is not None:
-        create_agent_run(db, user_id, message, final_state, build_trace(final_state))
+        trace = build_trace(final_state)
+        if persisted_body_data:
+            trace.insert(
+                0,
+                AgentTraceStep(
+                    type="observation",
+                    content=f"已写入身体数据：{_format_persisted_body_data(persisted_body_data)}",
+                    raw=persisted_body_data,
+                ),
+            )
+        create_agent_run(db, user_id, message, final_state, trace)
 
     yield {
         "type": "done",
@@ -232,3 +268,32 @@ def _summarize_value(value: Any) -> str:
         if "results" in value and isinstance(value["results"], list):
             return f"返回 {len(value['results'])} 条结果"
     return str(value)
+
+
+def _format_persisted_body_data(data: dict[str, Any]) -> str:
+    labels = {
+        "bmi": "BMI",
+        "body_fat_percentage": "体脂率",
+        "chest_cm": "胸围",
+        "energy_level": "精力",
+        "hip_cm": "臀围",
+        "skeletal_muscle_mass_kg": "骨骼肌",
+        "sleep_hours": "睡眠时长",
+        "sleep_quality": "睡眠质量",
+        "soreness_level": "酸痛",
+        "waist_cm": "腰围",
+        "weight_kg": "体重",
+    }
+    units = {
+        "body_fat_percentage": "%",
+        "chest_cm": "cm",
+        "hip_cm": "cm",
+        "skeletal_muscle_mass_kg": "kg",
+        "sleep_hours": "h",
+        "waist_cm": "cm",
+        "weight_kg": "kg",
+    }
+    return "，".join(
+        f"{labels.get(key, key)} {value}{units.get(key, '')}"
+        for key, value in data.items()
+    )

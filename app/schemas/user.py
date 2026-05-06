@@ -9,6 +9,8 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str = Field(min_length=6, max_length=128)
+    location: str | None = Field(default=None, max_length=100)
+    fitness_status: str | None = None
 
 
 class UserLogin(BaseModel):
@@ -17,6 +19,12 @@ class UserLogin(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    gender: str | None = Field(default=None, max_length=20)
+    age: int | None = Field(default=None, ge=0, le=120)
+    location: str | None = Field(default=None, max_length=100)
+    dietary_habits: str | None = None
+    fitness_status: str | None = None
+
     model_config = ConfigDict(extra="forbid")
 
     def to_update_dict(self) -> dict[str, object]:
@@ -26,6 +34,11 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    gender: str | None = None
+    age: int | None = None
+    location: str | None = None
+    dietary_habits: str | None = None
+    fitness_status: str | None = None
     created_at: datetime
 
 

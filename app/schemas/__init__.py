@@ -6,11 +6,6 @@ from app.schemas.agent_checkin import (
 from app.schemas.agent_chat import AgentChatRequest, AgentChatResponse, AgentTraceStep
 from app.schemas.agent_run import AgentRunResponse, RagasExportResponse, RagasSample
 from app.schemas.body_metric import BodyMetricCreate, BodyMetricResponse, BodyMetricUpdate
-from app.schemas.evaluation import (
-    EvaluationDatasetCreate,
-    EvaluationDatasetResponse,
-    EvaluationResultResponse,
-)
 from app.schemas.training_plan import (
     TrainingPlanCreate,
     TrainingPlanResponse,
@@ -35,9 +30,6 @@ __all__ = [
     "BodyMetricCreate",
     "BodyMetricResponse",
     "BodyMetricUpdate",
-    "EvaluationDatasetCreate",
-    "EvaluationDatasetResponse",
-    "EvaluationResultResponse",
     "RagasExportResponse",
     "RagasSample",
     "Token",

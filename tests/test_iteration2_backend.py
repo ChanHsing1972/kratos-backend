@@ -9,7 +9,6 @@ from app.agent.tools.fitness_calculator_tool import (
     WorkoutVolumeTool,
 )
 from app.services.agent_run import build_ragas_samples
-from app.services.evaluation import _score_sample
 
 
 def test_pain_safety_gate_blocks_high_pain():
