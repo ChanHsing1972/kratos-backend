@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from sqlalchemy.orm import Session
 
 from app.agent.graph import build_graph
 from app.agent.state.session_state import SessionState
@@ -11,6 +12,7 @@ from app.agent.state.tools import ToolCall, ToolsState
 from app.agent.tools import load_tools
 from app.core.config import settings
 from app.schemas.agent_chat import AgentTraceStep
+from app.services.agent_run import create_agent_run
 
 
 @lru_cache(maxsize=1)
@@ -28,6 +30,7 @@ def run_agent_chat(
     user_id: int,
     message: str,
     session_id: str | None = None,
+    db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
     state = SessionState(
         session_id=session_id or str(uuid4()),
@@ -38,14 +41,19 @@ def run_agent_chat(
 
     result = get_agent_graph().invoke(state)
     final_state = result if isinstance(result, SessionState) else SessionState(**result)
+    trace = build_trace(final_state)
 
-    return final_state, build_trace(final_state)
+    if db is not None:
+        create_agent_run(db, user_id, message, final_state, trace)
+
+    return final_state, trace
 
 
 def stream_agent_chat(
     user_id: int,
     message: str,
     session_id: str | None = None,
+    db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     state = SessionState(
         session_id=session_id or str(uuid4()),
@@ -90,6 +98,9 @@ def stream_agent_chat(
             event = final_step.model_dump(mode="json")
             event["session_id"] = final_state.session_id
             yield event
+
+    if db is not None:
+        create_agent_run(db, user_id, message, final_state, build_trace(final_state))
 
     yield {
         "type": "done",

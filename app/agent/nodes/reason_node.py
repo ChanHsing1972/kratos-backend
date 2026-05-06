@@ -67,6 +67,11 @@ class ReasonNode(BaseNode):
         规则：
         - 如果用户在询问“我叫什么”“我的身高是多少”“我的体重是多少”“我最近吃了什么”这类可直接从记忆回答的问题，优先直接用记忆回答，不调用工具。
         - 如果用户要求根据身体状态、训练强度、可用时间、饮食限制制定饮食计划，优先调用 diet_plan_generator。
+        - 如果用户提到急性疼痛、膝盖/腰/肩不适、极度疲劳，必须优先调用 pain_safety_gate，再决定是否替代训练或休息。
+        - 如果用户要求按训练时长安排组数/动作数量，优先调用 calculate_workout_volume。
+        - 如果用户要求计算基础代谢或每日消耗，优先调用 calculate_bmr。
+        - 如果用户要求估算 1RM 或训练重量，优先调用 estimate_1rm。
+        - 如果用户要求估算运动消耗或为了消耗目标热量需要运动多久，优先调用 calculate_calories_burned。
         - 如果用户询问某个城市今天/明天/未来几天的天气，或询问某天气是否适合运动、跑步、健身，优先调用 weather_fitness_advisor。
         - 对天气相关问题，优先把自然语言城市名放入 weather_fitness_advisor 的 city 参数；when 根据“今天/明天”选择 today 或 tomorrow。
         - 如果用户要求规划附近适合的跑步路线、晨跑路线、夜跑路线、5公里/10公里跑步路线，优先调用 running_route_advisor。
@@ -203,6 +208,72 @@ class ReasonNode(BaseNode):
             keyword in user_message
             for keyword in ["训练部位", "身体部位", "锻炼部位", "部位列表", "有哪些部位", "可练部位"]
         )
+        is_safety_request = any(
+            keyword in user_message
+            for keyword in ["疼", "疼痛", "不舒服", "受伤", "疲劳", "极度疲劳", "膝盖", "腰", "肩"]
+        )
+        is_volume_request = any(
+            keyword in user_message
+            for keyword in ["多少组", "几组", "训练量", "分钟", "时间只有", "多久"]
+        )
+        is_calorie_request = any(
+            keyword in user_message
+            for keyword in ["热量", "卡路里", "消耗", "kcal", "千卡"]
+        )
+
+        if is_safety_request and "pain_safety_gate" in available_tools:
+            return {
+                "tool_calls": [
+                    {
+                        "tool_name": "pain_safety_gate",
+                        "args": ReasonNode._repair_tool_args(
+                            "pain_safety_gate",
+                            {},
+                            user_message,
+                            task,
+                        ),
+                        "id": "fallback-safety-gate",
+                    }
+                ],
+                "result": None,
+                "fallback_reason": error_message,
+            }
+
+        if is_volume_request and "calculate_workout_volume" in available_tools:
+            return {
+                "tool_calls": [
+                    {
+                        "tool_name": "calculate_workout_volume",
+                        "args": ReasonNode._repair_tool_args(
+                            "calculate_workout_volume",
+                            {},
+                            user_message,
+                            task,
+                        ),
+                        "id": "fallback-workout-volume",
+                    }
+                ],
+                "result": None,
+                "fallback_reason": error_message,
+            }
+
+        if is_calorie_request and "calculate_calories_burned" in available_tools:
+            return {
+                "tool_calls": [
+                    {
+                        "tool_name": "calculate_calories_burned",
+                        "args": ReasonNode._repair_tool_args(
+                            "calculate_calories_burned",
+                            {},
+                            user_message,
+                            task,
+                        ),
+                        "id": "fallback-calories",
+                    }
+                ],
+                "result": None,
+                "fallback_reason": error_message,
+            }
 
         if is_bodyparts_request and "rapidapi_bodyparts" in available_tools:
             return {
@@ -383,6 +454,83 @@ class ReasonNode(BaseNode):
                     args["route_preference"] = "park_loop"
                 else:
                     args["route_preference"] = "general"
+
+        if tool_name == "pain_safety_gate":
+            if not args.get("user_context"):
+                args["user_context"] = user_message
+            if not args.get("pain_area"):
+                for area in ["膝盖", "膝", "腰", "肩", "手腕", "脚踝", "背", "臀", "腿"]:
+                    if area in user_message:
+                        args["pain_area"] = area
+                        break
+            if args.get("pain_level") is None:
+                level_match = re.search(r"(\d+)\s*(?:分|/10)", user_message)
+                if level_match:
+                    args["pain_level"] = int(level_match.group(1))
+                elif any(word in user_message for word in ["剧痛", "很疼", "特别疼", "急性"]):
+                    args["pain_level"] = 7
+                elif "疼" in user_message or "不舒服" in user_message:
+                    args["pain_level"] = 4
+            if args.get("fatigue_level") is None:
+                if any(word in user_message for word in ["极度疲劳", "非常累", "累炸", "睡眠不足"]):
+                    args["fatigue_level"] = 8
+                elif "疲劳" in user_message or "累" in user_message:
+                    args["fatigue_level"] = 5
+            if not args.get("planned_activity"):
+                args["planned_activity"] = task.description or task.name
+
+        if tool_name == "calculate_workout_volume":
+            if not args.get("time_min"):
+                minute_match = re.search(r"(\d+)\s*分钟", user_message)
+                args["time_min"] = int(minute_match.group(1)) if minute_match else 30
+            if not args.get("exercise_count"):
+                count_match = re.search(r"(\d+)\s*个动作", user_message)
+                args["exercise_count"] = int(count_match.group(1)) if count_match else 3
+
+        if tool_name == "calculate_calories_burned":
+            if not args.get("activity"):
+                if "hiit" in user_message.lower() or "高强度" in user_message:
+                    args["activity"] = "HIIT"
+                elif "划船" in user_message:
+                    args["activity"] = "划船机"
+                elif "椭圆" in user_message:
+                    args["activity"] = "椭圆机"
+                elif "跑" in user_message:
+                    args["activity"] = "跑步"
+                else:
+                    args["activity"] = "中等强度训练"
+            if not args.get("weight_kg"):
+                weight_match = re.search(r"体重(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
+                args["weight_kg"] = float(weight_match.group(1)) if weight_match else 70
+            if not args.get("target_kcal"):
+                kcal_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kcal|千卡|卡路里|大卡)", user_message, re.IGNORECASE)
+                if kcal_match:
+                    args["target_kcal"] = float(kcal_match.group(1))
+            if not args.get("duration_minutes"):
+                duration_match = re.search(r"(\d+)\s*分钟", user_message)
+                if duration_match:
+                    args["duration_minutes"] = float(duration_match.group(1))
+
+        if tool_name == "calculate_bmr":
+            if not args.get("gender"):
+                args["gender"] = "男" if "男" in user_message else "女" if "女" in user_message else "男"
+            if not args.get("weight_kg"):
+                weight_match = re.search(r"体重(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
+                args["weight_kg"] = float(weight_match.group(1)) if weight_match else 70
+            if not args.get("height_cm"):
+                height_match = re.search(r"身高(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:厘米|cm|CM)", user_message)
+                args["height_cm"] = float(height_match.group(1)) if height_match else 175
+            if not args.get("age"):
+                age_match = re.search(r"(\d+)\s*岁", user_message)
+                args["age"] = int(age_match.group(1)) if age_match else 25
+
+        if tool_name == "estimate_1rm":
+            if not args.get("weight_kg"):
+                weight_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
+                args["weight_kg"] = float(weight_match.group(1)) if weight_match else 60
+            if not args.get("reps"):
+                reps_match = re.search(r"(\d+)\s*(?:次|rep|reps)", user_message, re.IGNORECASE)
+                args["reps"] = int(reps_match.group(1)) if reps_match else 5
 
         return args
 

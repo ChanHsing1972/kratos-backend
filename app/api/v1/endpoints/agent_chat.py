@@ -2,7 +2,9 @@ import json
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
+from app.api.deps import get_db
 from app.models.user import User
 from app.schemas.agent_chat import AgentChatRequest, AgentChatResponse
 from app.services.agent_chat import run_agent_chat, stream_agent_chat
@@ -15,12 +17,14 @@ router = APIRouter()
 @router.post("/chat", response_model=AgentChatResponse)
 def chat_with_agent(
     payload: AgentChatRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     state, trace = run_agent_chat(
         user_id=current_user.id,
         message=payload.message,
         session_id=payload.session_id,
+        db=db,
     )
 
     return AgentChatResponse(
@@ -33,6 +37,7 @@ def chat_with_agent(
 @router.post("/chat/stream")
 def stream_chat_with_agent(
     payload: AgentChatRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     def event_generator():
@@ -41,6 +46,7 @@ def stream_chat_with_agent(
                 user_id=current_user.id,
                 message=payload.message,
                 session_id=payload.session_id,
+                db=db,
             ):
                 event_type = str(event.get("type", "message"))
                 data = json.dumps(event, ensure_ascii=False, default=str)

@@ -8,6 +8,13 @@ from .amap_route_tool import (
 )
 from .amap_tool import get_amap_ip_location_tool
 from .diet_plan_tool import get_diet_plan_tool
+from .fitness_calculator_tool import (
+    get_calculate_bmr_tool,
+    get_calculate_calories_burned_tool,
+    get_calculate_workout_volume_tool,
+    get_estimate_1rm_tool,
+    get_pain_safety_gate_tool,
+)
 from .heweather_geo_tool import get_heweather_geo_lookup_tool
 from .heweather_tool import get_heweather_tool
 from .musclewiki_tool import get_musclewiki_tool
@@ -28,6 +35,11 @@ def load_tools():
         get_amap_driving_route_tool(),
         get_amap_bicycling_route_tool(),
         get_running_route_advisor_tool(),
+        get_calculate_bmr_tool(),
+        get_estimate_1rm_tool(),
+        get_calculate_calories_burned_tool(),
+        get_calculate_workout_volume_tool(),
+        get_pain_safety_gate_tool(),
         get_musclewiki_tool(),
         get_rapidapi_bodyparts_tool(),
         get_spoonacular_recipe_search_tool(),

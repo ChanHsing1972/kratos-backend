@@ -45,3 +45,18 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    agent_runs: Mapped[list["AgentRun"]] = relationship(
+        "AgentRun",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    evaluation_datasets: Mapped[list["EvaluationDataset"]] = relationship(
+        "EvaluationDataset",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    evaluation_results: Mapped[list["EvaluationResult"]] = relationship(
+        "EvaluationResult",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
