@@ -6,8 +6,13 @@ from pydantic import BaseModel, Field
 class PhysicalProfile(BaseModel):
     height_cm: float | None = None
     weight_kg: float | None = None
+    target_weight_kg: float | None = None
     age: int | None = None
     body_fat_rate: float | None = None
+    body_fat_percentage: float | None = None
+    skeletal_muscle_mass_kg: float | None = None
+    bmi: float | None = None
+    sleep_hours: float | None = None
     body_condition: str | None = None
 
 
@@ -15,11 +20,18 @@ class LifestyleProfile(BaseModel):
     activity_level: str | None = None
     exercise_intensity: str | None = None
     available_cooking_time_minutes: int | None = None
+    available_days_per_week: int | None = None
+    workout_minutes_per_session: int | None = None
+    equipment_access: str | None = None
+    injury_history: str | None = None
+    medical_conditions: str | None = None
+    preferred_workout_types: str | None = None
     goal: str | None = None
 
 
 class DietaryProfile(BaseModel):
     diet: str | None = None
+    restrictions_text: str | None = None
     intolerances: list[str] = Field(default_factory=list)
     preferred_cuisines: list[str] = Field(default_factory=list)
     disliked_ingredients: list[str] = Field(default_factory=list)
@@ -54,3 +66,4 @@ class MidTermMemory(BaseModel):
 class MemoryState(BaseModel):
     long_term_memory: LongTermMemory = Field(default_factory=LongTermMemory)
     mid_term_memory: MidTermMemory = Field(default_factory=MidTermMemory)
+    database_context: dict[str, Any] = Field(default_factory=dict)

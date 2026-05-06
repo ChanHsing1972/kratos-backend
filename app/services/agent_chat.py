@@ -11,9 +11,15 @@ from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolCall, ToolsState
 from app.agent.tools import load_tools
 from app.core.config import settings
+from app.models.user import User
 from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import create_agent_run
 from app.services.body_data_ingest import ingest_body_data_from_message
+from app.services.fitness_context import (
+    context_for_prompt,
+    hydrate_agent_memory,
+    load_fitness_context,
+)
 
 
 @lru_cache(maxsize=1)
@@ -33,30 +39,17 @@ def run_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
-    persisted_body_data = (
-        ingest_body_data_from_message(db, user_id, message)
-        if db is not None
-        else None
+    state, persisted_updates, context_snapshot = _prepare_agent_state(
+        user_id=user_id,
+        message=message,
+        session_id=session_id,
+        db=db,
     )
-    state = SessionState(
-        session_id=session_id or str(uuid4()),
-        user_id=str(user_id),
-        tools=ToolsState(available_tools=load_tools()),
-    )
-    state.conversation.messages.append(HumanMessage(content=message))
 
     result = get_agent_graph().invoke(state)
     final_state = result if isinstance(result, SessionState) else SessionState(**result)
     trace = build_trace(final_state)
-    if persisted_body_data:
-        trace.insert(
-            0,
-            AgentTraceStep(
-                type="observation",
-                content=f"已写入身体数据：{_format_persisted_body_data(persisted_body_data)}",
-                raw=persisted_body_data,
-            ),
-        )
+    _prepend_context_trace(trace, persisted_updates, context_snapshot)
 
     if db is not None:
         create_agent_run(db, user_id, message, final_state, trace)
@@ -70,27 +63,28 @@ def stream_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
-    persisted_body_data = (
-        ingest_body_data_from_message(db, user_id, message)
-        if db is not None
-        else None
+    state, persisted_updates, context_snapshot = _prepare_agent_state(
+        user_id=user_id,
+        message=message,
+        session_id=session_id,
+        db=db,
     )
-    state = SessionState(
-        session_id=session_id or str(uuid4()),
-        user_id=str(user_id),
-        tools=ToolsState(available_tools=load_tools()),
-    )
-    state.conversation.messages.append(HumanMessage(content=message))
 
     yield {
         "type": "status",
-        "content": "Agent 已开始处理请求",
+        "content": "Agent 已读取数据库上下文，开始处理请求",
         "session_id": state.session_id,
     }
-    if persisted_body_data:
+    if context_snapshot:
         yield {
             "type": "observation",
-            "content": f"已写入身体数据：{_format_persisted_body_data(persisted_body_data)}",
+            "content": f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
+            "session_id": state.session_id,
+        }
+    if persisted_updates:
+        yield {
+            "type": "observation",
+            "content": f"已写入数据库：{_format_persisted_body_data(persisted_updates)}",
             "session_id": state.session_id,
         }
 
@@ -113,10 +107,24 @@ def stream_agent_chat(
             event["session_id"] = final_state.session_id
             yield event
 
-    if final_state.result.response:
+    answer = str(final_state.result.response or "")
+    if answer:
+        yield {
+            "type": "status",
+            "content": "正在组织最终答案",
+            "session_id": final_state.session_id,
+        }
+        for delta in _iter_answer_chunks(answer):
+            yield {
+                "type": "answer_delta",
+                "delta": delta,
+                "content": delta,
+                "session_id": final_state.session_id,
+            }
+
         final_step = AgentTraceStep(
             type="final",
-            content=str(final_state.result.response),
+            content=answer,
             raw=final_state.result.model_dump(mode="json"),
         )
         key = _trace_key(final_step)
@@ -127,22 +135,68 @@ def stream_agent_chat(
 
     if db is not None:
         trace = build_trace(final_state)
-        if persisted_body_data:
-            trace.insert(
-                0,
-                AgentTraceStep(
-                    type="observation",
-                    content=f"已写入身体数据：{_format_persisted_body_data(persisted_body_data)}",
-                    raw=persisted_body_data,
-                ),
-            )
+        _prepend_context_trace(trace, persisted_updates, context_snapshot)
         create_agent_run(db, user_id, message, final_state, trace)
 
     yield {
         "type": "done",
         "session_id": final_state.session_id,
-        "answer": str(final_state.result.response or ""),
+        "answer": answer,
     }
+
+
+def _prepare_agent_state(
+    user_id: int,
+    message: str,
+    session_id: str | None,
+    db: Session | None,
+) -> tuple[SessionState, dict[str, Any] | None, dict[str, Any] | None]:
+    persisted_updates = (
+        ingest_body_data_from_message(db, user_id, message)
+        if db is not None
+        else None
+    )
+    state = SessionState(
+        session_id=session_id or str(uuid4()),
+        user_id=str(user_id),
+        tools=ToolsState(available_tools=load_tools()),
+    )
+
+    context_snapshot = None
+    if db is not None:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is not None:
+            context = load_fitness_context(db, user)
+            hydrate_agent_memory(state, context)
+            context_snapshot = context_for_prompt(context)
+
+    state.conversation.messages.append(HumanMessage(content=message))
+    return state, persisted_updates, context_snapshot
+
+
+def _prepend_context_trace(
+    trace: list[AgentTraceStep],
+    persisted_updates: dict[str, Any] | None,
+    context_snapshot: dict[str, Any] | None,
+) -> None:
+    if context_snapshot:
+        trace.insert(
+            0,
+            AgentTraceStep(
+                type="observation",
+                content=f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
+                raw=context_snapshot,
+            ),
+        )
+    if persisted_updates:
+        trace.insert(
+            1 if context_snapshot else 0,
+            AgentTraceStep(
+                type="observation",
+                content=f"已写入数据库：{_format_persisted_body_data(persisted_updates)}",
+                raw=persisted_updates,
+            ),
+        )
 
 
 def _coerce_session_state(value: Any) -> SessionState:
@@ -272,28 +326,88 @@ def _summarize_value(value: Any) -> str:
 
 def _format_persisted_body_data(data: dict[str, Any]) -> str:
     labels = {
+        "activity_level": "活动水平",
+        "age": "年龄",
         "bmi": "BMI",
         "body_fat_percentage": "体脂率",
         "chest_cm": "胸围",
+        "dietary_habits": "饮食习惯",
+        "dietary_restrictions": "饮食限制",
+        "equipment_access": "可用器械",
         "energy_level": "精力",
+        "experience_level": "训练经验",
+        "fitness_goal": "健身目标",
+        "fitness_summary": "训练状态",
+        "gender": "性别",
+        "height_cm": "身高",
         "hip_cm": "臀围",
+        "injury_history": "伤病史",
+        "location": "地区",
+        "medical_conditions": "医疗情况",
+        "preferred_workout_types": "偏好训练",
         "skeletal_muscle_mass_kg": "骨骼肌",
         "sleep_hours": "睡眠时长",
         "sleep_quality": "睡眠质量",
         "soreness_level": "酸痛",
+        "target_weight_kg": "目标体重",
+        "available_days_per_week": "每周可练",
+        "workout_minutes_per_session": "单次时长",
         "waist_cm": "腰围",
         "weight_kg": "体重",
     }
     units = {
         "body_fat_percentage": "%",
         "chest_cm": "cm",
+        "height_cm": "cm",
         "hip_cm": "cm",
         "skeletal_muscle_mass_kg": "kg",
         "sleep_hours": "h",
+        "target_weight_kg": "kg",
         "waist_cm": "cm",
         "weight_kg": "kg",
     }
-    return "，".join(
-        f"{labels.get(key, key)} {value}{units.get(key, '')}"
-        for key, value in data.items()
-    )
+    section_labels = {
+        "profile": "个人信息",
+        "body_metric": "身体数据",
+        "checkin": "状态打卡",
+    }
+    sections: list[str] = []
+    for section_key, values in data.items():
+        if not isinstance(values, dict):
+            sections.append(f"{labels.get(section_key, section_key)} {values}")
+            continue
+        formatted = "，".join(
+            f"{labels.get(key, key)} {value}{units.get(key, '')}"
+            for key, value in values.items()
+        )
+        if formatted:
+            sections.append(f"{section_labels.get(section_key, section_key)}：{formatted}")
+    return "；".join(sections)
+
+
+def _format_context_snapshot(snapshot: dict[str, Any]) -> str:
+    profile = snapshot.get("profile") or {}
+    metric = snapshot.get("latest_body_metric") or {}
+    onboarding = snapshot.get("onboarding") or {}
+    parts = [
+        f"目标 {profile.get('fitness_goal') or '未设置'}",
+        f"经验 {profile.get('experience_level') or '未设置'}",
+        f"体重 {metric.get('weight_kg') or '未记录'}kg",
+        f"身高 {metric.get('height_cm') or '未记录'}cm",
+    ]
+    if onboarding.get("ready_for_agent") is False:
+        next_steps = onboarding.get("next_steps") or []
+        if next_steps:
+            parts.append(f"待完善 {'；'.join(str(item) for item in next_steps[:2])}")
+    return "，".join(parts)
+
+
+def _iter_answer_chunks(answer: str) -> Iterator[str]:
+    buffer = ""
+    for char in answer:
+        buffer += char
+        if char in "，。；！？\n" or len(buffer) >= 4:
+            yield buffer
+            buffer = ""
+    if buffer:
+        yield buffer

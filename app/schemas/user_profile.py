@@ -8,10 +8,6 @@ class UserProfileBase(BaseModel):
     gender: str | None = Field(default=None, max_length=20)
     age: int | None = Field(default=None, ge=0, le=120)
     location: str | None = Field(default=None, max_length=100)
-    height_cm: float | None = Field(default=None, ge=0, le=300)
-    weight_kg: float | None = Field(default=None, ge=0, le=500)
-    target_weight_kg: float | None = Field(default=None, ge=0, le=500)
-    body_fat_percentage: float | None = Field(default=None, ge=0, le=100)
     fitness_goal: str | None = Field(default=None, max_length=100)
     fitness_summary: str | None = None
     activity_level: str | None = Field(default=None, max_length=50)
@@ -24,7 +20,6 @@ class UserProfileBase(BaseModel):
     preferred_workout_types: str | None = None
     dietary_habits: str | None = None
     dietary_restrictions: str | None = None
-    sleep_hours: float | None = Field(default=None, ge=0, le=24)
 
 
 class UserProfileCreate(UserProfileBase):
@@ -35,10 +30,6 @@ class UserProfileUpdate(BaseModel):
     gender: str | None = Field(default=None, max_length=20)
     age: int | None = Field(default=None, ge=0, le=120)
     location: str | None = Field(default=None, max_length=100)
-    height_cm: float | None = Field(default=None, ge=0, le=300)
-    weight_kg: float | None = Field(default=None, ge=0, le=500)
-    target_weight_kg: float | None = Field(default=None, ge=0, le=500)
-    body_fat_percentage: float | None = Field(default=None, ge=0, le=100)
     fitness_goal: str | None = Field(default=None, max_length=100)
     fitness_summary: str | None = None
     activity_level: str | None = Field(default=None, max_length=50)
@@ -51,7 +42,6 @@ class UserProfileUpdate(BaseModel):
     preferred_workout_types: str | None = None
     dietary_habits: str | None = None
     dietary_restrictions: str | None = None
-    sleep_hours: float | None = Field(default=None, ge=0, le=24)
 
     model_config = ConfigDict(extra="forbid")
 

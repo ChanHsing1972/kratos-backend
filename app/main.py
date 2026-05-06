@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.api.v1 import api_router
 from app.core.config import settings
+from app.db.schema_sync import ensure_runtime_schema
 from app.db.session import Base, SessionLocal, engine
 from app.models import User
 
@@ -15,6 +16,7 @@ from app.models import User
 from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
+ensure_runtime_schema(engine)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

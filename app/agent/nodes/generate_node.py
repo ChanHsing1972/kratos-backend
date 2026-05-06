@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any
 
@@ -29,6 +30,16 @@ class GenerateNode(BaseNode):
                 for task in tasks
             ]
         )
+        memory_context = json.dumps(
+            {
+                "long_term": state.memory.long_term_memory.model_dump(),
+                "mid_term": state.memory.mid_term_memory.model_dump(),
+                "database_context": state.memory.database_context,
+            },
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
 
         prompt = f"""
         你是 Kratos 智能健身 Agent。
@@ -36,6 +47,9 @@ class GenerateNode(BaseNode):
         要求：
         - 中文回答。
         - 具体、可执行，避免空泛建议。
+        - 回答前必须利用已读取的数据库上下文；如果上下文缺关键数据，先指出缺口并给出下一步引导。
+        - 如果用户刚刚更新了个人信息或身体数据，承认已记录，并基于最新数据回答。
+        - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
         - 如果某些工具失败或信息不足，明确说明不确定性。
         - 不要暴露内部任务编号或 JSON。
 
@@ -44,6 +58,9 @@ class GenerateNode(BaseNode):
 
         用户意图:
         {intents}
+
+        已读取数据库上下文:
+        {memory_context}
 
         子任务结果:
         {task_results}

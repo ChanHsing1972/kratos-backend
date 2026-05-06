@@ -8,7 +8,9 @@ from app.schemas.user_profile import (
     UserProfileResponse,
     UserProfileUpdate,
 )
+from app.schemas.fitness_context import FitnessContextResponse
 from app.services.auth import get_current_user
+from app.services.fitness_context import load_fitness_context
 from app.services.user_profile import (
     create_profile_for_user,
     get_profile_by_user_id,
@@ -16,6 +18,14 @@ from app.services.user_profile import (
 )
 
 router = APIRouter()
+
+
+@router.get("/context", response_model=FitnessContextResponse)
+def get_my_fitness_context(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return load_fitness_context(db, current_user)
 
 
 @router.get("/me", response_model=UserProfileResponse)

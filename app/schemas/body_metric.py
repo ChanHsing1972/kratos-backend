@@ -5,13 +5,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class BodyMetricBase(BaseModel):
+    height_cm: float | None = Field(default=None, ge=0, le=300)
     weight_kg: float | None = Field(default=None, ge=0, le=500)
+    target_weight_kg: float | None = Field(default=None, ge=0, le=500)
     body_fat_percentage: float | None = Field(default=None, ge=0, le=100)
     skeletal_muscle_mass_kg: float | None = Field(default=None, ge=0, le=500)
     bmi: float | None = Field(default=None, ge=0, le=100)
     chest_cm: float | None = Field(default=None, ge=0, le=300)
     waist_cm: float | None = Field(default=None, ge=0, le=300)
     hip_cm: float | None = Field(default=None, ge=0, le=300)
+    sleep_hours: float | None = Field(default=None, ge=0, le=24)
     notes: str | None = None
 
 
@@ -20,13 +23,16 @@ class BodyMetricCreate(BodyMetricBase):
 
 
 class BodyMetricUpdate(BaseModel):
+    height_cm: float | None = Field(default=None, ge=0, le=300)
     weight_kg: float | None = Field(default=None, ge=0, le=500)
+    target_weight_kg: float | None = Field(default=None, ge=0, le=500)
     body_fat_percentage: float | None = Field(default=None, ge=0, le=100)
     skeletal_muscle_mass_kg: float | None = Field(default=None, ge=0, le=500)
     bmi: float | None = Field(default=None, ge=0, le=100)
     chest_cm: float | None = Field(default=None, ge=0, le=300)
     waist_cm: float | None = Field(default=None, ge=0, le=300)
     hip_cm: float | None = Field(default=None, ge=0, le=300)
+    sleep_hours: float | None = Field(default=None, ge=0, le=24)
     notes: str | None = None
 
     model_config = ConfigDict(extra="forbid")

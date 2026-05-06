@@ -190,6 +190,7 @@ class ReasonNode(BaseNode):
             "dietary_profile": long_term.dietary_profile.model_dump(),
             "daily_diet": state.memory.mid_term_memory.daily_diet,
             "training_feedbacks": state.memory.mid_term_memory.training_feedbacks,
+            "database_context": state.memory.database_context,
         }
 
     @staticmethod
@@ -320,6 +321,7 @@ class ReasonNode(BaseNode):
                 "height_cm": long_term.physical_profile.height_cm,
                 "weight_kg": long_term.physical_profile.weight_kg,
                 "age": long_term.physical_profile.age,
+                "body_fat_rate": long_term.physical_profile.body_fat_rate,
                 "body_condition": long_term.physical_profile.body_condition,
                 "goal": state.reasoning.extracted_info.get("profile", {}).get("goal")
                 or long_term.lifestyle_profile.goal
@@ -328,6 +330,7 @@ class ReasonNode(BaseNode):
                 "exercise_intensity": long_term.lifestyle_profile.exercise_intensity,
                 "available_cooking_time_minutes": long_term.lifestyle_profile.available_cooking_time_minutes,
                 "diet": long_term.dietary_profile.diet,
+                "dietary_restrictions": long_term.dietary_profile.restrictions_text,
                 "intolerances": long_term.dietary_profile.intolerances,
                 "preferred_cuisines": long_term.dietary_profile.preferred_cuisines,
                 "preferred_ingredients": long_term.dietary_profile.preferred_ingredients,
@@ -558,6 +561,16 @@ class ReasonNode(BaseNode):
         if any(keyword in user_message for keyword in ["体重是多少", "我多重", "多少公斤", "记得我体重", "记录的体重"]):
             if physical.weight_kg is not None:
                 return f"你之前记录的体重是{physical.weight_kg}公斤。"
+            return None
+
+        if any(keyword in user_message for keyword in ["体脂", "体脂率"]):
+            if physical.body_fat_percentage is not None:
+                return f"你最近记录的体脂率是{physical.body_fat_percentage}%。"
+            return None
+
+        if any(keyword in user_message for keyword in ["睡眠", "睡多久", "睡了多久"]):
+            if physical.sleep_hours is not None:
+                return f"你最近记录的睡眠时长是{physical.sleep_hours}小时。"
             return None
 
         if any(keyword in user_message for keyword in ["我最近吃了什么", "我今天吃了什么", "我的饮食记录"]):
