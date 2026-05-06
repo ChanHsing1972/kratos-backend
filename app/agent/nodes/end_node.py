@@ -28,6 +28,6 @@ class EndNode(BaseNode):
         state.reasoning.reflection = None
         state.reasoning.errors = []
         state.tools.history = []
-        state.result.first_response = None
+        state.result.reset_runtime_for_new_turn()
 
         return state

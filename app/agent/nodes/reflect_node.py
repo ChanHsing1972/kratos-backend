@@ -38,13 +38,15 @@ class ReflectNode(BaseNode):
 
         data = self.invoke_json(prompt)
         is_pass = bool(data.get("is_pass", data.get("is_PASS", True)))
-        suggestions = data.get("suggestions") or []
+        suggestions = [str(item) for item in (data.get("suggestions") or []) if str(item).strip()]
 
         state.reasoning.reflection = {
             "is_pass": is_pass,
             "suggestions": suggestions,
         }
         state.result.reflection_suggestions = suggestions
+        state.result.final_answer_ready = bool(response) and is_pass
+        state.result.touch()
 
         state.reasoning.need_replan = (
             not is_pass and state.reasoning.replan_count < state.reasoning.max_replans
