@@ -106,7 +106,11 @@ def test_running_route_advisor_caps_external_calls():
                 "ok": True,
                 "data": {
                     "pois": [
-                        {"name": f"公园{i}", "location": f"120.70{i},31.30{i}", "type": "公园"}
+                        {
+                            "name": f"公园{i}",
+                            "location": f"120.70{i},31.30{i}",
+                            "type": "公园",
+                        }
                         for i in range(10)
                     ]
                 },
@@ -123,9 +127,30 @@ def test_running_route_advisor_caps_external_calls():
     )
     tool.walking_tool = CountingTool(
         [
-            {"ok": True, "data": {"route": {"paths": [{"distance": "1500", "duration": "900", "steps": []}]}}},
-            {"ok": True, "data": {"route": {"paths": [{"distance": "2200", "duration": "1200", "steps": []}]}}},
-            {"ok": True, "data": {"route": {"paths": [{"distance": "2800", "duration": "1500", "steps": []}]}}},
+            {
+                "ok": True,
+                "data": {
+                    "route": {
+                        "paths": [{"distance": "1500", "duration": "900", "steps": []}]
+                    }
+                },
+            },
+            {
+                "ok": True,
+                "data": {
+                    "route": {
+                        "paths": [{"distance": "2200", "duration": "1200", "steps": []}]
+                    }
+                },
+            },
+            {
+                "ok": True,
+                "data": {
+                    "route": {
+                        "paths": [{"distance": "2800", "duration": "1500", "steps": []}]
+                    }
+                },
+            },
         ]
     )
 
@@ -147,20 +172,14 @@ def test_intent_and_plan_nodes_fill_reasoning_state():
     state = SessionState(session_id="s1", user_id="u1")
     state.conversation.messages.append(HumanMessage(content="帮我安排增肌训练"))
 
-    IntentNode(FakeLLM(['{"intent": ["健身"]}']))(state)
-    PlanNode(
-        FakeLLM(
-            [
-                """
+    IntentNode(FakeLLM(['{"intent": ["健身计划"]}']))(state)
+    PlanNode(FakeLLM(["""
                 {
                     "tasks": [
                         {"task_id": 0, "name": "制定训练", "description": "安排增肌训练"}
                     ]
                 }
-                """
-            ]
-        )
-    )(state)
+                """]))(state)
 
     assert state.reasoning.intent == ["健身计划"]
     assert state.reasoning.tasks[0].name == "制定训练"
@@ -219,20 +238,14 @@ def test_reason_repairs_empty_tavily_search_args():
         )
     ]
 
-    ReasonNode(
-        FakeLLM(
-            [
-                """
+    ReasonNode(FakeLLM(["""
                 {
                     "tool_calls": [
                         {"tool_name": "tavily_search", "args": {}, "id": "call-1"}
                     ],
                     "result": null
                 }
-                """
-            ]
-        )
-    )(state)
+                """]))(state)
 
     call = state.reasoning.tasks[0].tool_calls[0]
     assert call.name == "tavily_search"
@@ -244,7 +257,9 @@ def test_reflect_marks_replan_once():
     state.conversation.messages.append(HumanMessage(content="给我训练计划"))
     state.result.response = "太短"
 
-    ReflectNode(FakeLLM(['{"is_pass": false, "suggestions": ["补充动作和组数"]}']))(state)
+    ReflectNode(FakeLLM(['{"is_pass": false, "suggestions": ["补充动作和组数"]}']))(
+        state
+    )
 
     assert state.reasoning.need_replan is True
     assert state.reasoning.replan_count == 1
@@ -266,7 +281,11 @@ def test_generate_populates_result_state_summary():
                 "tool": "diet_plan_generator",
                 "diet_plan": {
                     "profile_summary": {"goal": "增肌", "weight_kg": 70},
-                    "nutrition_targets": {"daily_protein_g": 126, "calories_per_meal": 650, "hydration_liters": 2.5},
+                    "nutrition_targets": {
+                        "daily_protein_g": 126,
+                        "calories_per_meal": 650,
+                        "hydration_liters": 2.5,
+                    },
                     "meals": [
                         {
                             "meal_type": "breakfast",
@@ -290,7 +309,12 @@ def test_generate_populates_result_state_summary():
                 },
             },
         ),
-        Task(task_id=1, name="制定训练计划", description="安排上肢训练", result="卧推 4 组，每组 8 次\n杠铃划船 4 组，每组 10 次\n注意热身和肩部稳定"),
+        Task(
+            task_id=1,
+            name="制定训练计划",
+            description="安排上肢训练",
+            result="卧推 4 组，每组 8 次\n杠铃划船 4 组，每组 10 次\n注意热身和肩部稳定",
+        ),
     ]
 
     GenerateNode(FakeLLM(["这是你的训练和饮食建议。"]))(state)
