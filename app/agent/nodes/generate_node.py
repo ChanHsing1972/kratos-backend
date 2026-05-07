@@ -2,6 +2,8 @@ import json
 import re
 from typing import Any
 
+from langchain_core.messages import AIMessage
+
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.result import (
     DietNutritionTargets,
@@ -20,6 +22,26 @@ from app.agent.state.session_state import SessionState
 class GenerateNode(BaseNode):
 
     def __call__(self, state: SessionState):
+        prompt = self.build_prompt(state)
+        response = self.llm.invoke(prompt)
+        response_text = self.message_text(response)
+        self.apply_response(state, response, response_text)
+        return state
+
+    def stream_response(self, state: SessionState):
+        prompt = self.build_prompt(state)
+        response_text = ""
+
+        for chunk in self.llm.stream(prompt):
+            delta = self.message_text(chunk)
+            if not delta:
+                continue
+            response_text += delta
+            yield delta
+
+        self.apply_response(state, AIMessage(content=response_text), response_text)
+
+    def build_prompt(self, state: SessionState) -> str:
         user_message = self.latest_user_text(state)
         tasks = state.reasoning.tasks
         intents = state.reasoning.intent
@@ -41,7 +63,7 @@ class GenerateNode(BaseNode):
             indent=2,
         )
 
-        prompt = f"""
+        return f"""
         你是 Kratos 智能健身 Agent。
         请根据用户问题、识别意图和所有子任务结果生成最终回复。
         要求：
@@ -65,8 +87,14 @@ class GenerateNode(BaseNode):
         子任务结果:
         {task_results}
         """
-        response = self.llm.invoke(prompt)
-        response_text = self.message_text(response)
+
+    def apply_response(
+        self,
+        state: SessionState,
+        response: Any,
+        response_text: str,
+    ) -> None:
+        tasks = state.reasoning.tasks
         state.result.response = response_text
         state.result.task_results = [
             {

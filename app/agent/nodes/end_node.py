@@ -24,10 +24,6 @@ class EndNode(BaseNode):
 
         state.conversation.messages.clear()
         state.conversation.first_ai_message = None
-        state.reasoning.reset_tasks()
-        state.reasoning.reflection = None
-        state.reasoning.errors = []
-        state.tools.history = []
         state.result.reset_runtime_for_new_turn()
 
         return state

@@ -7,6 +7,15 @@ from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
 from app.agent.graph import build_graph
+from app.agent.nodes.act_node import ActNode
+from app.agent.nodes.end_node import EndNode
+from app.agent.nodes.finish_node import FinishNode
+from app.agent.nodes.generate_node import GenerateNode
+from app.agent.nodes.intent_node import IntentNode
+from app.agent.nodes.plan_node import PlanNode
+from app.agent.nodes.reason_node import ReasonNode
+from app.agent.nodes.reflect_node import ReflectNode
+from app.agent.state.reasoning import TaskStatus
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolCall, ToolsState
 from app.agent.tools import load_tools
@@ -23,14 +32,33 @@ from app.services.fitness_context import (
 
 
 @lru_cache(maxsize=1)
-def get_agent_graph():
-    llm = ChatOpenAI(
+def get_agent_llm():
+    return ChatOpenAI(
         api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
         base_url=settings.AGENT_LLM_BASE_URL,
         model=settings.AGENT_LLM_MODEL,
         temperature=settings.AGENT_LLM_TEMPERATURE,
     )
-    return build_graph(llm)
+
+
+@lru_cache(maxsize=1)
+def get_agent_graph():
+    return build_graph(get_agent_llm())
+
+
+@lru_cache(maxsize=1)
+def get_stream_agent_nodes():
+    llm = get_agent_llm()
+    return {
+        "intent": IntentNode(llm),
+        "plan": PlanNode(llm),
+        "reason": ReasonNode(llm),
+        "act": ActNode(llm),
+        "finish": FinishNode(llm),
+        "generate": GenerateNode(llm),
+        "reflect": ReflectNode(llm),
+        "end": EndNode(),
+    }
 
 
 def run_agent_chat(
@@ -91,47 +119,10 @@ def stream_agent_chat(
     emitted_keys: set[tuple[str, str]] = set()
     final_state = state
 
-    for chunk in get_agent_graph().stream(state, stream_mode="values"):
-        final_state = _coerce_session_state(chunk)
-        include_final = bool(
-            final_state.result.response and final_state.reasoning.reflection is not None
-        )
-
-        for step in build_trace(final_state, include_final=include_final):
-            key = _trace_key(step)
-            if key in emitted_keys:
-                continue
-            emitted_keys.add(key)
-
-            event = step.model_dump(mode="json")
-            event["session_id"] = final_state.session_id
-            yield event
+    for event in _run_streaming_agent(final_state, emitted_keys):
+        yield event
 
     answer = str(final_state.result.response or "")
-    if answer:
-        yield {
-            "type": "status",
-            "content": "正在组织最终答案",
-            "session_id": final_state.session_id,
-        }
-        for delta in _iter_answer_chunks(answer):
-            yield {
-                "type": "answer_delta",
-                "delta": delta,
-                "content": delta,
-                "session_id": final_state.session_id,
-            }
-
-        final_step = AgentTraceStep(
-            type="final",
-            content=answer,
-            raw=final_state.result.model_dump(mode="json"),
-        )
-        key = _trace_key(final_step)
-        if key not in emitted_keys:
-            event = final_step.model_dump(mode="json")
-            event["session_id"] = final_state.session_id
-            yield event
 
     if db is not None:
         trace = build_trace(final_state)
@@ -143,6 +134,96 @@ def stream_agent_chat(
         "session_id": final_state.session_id,
         "answer": answer,
     }
+
+
+def _run_streaming_agent(
+    state: SessionState,
+    emitted_keys: set[tuple[str, str]],
+) -> Iterator[dict[str, Any]]:
+    nodes = get_stream_agent_nodes()
+    final_generated = False
+
+    state = nodes["intent"](state)
+    yield from _emit_new_trace(state, emitted_keys, include_final=False)
+    state = nodes["plan"](state)
+    yield from _emit_new_trace(state, emitted_keys, include_final=False)
+
+    while state.reasoning.replan_count <= state.reasoning.max_replans:
+        while True:
+            state = nodes["reason"](state)
+            yield from _emit_new_trace(state, emitted_keys, include_final=False)
+
+            task = state.reasoning.current_task()
+            if task is None:
+                break
+
+            if task.status == TaskStatus.waiting_for_tool:
+                state = nodes["act"](state)
+                yield from _emit_new_trace(state, emitted_keys, include_final=False)
+                continue
+
+            state = nodes["finish"](state)
+            yield from _emit_new_trace(state, emitted_keys, include_final=False)
+
+        yield {
+            "type": "status",
+            "content": "正在组织最终答案",
+            "session_id": state.session_id,
+        }
+        state.result.response = ""
+        for delta in nodes["generate"].stream_response(state):
+            yield {
+                "type": "answer_delta",
+                "delta": delta,
+                "content": delta,
+                "session_id": state.session_id,
+            }
+        final_generated = True
+
+        state = nodes["reflect"](state)
+        yield from _emit_new_trace(state, emitted_keys, include_final=False)
+        if not state.reasoning.need_replan:
+            break
+
+        yield {
+            "type": "status",
+            "content": "反思发现需要补充推理，正在重新规划",
+            "session_id": state.session_id,
+        }
+        state = nodes["plan"](state)
+        yield from _emit_new_trace(state, emitted_keys, include_final=False)
+
+    if final_generated:
+        answer = str(state.result.response or "")
+        final_step = AgentTraceStep(
+            type="final",
+            content=answer,
+            raw=state.result.model_dump(mode="json"),
+        )
+        key = _trace_key(final_step)
+        if key not in emitted_keys:
+            emitted_keys.add(key)
+            event = final_step.model_dump(mode="json")
+            event["session_id"] = state.session_id
+            yield event
+
+    nodes["end"](state)
+
+
+def _emit_new_trace(
+    state: SessionState,
+    emitted_keys: set[tuple[str, str]],
+    include_final: bool,
+) -> Iterator[dict[str, Any]]:
+    for step in build_trace(state, include_final=include_final):
+        key = _trace_key(step)
+        if key in emitted_keys:
+            continue
+        emitted_keys.add(key)
+
+        event = step.model_dump(mode="json")
+        event["session_id"] = state.session_id
+        yield event
 
 
 def _prepare_agent_state(
