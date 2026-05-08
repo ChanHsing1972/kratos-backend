@@ -271,6 +271,10 @@ class GenerateNode(BaseNode):
                 continue
             sets_match = re.search(r"(\d+)\s*组", line)
             reps_match = re.search(r"每组\s*(\d+\s*(?:次|分钟))|(\d+\s*(?:次|分钟))", line)
+            if not sets_match and not reps_match:
+                continue
+            if GenerateNode._is_guidance_line(line):
+                continue
             name = re.split(r"[:：,，]\s*", line, maxsplit=1)[0].strip()
             if not name:
                 continue
@@ -286,6 +290,30 @@ class GenerateNode(BaseNode):
                 )
             )
         return exercises
+
+    @staticmethod
+    def _is_guidance_line(line: str) -> bool:
+        guidance_keywords = [
+            "冷身",
+            "拉伸",
+            "注意事项",
+            "注意",
+            "避免",
+            "疼痛",
+            "刺痛",
+            "头晕",
+            "不适",
+            "补充蛋白",
+            "补充水分",
+            "睡眠",
+            "恢复",
+            "风险",
+            "如有",
+            "如果",
+            "立即停止",
+            "呼吸均匀",
+        ]
+        return any(keyword in line for keyword in guidance_keywords)
 
     @staticmethod
     def _to_int(value: Any) -> int | None:
