@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     AGENT_LLM_MODEL: str = "qwen-turbo"
     AGENT_LLM_API_KEY: str | None = None
     AGENT_LLM_TEMPERATURE: float = 0.5
+    AGENT_CHAT_RATE_LIMIT_COUNT: int = 8
+    AGENT_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
     TAVILY_API_KEY: str | None = None
 
     MUSCLEWIKI_API_BASE_URL: str = "https://api.musclewiki.com"

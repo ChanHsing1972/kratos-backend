@@ -9,6 +9,7 @@ from app.models.user import User
 from app.schemas.agent_chat import AgentChatRequest, AgentChatResponse
 from app.services.agent_chat import run_agent_chat, stream_agent_chat
 from app.services.auth import get_current_user
+from app.services.rate_limit import check_agent_chat_rate_limit
 
 
 router = APIRouter()
@@ -20,6 +21,7 @@ def chat_with_agent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    check_agent_chat_rate_limit(current_user.id)
     state, trace = run_agent_chat(
         user_id=current_user.id,
         message=payload.message,
@@ -40,6 +42,7 @@ def stream_chat_with_agent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    check_agent_chat_rate_limit(current_user.id)
     def event_generator():
         try:
             for event in stream_agent_chat(
