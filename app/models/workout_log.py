@@ -24,6 +24,7 @@ class WorkoutLog(Base):
     workout_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     title: Mapped[str | None] = mapped_column(String(120), nullable=True)
     duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     perceived_exertion: Mapped[int | None] = mapped_column(Integer, nullable=True)
     calories_burned: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

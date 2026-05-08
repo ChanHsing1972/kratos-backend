@@ -10,6 +10,7 @@ class WorkoutLogBase(BaseModel):
     workout_type: str | None = Field(default=None, max_length=50)
     title: str | None = Field(default=None, max_length=120)
     duration_minutes: int | None = Field(default=None, ge=0, le=1440)
+    duration_seconds: int | None = Field(default=None, ge=0, le=86400)
     perceived_exertion: int | None = Field(default=None, ge=1, le=10)
     calories_burned: int | None = Field(default=None, ge=0)
     completed: bool = False
@@ -26,6 +27,7 @@ class WorkoutLogUpdate(BaseModel):
     workout_type: str | None = Field(default=None, max_length=50)
     title: str | None = Field(default=None, max_length=120)
     duration_minutes: int | None = Field(default=None, ge=0, le=1440)
+    duration_seconds: int | None = Field(default=None, ge=0, le=86400)
     perceived_exertion: int | None = Field(default=None, ge=1, le=10)
     calories_burned: int | None = Field(default=None, ge=0)
     completed: bool | None = None

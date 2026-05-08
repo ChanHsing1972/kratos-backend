@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.models.user import User
 from app.schemas.training_plan import (
+    TrainingPlanAdjustmentRequest,
+    TrainingPlanAdjustmentResponse,
     TrainingPlanCreate,
     TrainingPlanResponse,
     TrainingPlanUpdate,
@@ -14,6 +16,7 @@ from app.services.training_plan import (
     delete_training_plan,
     get_training_plan_by_id,
     get_training_plans_by_user_id,
+    propose_training_plan_adjustment,
     update_training_plan,
 )
 
@@ -47,6 +50,30 @@ def create_plan(
     current_user: User = Depends(get_current_user),
 ):
     return create_training_plan(db, current_user, plan_in)
+
+
+@router.post(
+    "/{plan_id}/adjustment-preview",
+    response_model=TrainingPlanAdjustmentResponse,
+    response_model_exclude_none=True,
+)
+def preview_plan_adjustment(
+    plan_id: int,
+    adjustment_in: TrainingPlanAdjustmentRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    plan = get_training_plan_by_id(db, plan_id, current_user.id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="训练计划不存在")
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        adjustment_in.feedback,
+        completed=adjustment_in.completed,
+        workout_title=adjustment_in.workout_title,
+        duration_seconds=adjustment_in.duration_seconds,
+    )
+    return TrainingPlanAdjustmentResponse(proposal=proposal, rationale=rationale)
 
 
 @router.put("/{plan_id}", response_model=TrainingPlanResponse)

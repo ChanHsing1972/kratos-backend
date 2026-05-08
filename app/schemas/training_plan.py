@@ -34,7 +34,11 @@ class TrainingPlanUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     def to_update_dict(self) -> dict[str, Any]:
-        return self.model_dump(exclude_unset=True)
+        data = self.model_dump(exclude_unset=True)
+        for required_field in ("title", "status"):
+            if data.get(required_field) is None:
+                data.pop(required_field, None)
+        return data
 
 
 class TrainingPlanResponse(TrainingPlanBase):
@@ -44,3 +48,15 @@ class TrainingPlanResponse(TrainingPlanBase):
     user_id: int
     created_at: datetime
     updated_at: datetime
+
+
+class TrainingPlanAdjustmentRequest(BaseModel):
+    feedback: str = Field(min_length=1, max_length=1000)
+    workout_title: str | None = Field(default=None, max_length=120)
+    completed: bool | None = None
+    duration_seconds: int | None = Field(default=None, ge=0, le=86400)
+
+
+class TrainingPlanAdjustmentResponse(BaseModel):
+    proposal: TrainingPlanUpdate
+    rationale: list[str]
