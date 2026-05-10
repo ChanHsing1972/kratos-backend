@@ -191,6 +191,8 @@ class ReasonNode(BaseNode):
             "daily_diet": state.memory.mid_term_memory.daily_diet,
             "training_feedbacks": state.memory.mid_term_memory.training_feedbacks,
             "database_context": state.memory.database_context,
+            "turn_summaries": [item.model_dump() for item in state.memory.turn_summaries],
+            "conversation_summaries": state.conversation.summaries,
         }
 
     @staticmethod

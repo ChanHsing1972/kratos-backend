@@ -23,7 +23,7 @@ def build_graph(llm):
     builder.add_node("finish", FinishNode(llm))
     builder.add_node("generate", GenerateNode(llm))
     builder.add_node("reflect", ReflectNode(llm))
-    builder.add_node("end", EndNode())
+    builder.add_node("end", EndNode(llm))
 
     builder.set_entry_point("intent")
 
