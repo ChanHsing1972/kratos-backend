@@ -46,3 +46,13 @@ class RagasExportResponse(BaseModel):
     format: Literal["ragas"]
     count: int
     samples: list[RagasSample]
+
+
+class RagasLocalExportResponse(BaseModel):
+    format: Literal["ragas"]
+    count: int
+    file_name: str
+    file_path: str
+    exported_at: datetime
+    session_id: str
+    run_id: int

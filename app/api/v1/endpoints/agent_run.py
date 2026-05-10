@@ -3,9 +3,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.models.user import User
-from app.schemas.agent_run import AgentRunResponse, RagasExportResponse
+from app.schemas.agent_run import AgentRunResponse, RagasExportResponse, RagasLocalExportResponse
 from app.services.agent_run import (
     build_ragas_samples,
+    export_single_run_to_local_ragas_json,
     get_agent_run_by_id,
     get_agent_runs_by_user_id,
 )
@@ -56,3 +57,22 @@ def export_ragas_dataset(
     )
     samples = build_ragas_samples(runs)
     return RagasExportResponse(format="ragas", count=len(samples), samples=samples)
+
+
+@router.get("/runs/{run_id}/export/ragas", response_model=RagasLocalExportResponse)
+def export_single_run_ragas_dataset(
+    run_id: int,
+    file_name: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        export_result = export_single_run_to_local_ragas_json(
+            db=db,
+            user_id=current_user.id,
+            run_id=run_id,
+            file_name=file_name,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Agent 运行记录不存在")
+    return RagasLocalExportResponse(**export_result)

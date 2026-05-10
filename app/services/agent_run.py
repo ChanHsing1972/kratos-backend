@@ -1,4 +1,7 @@
 from typing import Any
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, selectinload
@@ -100,3 +103,49 @@ def build_ragas_samples(runs: list[AgentRun]) -> list[dict[str, Any]]:
             }
         )
     return samples
+
+
+def export_single_run_to_local_ragas_json(
+    db: Session,
+    user_id: int,
+    run_id: int,
+    export_dir: str | None = None,
+    file_name: str | None = None,
+) -> dict[str, Any]:
+    run = get_agent_run_by_id(db, run_id, user_id)
+    if run is None:
+        raise ValueError("Agent run not found")
+
+    samples = build_ragas_samples([run])
+    exported_at = datetime.now(timezone.utc)
+
+    payload = {
+        "format": "ragas",
+        "count": len(samples),
+        "exported_at": exported_at.isoformat(),
+        "session_id": run.session_id,
+        "run_id": run.id,
+        "samples": samples,
+    }
+
+    target_dir = Path(export_dir) if export_dir else Path(__file__).resolve().parents[2] / "exports"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_name = file_name or (
+        f"ragas_export_user_{user_id}_run_{run_id}_{exported_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    )
+    file_path = target_dir / resolved_name
+    file_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    return {
+        "format": "ragas",
+        "count": len(samples),
+        "file_name": resolved_name,
+        "file_path": str(file_path),
+        "exported_at": exported_at,
+        "session_id": run.session_id,
+        "run_id": run.id,
+    }

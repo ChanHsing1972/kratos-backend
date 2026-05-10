@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,3 +45,12 @@ class WorkoutLogResponse(WorkoutLogBase):
     id: int
     user_id: int
     created_at: datetime
+
+
+class WorkoutLogConversationExportResponse(BaseModel):
+    format: Literal["ragas"]
+    count: int
+    file_name: str
+    file_path: str
+    exported_at: datetime
+    session_id: str | None = None
