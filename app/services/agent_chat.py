@@ -16,13 +16,14 @@ from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import TaskStatus
+from app.agent.state.memory import MemoryState
 from app.agent.state.session_state import ActiveSkill, SessionState
 from app.agent.state.tools import ToolCall, ToolsState
 from app.agent.tools import load_tools
 from app.core.config import settings
 from app.models.user import User
 from app.schemas.agent_chat import AgentTraceStep
-from app.services.agent_run import create_agent_run
+from app.services.agent_run import create_agent_run, get_latest_agent_memory_payload
 from app.services.body_data_ingest import ingest_body_data_from_message
 from app.services.fitness_context import (
     context_for_prompt,
@@ -284,6 +285,11 @@ def _prepare_agent_state(
 
     context_snapshot = None
     if db is not None:
+        if session_id:
+            memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
+            if memory_payload:
+                state.memory = MemoryState.model_validate(memory_payload)
+
         user = db.query(User).filter(User.id == user_id).first()
         if user is not None:
             context = load_fitness_context(db, user)

@@ -29,6 +29,7 @@ class AgentRunResponse(BaseModel):
     task_results: Any | None = None
     tool_results: Any | None = None
     reflection: Any | None = None
+    memory_payload: Any | None = None
     result_payload: Any | None = None
     created_at: datetime
     trace_steps: list[AgentTraceStepStored] = []

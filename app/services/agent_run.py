@@ -29,6 +29,7 @@ def create_agent_run(
         task_results=jsonable_encoder(state.result.task_results),
         tool_results=jsonable_encoder(state.result.tool_results),
         reflection=jsonable_encoder(state.reasoning.reflection),
+        memory_payload=jsonable_encoder(state.memory.model_dump(mode="json")),
         result_payload=jsonable_encoder(state.result.model_dump(mode="json")),
     )
     db.add(run)
@@ -78,6 +79,26 @@ def get_agent_runs_by_user_id(
     return query.order_by(AgentRun.created_at.desc(), AgentRun.id.desc()).limit(limit).all()
 
 
+def get_latest_agent_memory_payload(
+    db: Session,
+    user_id: int,
+    session_id: str,
+) -> dict[str, Any] | None:
+    run = (
+        db.query(AgentRun)
+        .filter(
+            AgentRun.user_id == user_id,
+            AgentRun.session_id == session_id,
+            AgentRun.memory_payload.isnot(None),
+        )
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .first()
+    )
+    if run is None or not isinstance(run.memory_payload, dict):
+        return None
+    return run.memory_payload
+
+
 def build_ragas_samples(runs: list[AgentRun]) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     for run in runs:
@@ -99,6 +120,7 @@ def build_ragas_samples(runs: list[AgentRun]) -> list[dict[str, Any]]:
                     "intent": run.intent,
                     "tool_results": run.tool_results,
                     "reflection": run.reflection,
+                    "memory": run.memory_payload,
                 },
             }
         )

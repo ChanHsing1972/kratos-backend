@@ -12,6 +12,10 @@ WORKOUT_LOG_COLUMN_DDL = {
     "duration_seconds": "INTEGER",
 }
 
+AGENT_RUN_COLUMN_DDL = {
+    "memory_payload": "JSON",
+}
+
 
 def ensure_runtime_schema(engine: Engine) -> None:
     """Add nullable columns introduced after the course prototype shipped.
@@ -43,6 +47,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
         missing_columns.extend(
             ("workout_logs", name, ddl)
             for name, ddl in WORKOUT_LOG_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "agent_runs" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("agent_runs")
+        }
+        missing_columns.extend(
+            ("agent_runs", name, ddl)
+            for name, ddl in AGENT_RUN_COLUMN_DDL.items()
             if name not in existing_columns
         )
 

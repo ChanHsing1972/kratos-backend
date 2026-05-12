@@ -24,6 +24,7 @@ class AgentRun(Base):
     task_results: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     tool_results: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     reflection: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    memory_payload: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     result_payload: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
