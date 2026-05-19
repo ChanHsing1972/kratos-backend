@@ -50,3 +50,13 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    owned_skills: Mapped[list["Skill"]] = relationship(
+        "Skill",
+        back_populates="owner",
+        cascade="all, delete-orphan",
+    )
+    skill_bindings: Mapped[list["UserSkill"]] = relationship(
+        "UserSkill",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

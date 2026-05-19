@@ -16,7 +16,7 @@ from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import TaskStatus
-from app.agent.state.session_state import SessionState
+from app.agent.state.session_state import ActiveSkill, SessionState
 from app.agent.state.tools import ToolCall, ToolsState
 from app.agent.tools import load_tools
 from app.core.config import settings
@@ -28,6 +28,12 @@ from app.services.fitness_context import (
     context_for_prompt,
     hydrate_agent_memory,
     load_fitness_context,
+)
+from app.services.skill import (
+    allowed_tool_names,
+    get_enabled_skills_for_user,
+    normalize_tool_names,
+    skill_to_prompt_payload,
 )
 
 
@@ -67,7 +73,7 @@ def run_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
-    state, persisted_updates, context_snapshot = _prepare_agent_state(
+    state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
         user_id=user_id,
         message=message,
         session_id=session_id,
@@ -77,7 +83,7 @@ def run_agent_chat(
     result = get_agent_graph().invoke(state)
     final_state = result if isinstance(result, SessionState) else SessionState(**result)
     trace = build_trace(final_state)
-    _prepend_context_trace(trace, persisted_updates, context_snapshot)
+    _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
 
     if db is not None:
         create_agent_run(db, user_id, message, final_state, trace)
@@ -91,7 +97,7 @@ def stream_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
-    state, persisted_updates, context_snapshot = _prepare_agent_state(
+    state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
         user_id=user_id,
         message=message,
         session_id=session_id,
@@ -107,6 +113,12 @@ def stream_agent_chat(
         yield {
             "type": "observation",
             "content": f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
+            "session_id": state.session_id,
+        }
+    if skill_snapshot:
+        yield {
+            "type": "observation",
+            "content": f"已启用 Skill：{_format_skill_snapshot(skill_snapshot)}",
             "session_id": state.session_id,
         }
     if persisted_updates:
@@ -126,7 +138,7 @@ def stream_agent_chat(
 
     if db is not None:
         trace = build_trace(final_state)
-        _prepend_context_trace(trace, persisted_updates, context_snapshot)
+        _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
         create_agent_run(db, user_id, message, final_state, trace)
 
     yield {
@@ -231,16 +243,43 @@ def _prepare_agent_state(
     message: str,
     session_id: str | None,
     db: Session | None,
-) -> tuple[SessionState, dict[str, Any] | None, dict[str, Any] | None]:
+) -> tuple[SessionState, dict[str, Any] | None, dict[str, Any] | None, list[dict[str, Any]]]:
     persisted_updates = (
         ingest_body_data_from_message(db, user_id, message)
         if db is not None
         else None
     )
+    tools = load_tools()
+    active_skill_models = []
+    skill_snapshot: list[dict[str, Any]] = []
+    if db is not None:
+        active_skill_models = get_enabled_skills_for_user(db, user_id)
+        allowed_tools = allowed_tool_names(active_skill_models)
+        if allowed_tools:
+            scoped_tools = {
+                name: tool
+                for name, tool in tools.items()
+                if name in allowed_tools
+            }
+            if scoped_tools:
+                tools = scoped_tools
+        skill_snapshot = [
+            {
+                "id": skill.id,
+                "name": skill.name,
+                "available_tools": normalize_tool_names(skill.available_tools),
+            }
+            for skill in active_skill_models
+        ]
+
     state = SessionState(
         session_id=session_id or str(uuid4()),
         user_id=str(user_id),
-        tools=ToolsState(available_tools=load_tools()),
+        tools=ToolsState(available_tools=tools),
+        active_skills=[
+            ActiveSkill(**skill_to_prompt_payload(skill))
+            for skill in active_skill_models
+        ],
     )
 
     context_snapshot = None
@@ -252,32 +291,41 @@ def _prepare_agent_state(
             context_snapshot = context_for_prompt(context)
 
     state.conversation.messages.append(HumanMessage(content=message))
-    return state, persisted_updates, context_snapshot
+    return state, persisted_updates, context_snapshot, skill_snapshot
 
 
 def _prepend_context_trace(
     trace: list[AgentTraceStep],
     persisted_updates: dict[str, Any] | None,
     context_snapshot: dict[str, Any] | None,
+    skill_snapshot: list[dict[str, Any]],
 ) -> None:
+    leading_steps: list[AgentTraceStep] = []
     if context_snapshot:
-        trace.insert(
-            0,
+        leading_steps.append(
             AgentTraceStep(
                 type="observation",
                 content=f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
                 raw=context_snapshot,
             ),
         )
+    if skill_snapshot:
+        leading_steps.append(
+            AgentTraceStep(
+                type="observation",
+                content=f"已启用 Skill：{_format_skill_snapshot(skill_snapshot)}",
+                raw=skill_snapshot,
+            )
+        )
     if persisted_updates:
-        trace.insert(
-            1 if context_snapshot else 0,
+        leading_steps.append(
             AgentTraceStep(
                 type="observation",
                 content=f"已写入数据库：{_format_persisted_body_data(persisted_updates)}",
                 raw=persisted_updates,
             ),
         )
+    trace[0:0] = leading_steps
 
 
 def _coerce_session_state(value: Any) -> SessionState:
@@ -481,6 +529,15 @@ def _format_context_snapshot(snapshot: dict[str, Any]) -> str:
         if next_steps:
             parts.append(f"待完善 {'；'.join(str(item) for item in next_steps[:2])}")
     return "，".join(parts)
+
+
+def _format_skill_snapshot(snapshot: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in snapshot:
+        tools = item.get("available_tools") or []
+        suffix = f"（工具：{', '.join(tools)}）" if tools else ""
+        parts.append(f"{item.get('name')}{suffix}")
+    return "；".join(parts)
 
 
 def _iter_answer_chunks(answer: str) -> Iterator[str]:

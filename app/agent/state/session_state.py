@@ -8,6 +8,17 @@ from app.agent.state.result import ResultState
 from app.agent.state.tools import ToolsState
 
 
+class ActiveSkill(BaseModel):
+    id: int
+    name: str
+    applicable_scenarios: str | None = None
+    prompt_snippet: str | None = None
+    available_tools: list[str] = Field(default_factory=list)
+    output_format: str | None = None
+    forbidden_rules: str | None = None
+    definition: str | None = None
+
+
 class SessionState(BaseModel):
     session_id: str
     user_id: str
@@ -22,3 +33,4 @@ class SessionState(BaseModel):
     reasoning: ReasoningState = Field(default_factory=ReasoningState)
     tools: ToolsState = Field(default_factory=ToolsState)
     result: ResultState = Field(default_factory=ResultState)
+    active_skills: list[ActiveSkill] = Field(default_factory=list)

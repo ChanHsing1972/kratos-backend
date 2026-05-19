@@ -20,10 +20,15 @@ INTENT_MAP = {
 class IntentNode(BaseNode):
     def __call__(self, state: SessionState) -> SessionState:
         user_message = self.latest_user_text(state)
+        skill_context = self.describe_active_skills(state)
         prompt = f"""
         你是健身 Agent 的意图识别器。
         请识别用户意图，可选范围包括：健身计划、饮食计划、调整计划、反馈、闲聊。
         允许输出多个意图。不要输出范围外的意图。
+        如果启用了 Skill，请结合 Skill 的适用场景辅助判断用户目标，但不要把 Skill 名称当作意图。
+
+        启用 Skill:
+        {skill_context}
 
         同时抽取用户输入中的关键信息：
         - 当日饮食：用户今天吃了什么，若没有则返回空数组

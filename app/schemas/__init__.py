@@ -7,6 +7,7 @@ from app.schemas.agent_chat import AgentChatRequest, AgentChatResponse, AgentTra
 from app.schemas.agent_run import AgentRunResponse, RagasExportResponse, RagasSample
 from app.schemas.body_metric import BodyMetricCreate, BodyMetricResponse, BodyMetricUpdate
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
+from app.schemas.skill import SkillBindingUpdate, SkillCreate, SkillResponse, SkillUpdate
 from app.schemas.training_plan import (
     TrainingPlanCreate,
     TrainingPlanResponse,
@@ -35,6 +36,10 @@ __all__ = [
     "OnboardingStatus",
     "RagasExportResponse",
     "RagasSample",
+    "SkillBindingUpdate",
+    "SkillCreate",
+    "SkillResponse",
+    "SkillUpdate",
     "Token",
     "TrainingPlanCreate",
     "TrainingPlanResponse",

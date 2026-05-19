@@ -45,6 +45,7 @@ class GenerateNode(BaseNode):
         user_message = self.latest_user_text(state)
         tasks = state.reasoning.tasks
         intents = state.reasoning.intent
+        skill_context = self.describe_active_skills(state)
 
         task_results = "\n".join(
             [
@@ -74,7 +75,12 @@ class GenerateNode(BaseNode):
         - 如果用户刚刚更新了个人信息或身体数据，承认已记录，并基于最新数据回答。
         - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
         - 如果某些工具失败或信息不足，明确说明不确定性。
+        - 如果启用了 Skill，最终回复必须遵守 Skill 的系统提示片段、输出格式和禁忌规则。
+        - 不要把 Skill 描述成会直接执行代码；Skill 只是改变你的领域策略和工具范围。
         - 不要暴露内部任务编号或 JSON。
+
+        启用 Skill:
+        {skill_context}
 
         用户问题:
         {user_message}

@@ -9,6 +9,7 @@ class PlanNode(BaseNode):
         first_ai_message = state.conversation.first_ai_message or state.result.first_response or ""
         reflection = state.reasoning.reflection or {}
         extracted_info = state.reasoning.extracted_info or {}
+        skill_context = self.describe_active_skills(state)
 
         prompt = f"""
         你是健身 Agent 的任务规划器。请根据用户意图、用户消息、第一轮 AI 分析以及反思建议来拆解任务。
@@ -16,8 +17,12 @@ class PlanNode(BaseNode):
         - 任务数量控制在 1 到 5 个。
         - 每个任务必须能独立执行。
         - 如果有反思建议，请在新计划中修正问题。
+        - 如果启用了 Skill，任务拆解必须遵守 Skill 的适用场景、提示片段和禁忌规则。
         - task_id 从 0 开始递增。
         - 任务名称简洁明确，描述写清楚要完成什么。
+
+        启用 Skill:
+        {skill_context}
 
         用户意图: {intent}
         用户消息: {user_msg}

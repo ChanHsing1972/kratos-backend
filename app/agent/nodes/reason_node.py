@@ -33,6 +33,7 @@ class ReasonNode(BaseNode):
         first_ai_message = state.conversation.first_ai_message or state.result.first_response or ""
         extracted_info = state.reasoning.extracted_info or {}
         memory_context = self._memory_context(state)
+        skill_context = self.describe_active_skills(state)
         memory_context_json = json.dumps(memory_context, ensure_ascii=False, default=str, indent=2)
         tool_descriptions_json = json.dumps(tool_descriptions, ensure_ascii=False, default=str, indent=2)
         conversations_json = json.dumps(
@@ -53,6 +54,9 @@ class ReasonNode(BaseNode):
         {extracted_info_json}
         你正在执行任务: {task.name}
         任务描述: {task.description}
+
+        启用 Skill:
+        {skill_context}
         
         查询工具之前，先查看过往会话，看有没有什么有用信息(JSON):
         {conversations_json}
@@ -65,6 +69,8 @@ class ReasonNode(BaseNode):
 
         判断是否需要调用工具来完成任务。
         规则：
+        - Skill 是领域能力包，不是代码执行插件；你只能遵守其策略、工具范围、输出格式和禁忌规则。
+        - 如果启用 Skill 声明了可用工具，当前工具列表已经按这些 Skill 做了范围约束。
         - 如果用户在询问“我叫什么”“我的身高是多少”“我的体重是多少”“我最近吃了什么”这类可直接从记忆回答的问题，优先直接用记忆回答，不调用工具。
         - 如果用户要求根据身体状态、训练强度、可用时间、饮食限制制定饮食计划，优先调用 diet_plan_generator。
         - 如果用户提到急性疼痛、膝盖/腰/肩不适、极度疲劳，必须优先调用 pain_safety_gate，再决定是否替代训练或休息。
@@ -114,6 +120,9 @@ class ReasonNode(BaseNode):
         当前识别意图: {state.reasoning.intent}
         你正在执行任务: {task.name}
         任务描述: {task.description}    
+
+        启用 Skill:
+        {skill_context}
         
         工具调用记录如下:
         {[call.model_dump() for call in task.tool_calls]}

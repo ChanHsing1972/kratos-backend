@@ -11,12 +11,15 @@ from app.core.config import settings
 from app.db.schema_sync import ensure_runtime_schema
 from app.db.session import Base, SessionLocal, engine
 from app.models import User
+from app.services.skill import seed_builtin_skills
 
 
 from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
 ensure_runtime_schema(engine)
+with SessionLocal() as seed_db:
+    seed_builtin_skills(seed_db)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
