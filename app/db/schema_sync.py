@@ -4,8 +4,16 @@ from sqlalchemy.engine import Engine
 
 BODY_METRIC_COLUMN_DDL = {
     "height_cm": "NUMERIC(5, 2)",
+    "weight_kg": "NUMERIC(5, 2)",
     "target_weight_kg": "NUMERIC(5, 2)",
+    "body_fat_percentage": "NUMERIC(5, 2)",
+    "skeletal_muscle_mass_kg": "NUMERIC(5, 2)",
+    "bmi": "NUMERIC(5, 2)",
+    "chest_cm": "NUMERIC(5, 2)",
+    "waist_cm": "NUMERIC(5, 2)",
+    "hip_cm": "NUMERIC(5, 2)",
     "sleep_hours": "NUMERIC(4, 2)",
+    "notes": "TEXT",
 }
 
 WORKOUT_LOG_COLUMN_DDL = {
