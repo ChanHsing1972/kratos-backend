@@ -5,6 +5,7 @@ FastAPI 应用入口文件
 import uvicorn
 from fastapi import FastAPI
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1 import api_router
 from app.core.config import settings
@@ -16,8 +17,11 @@ from app.services.skill import seed_builtin_skills
 
 from fastapi.middleware.cors import CORSMiddleware
 
-Base.metadata.create_all(bind=engine)
-ensure_runtime_schema(engine)
+try:
+    Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema(engine)
+except SQLAlchemyError as exc:
+    print(f"[startup] Database initialization skipped: {exc}")
 with SessionLocal() as seed_db:
     seed_builtin_skills(seed_db)
 

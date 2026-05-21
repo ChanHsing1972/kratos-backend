@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -19,8 +19,35 @@ from app.services.training_plan import (
     propose_training_plan_adjustment,
     update_training_plan,
 )
+from app.services.exercise_media import (
+    get_exercise_media,
+    list_known_exercise_aliases,
+    normalize_action_name,
+)
 
 router = APIRouter()
+
+
+@router.get("/media")
+def get_training_action_media(
+    action_name: str = Query(..., min_length=1),
+):
+    return get_exercise_media(action_name)
+
+
+@router.get("/exercise-library")
+def get_training_exercise_library():
+    return {
+        "aliases": list_known_exercise_aliases(),
+        "count": len(list_known_exercise_aliases()),
+    }
+
+
+@router.get("/parse-action")
+def parse_training_action(
+    action_name: str = Query(..., min_length=1),
+):
+    return {"action_name": normalize_action_name(action_name)}
 
 
 @router.get("", response_model=list[TrainingPlanResponse])
