@@ -50,6 +50,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    conversation_sessions: Mapped[list["ConversationSession"]] = relationship(
+        "ConversationSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     owned_skills: Mapped[list["Skill"]] = relationship(
         "Skill",
         back_populates="owner",

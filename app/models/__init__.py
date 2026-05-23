@@ -1,6 +1,7 @@
 from app.models.agent_checkin import AgentCheckin
 from app.models.agent_run import AgentRun, AgentTraceStep
 from app.models.body_metric import BodyMetric
+from app.models.conversation_session import ConversationSession
 from app.models.skill import Skill, UserSkill
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
@@ -12,6 +13,7 @@ __all__ = [
     "AgentRun",
     "AgentTraceStep",
     "BodyMetric",
+    "ConversationSession",
     "Skill",
     "TrainingPlan",
     "User",

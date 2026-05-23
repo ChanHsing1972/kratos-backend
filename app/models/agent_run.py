@@ -16,7 +16,12 @@ class AgentRun(Base):
         nullable=False,
         index=True,
     )
-    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversation_sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="completed", nullable=False)
@@ -29,6 +34,7 @@ class AgentRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     user: Mapped["User"] = relationship("User", back_populates="agent_runs")
+    session: Mapped["ConversationSession"] = relationship("ConversationSession", back_populates="runs")
     trace_steps: Mapped[list["AgentTraceStep"]] = relationship(
         "AgentTraceStep",
         back_populates="run",

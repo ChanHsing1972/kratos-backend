@@ -5,6 +5,13 @@
 ## 快速开始
 
 前置条件：Python 3.10+。
+# Agent 应用后端
+
+本仓库实现 Kratos 智能健身 Agent 的后端。主要负责 Agent 运行时、工具封装、长期/短期记忆存储以及与前端的 REST 接口对接等。
+
+## 快速开始
+
+前置条件：Python 3.10+。
 
 在仓库根目录执行：
 
@@ -59,5 +66,7 @@ python -m app.agent.main
 - `app/agent/graph.py`: LangGraph 状态流。
 
 ## 测试
+
+使用 `pytest` 组织单元与集成测试，测试代码放在 `tests/` 目录。
 
 使用 `pytest` 组织单元与集成测试，测试代码放在 `tests/` 目录。

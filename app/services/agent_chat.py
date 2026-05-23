@@ -24,6 +24,11 @@ from app.core.config import settings
 from app.models.user import User
 from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import create_agent_run, get_latest_agent_memory_payload
+from app.services.conversation_session import (
+    ensure_conversation_session,
+    hydrate_state_from_conversation_session,
+    persist_session_turn_artifacts,
+)
 from app.services.body_data_ingest import ingest_body_data_from_message
 from app.services.fitness_context import (
     context_for_prompt,
@@ -88,6 +93,7 @@ def run_agent_chat(
 
     if db is not None:
         create_agent_run(db, user_id, message, final_state, trace)
+        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
 
     return final_state, trace
 
@@ -141,6 +147,7 @@ def stream_agent_chat(
         trace = build_trace(final_state)
         _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
         create_agent_run(db, user_id, message, final_state, trace)
+        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
 
     yield {
         "type": "done",
@@ -285,10 +292,18 @@ def _prepare_agent_state(
 
     context_snapshot = None
     if db is not None:
-        if session_id:
-            memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
-            if memory_payload:
-                state.memory = MemoryState.model_validate(memory_payload)
+        conversation_session = ensure_conversation_session(
+            db=db,
+            user_id=user_id,
+            session_id=state.session_id,
+        )
+        state.session_id = conversation_session.session_id
+
+        hydrate_state_from_conversation_session(db, user_id, state.session_id, state)
+
+        memory_payload = get_latest_agent_memory_payload(db, user_id, state.session_id)
+        if memory_payload:
+            state.memory = MemoryState.model_validate(memory_payload)
 
         user = db.query(User).filter(User.id == user_id).first()
         if user is not None:

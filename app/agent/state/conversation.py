@@ -17,6 +17,8 @@ class ConversationState(BaseModel):
     conversations: list[AskAns] = Field(default_factory=list)
     # 记忆摘要
     summaries: list[str] = Field(default_factory=list)
+    # 已持久化的会话摘要快照，用于避免重复压缩
+    session_summary_snapshot: str | None = None
     # 当前轮第一阶段回答，可供后续规划参考
     first_ai_message: str | None = None
     # 会话窗口大小
