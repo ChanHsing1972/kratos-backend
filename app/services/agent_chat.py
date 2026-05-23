@@ -27,6 +27,7 @@ from app.services.agent_run import (
     create_agent_run,
     get_latest_agent_memory_payload,
 )
+from app.services.agent_tool import enabled_tool_names_for_user, record_tool_failures_from_state
 from app.services.body_data_ingest import ingest_body_data_from_message
 from app.services.conversation_session import (
     ensure_conversation_session,
@@ -95,6 +96,7 @@ def run_agent_chat(
     _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
 
     if db is not None:
+        record_tool_failures_from_state(db, user_id, final_state)
         create_agent_run(db, user_id, message, final_state, trace)
         persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
 
@@ -157,6 +159,7 @@ def stream_agent_chat(
     answer = str(final_state.result.response or "")
 
     if db is not None:
+        record_tool_failures_from_state(db, user_id, final_state)
         trace = persisted_trace or build_trace(final_state)
         create_agent_run(db, user_id, message, final_state, trace)
         persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
@@ -294,7 +297,8 @@ def _prepare_agent_state(
         if db is not None
         else None
     )
-    tools = load_tools()
+    enabled_tool_names = enabled_tool_names_for_user(db, user_id) if db is not None else None
+    tools = load_tools(enabled_tool_names=enabled_tool_names)
     active_skill_models = []
     skill_snapshot: list[dict[str, Any]] = []
     if db is not None:

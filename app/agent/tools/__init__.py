@@ -24,7 +24,8 @@ from .spoonacular_tool import get_spoonacular_recipe_search_tool
 from .weather_fitness_tool import get_weather_fitness_advisor_tool
 
 
-def load_tools():
+def load_tools(enabled_tool_names: set[str] | list[str] | tuple[str, ...] | None = None):
+    enabled_names = set(enabled_tool_names) if enabled_tool_names is not None else None
     tools = [
         get_amap_ip_location_tool(),
         get_amap_geocode_tool(),
@@ -56,4 +57,8 @@ def load_tools():
     except Exception:
         pass
 
-    return {tool.name: tool for tool in tools}
+    return {
+        tool.name: tool
+        for tool in tools
+        if enabled_names is None or tool.name in enabled_names
+    }

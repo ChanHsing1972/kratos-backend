@@ -1,3 +1,4 @@
+from app.models.agent_tool import AgentToolConfig
 from app.models.agent_checkin import AgentCheckin
 from app.models.agent_run import AgentRun, AgentTraceStep
 from app.models.body_metric import BodyMetric
@@ -9,6 +10,7 @@ from app.models.user_profile import UserProfile
 from app.models.workout_log import WorkoutLog
 
 __all__ = [
+    "AgentToolConfig",
     "AgentCheckin",
     "AgentRun",
     "AgentTraceStep",

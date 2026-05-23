@@ -1,3 +1,10 @@
+from app.schemas.agent_tool import (
+    AgentToolBulkUpdate,
+    AgentToolBulkUpdateItem,
+    AgentToolConfigResponse,
+    AgentToolConfigUpdate,
+    AgentToolHealthUpdate,
+)
 from app.schemas.agent_checkin import (
     AgentCheckinCreate,
     AgentCheckinResponse,
@@ -30,6 +37,11 @@ from app.schemas.user_profile import (
 from app.schemas.workout_log import WorkoutLogCreate, WorkoutLogResponse, WorkoutLogUpdate
 
 __all__ = [
+    "AgentToolBulkUpdate",
+    "AgentToolBulkUpdateItem",
+    "AgentToolConfigResponse",
+    "AgentToolConfigUpdate",
+    "AgentToolHealthUpdate",
     "AgentCheckinCreate",
     "AgentCheckinResponse",
     "AgentCheckinUpdate",
