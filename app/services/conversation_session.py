@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.agent.state.conversation import AskAns
@@ -21,8 +22,18 @@ SESSION_SUMMARY_COMPRESSION_TARGET = 600
 
 
 def _session_response_from_model(session: ConversationSession) -> ConversationSessionResponse:
-    run_count = len(session.runs)
-    last_run = session.runs[-1] if session.runs else None
+    run_count = len([
+        run for run in session.runs
+        if run.user_id == session.user_id and run.session_id == session.session_id
+    ])
+    last_run = next(
+        (
+            run
+            for run in reversed(session.runs)
+            if run.user_id == session.user_id and run.session_id == session.session_id
+        ),
+        None,
+    )
     return ConversationSessionResponse(
         session_id=session.session_id,
         user_id=session.user_id,
@@ -37,6 +48,19 @@ def _session_response_from_model(session: ConversationSession) -> ConversationSe
         run_count=run_count,
         last_run_at=last_run.created_at if last_run else None,
         last_message=last_run.user_message if last_run else None,
+    )
+
+
+def session_run_count(
+    db: Session,
+    user_id: int,
+    session_id: str,
+) -> int:
+    return int(
+        db.query(func.count(AgentRun.id))
+        .filter(AgentRun.user_id == user_id, AgentRun.session_id == session_id)
+        .scalar()
+        or 0
     )
 
 

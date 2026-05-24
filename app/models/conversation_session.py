@@ -34,5 +34,8 @@ class ConversationSession(Base):
         "AgentRun",
         back_populates="session",
         cascade="all, delete-orphan",
-        order_by="AgentRun.created_at.asc()",
+        order_by=lambda: AgentRun.created_at.asc(),
     )
+
+
+from app.models.agent_run import AgentRun  # noqa: E402

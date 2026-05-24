@@ -22,6 +22,18 @@ WORKOUT_LOG_COLUMN_DDL = {
 
 AGENT_RUN_COLUMN_DDL = {
     "memory_payload": "JSON",
+    "result_payload": "JSON",
+}
+
+CONVERSATION_SESSION_COLUMN_DDL = {
+    "title": "VARCHAR(200) DEFAULT '新会话' NOT NULL",
+    "summary": "TEXT DEFAULT '' NOT NULL",
+    "is_pinned": "BOOLEAN DEFAULT FALSE NOT NULL",
+    "is_archived": "BOOLEAN DEFAULT FALSE NOT NULL",
+    "is_deleted": "BOOLEAN DEFAULT FALSE NOT NULL",
+    "is_shared": "BOOLEAN DEFAULT FALSE NOT NULL",
+    "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL",
+    "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL",
 }
 
 
@@ -66,6 +78,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
         missing_columns.extend(
             ("agent_runs", name, ddl)
             for name, ddl in AGENT_RUN_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "conversation_sessions" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("conversation_sessions")
+        }
+        missing_columns.extend(
+            ("conversation_sessions", name, ddl)
+            for name, ddl in CONVERSATION_SESSION_COLUMN_DDL.items()
             if name not in existing_columns
         )
 

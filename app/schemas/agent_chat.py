@@ -4,7 +4,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-TraceStepType = Literal["thought", "action", "observation", "reflection", "final"]
+TraceStepType = Literal[
+    "status",
+    "thought",
+    "action",
+    "observation",
+    "reflection",
+    "final",
+    "error",
+]
 
 
 class AgentChatRequest(BaseModel):

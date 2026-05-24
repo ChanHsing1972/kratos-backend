@@ -107,6 +107,7 @@ def stream_agent_chat(
     session_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
+    persisted_trace: list[AgentTraceStep] = []
     state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
         user_id=user_id,
         message=message,
@@ -114,41 +115,49 @@ def stream_agent_chat(
         db=db,
     )
 
-    yield {
+    event = {
         "type": "status",
         "content": "Agent 已读取数据库上下文，开始处理请求",
         "session_id": state.session_id,
     }
+    _append_persistable_event(persisted_trace, event)
+    yield event
     if context_snapshot:
-        yield {
+        event = {
             "type": "observation",
             "content": f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
             "session_id": state.session_id,
         }
+        _append_persistable_event(persisted_trace, event)
+        yield event
     if skill_snapshot:
-        yield {
+        event = {
             "type": "observation",
             "content": f"已启用 Skill：{_format_skill_snapshot(skill_snapshot)}",
             "session_id": state.session_id,
         }
+        _append_persistable_event(persisted_trace, event)
+        yield event
     if persisted_updates:
-        yield {
+        event = {
             "type": "observation",
             "content": f"已写入数据库：{_format_persisted_body_data(persisted_updates)}",
             "session_id": state.session_id,
         }
+        _append_persistable_event(persisted_trace, event)
+        yield event
 
     emitted_keys: set[tuple[str, str]] = set()
     final_state = state
 
     for event in _run_streaming_agent(final_state, emitted_keys):
+        _append_persistable_event(persisted_trace, event)
         yield event
 
     answer = str(final_state.result.response or "")
 
     if db is not None:
-        trace = build_trace(final_state)
-        _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
+        trace = persisted_trace or build_trace(final_state)
         create_agent_run(db, user_id, message, final_state, trace)
         persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
 
@@ -247,6 +256,31 @@ def _emit_new_trace(
         event = step.model_dump(mode="json")
         event["session_id"] = state.session_id
         yield event
+
+
+def _append_persistable_event(
+    trace: list[AgentTraceStep],
+    event: dict[str, Any],
+) -> None:
+    event_type = str(event.get("type") or "status")
+    if event_type in {"answer_delta", "done"}:
+        return
+    if event_type not in {"status", "thought", "action", "observation", "reflection", "final", "error"}:
+        event_type = "status"
+
+    content = event.get("content")
+    if content is None and event_type == "final":
+        content = event.get("answer")
+    if content is None:
+        return
+
+    trace.append(
+        AgentTraceStep(
+            type=event_type,  # type: ignore[arg-type]
+            content=str(content),
+            raw=event.get("raw"),
+        )
+    )
 
 
 def _prepare_agent_state(
