@@ -123,7 +123,7 @@ def pin_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    enabled = True if payload is None else payload.enabled
+    enabled = True if payload is None else (payload.is_pinned if payload.is_pinned is not None else payload.enabled)
     session = set_conversation_session_pinned(db, current_user.id, session_id, enabled)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -133,9 +133,26 @@ def pin_session(
     return detail
 
 
-# Note: The dedicated `/archive` route was removed. Use `PATCH /sessions/{session_id}`
-# with the `is_archived` field to set/unset archived status. This keeps a single
-# update entrypoint for session metadata.
+@router.patch("/sessions/{session_id}/archive", response_model=ConversationSessionResponse)
+def archive_session(
+    session_id: str,
+    payload: ConversationSessionFlagRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    enabled = True if payload is None else (payload.is_archived if payload.is_archived is not None else payload.enabled)
+    session = update_conversation_session(
+        db=db,
+        user_id=current_user.id,
+        session_id=session_id,
+        is_archived=enabled,
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    detail = get_conversation_session_detail(db, current_user.id, session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return detail
 
 
 @router.delete("/sessions/{session_id}", response_model=ConversationSessionResponse)

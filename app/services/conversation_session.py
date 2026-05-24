@@ -376,7 +376,7 @@ def compress_session_summary(summary: str) -> str:
     - 已经确认的结论和待办
     - 不要编造新信息，不要输出 Markdown，不要加前后解释
 
-    要求：压缩后尽量控制在 {SESSION_SUMMARY_COMPRESSION_TARGET_CHARS} 字以内。
+    要求：压缩后尽量控制在 {SESSION_SUMMARY_COMPRESSION_TARGET} 字以内。
 
     会话摘要：
     {cleaned_summary}

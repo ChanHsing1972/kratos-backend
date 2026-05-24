@@ -50,8 +50,8 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-    conversation_sessions: Mapped[list["AgentConversationSession"]] = relationship(
-        "AgentConversationSession",
+    conversation_sessions: Mapped[list["ConversationSession"]] = relationship(
+        "ConversationSession",
         back_populates="user",
         cascade="all, delete-orphan",
     )

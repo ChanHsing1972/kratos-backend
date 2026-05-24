@@ -26,10 +26,13 @@ from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import (
     create_agent_run,
     get_latest_agent_memory_payload,
-    load_agent_conversation_history,
 )
-from app.services.agent_session import ensure_agent_session
 from app.services.body_data_ingest import ingest_body_data_from_message
+from app.services.conversation_session import (
+    ensure_conversation_session,
+    hydrate_state_from_conversation_session,
+    persist_session_turn_artifacts,
+)
 from app.services.fitness_context import (
     context_for_prompt,
     hydrate_agent_memory,
@@ -292,19 +295,12 @@ def _prepare_agent_state(
 
     context_snapshot = None
     if db is not None:
-        ensure_agent_session(db, user_id, state.session_id)
+        ensure_conversation_session(db, user_id, state.session_id)
         if session_id:
             memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
             if memory_payload:
                 state.memory = MemoryState.model_validate(memory_payload)
-            conversations, summaries = load_agent_conversation_history(
-                db,
-                user_id,
-                session_id,
-                max_conversations=state.conversation.max_conversations,
-            )
-            state.conversation.conversations = conversations
-            state.conversation.summaries = summaries
+            hydrate_state_from_conversation_session(db, user_id, session_id, state)
 
         user = db.query(User).filter(User.id == user_id).first()
         if user is not None:

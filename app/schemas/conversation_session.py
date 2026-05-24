@@ -24,6 +24,8 @@ class ConversationSessionRenameRequest(BaseModel):
 
 class ConversationSessionFlagRequest(BaseModel):
     enabled: bool = True
+    is_archived: bool | None = None
+    is_pinned: bool | None = None
 
 
 class ConversationSessionResponse(BaseModel):

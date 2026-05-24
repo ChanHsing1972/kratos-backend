@@ -5,15 +5,15 @@ from app.schemas.agent_checkin import (
 )
 from app.schemas.agent_chat import AgentChatRequest, AgentChatResponse, AgentTraceStep
 from app.schemas.agent_run import AgentRunResponse, RagasExportResponse, RagasSample
-from app.schemas.agent_session import (
-    AgentConversationSessionResponse,
-    AgentSessionArchiveUpdate,
-    AgentSessionCreate,
-    AgentSessionPinUpdate,
-    AgentSessionRename,
-    AgentSessionUpdate,
-)
 from app.schemas.body_metric import BodyMetricCreate, BodyMetricResponse, BodyMetricUpdate
+from app.schemas.conversation_session import (
+    ConversationArchiveRequest,
+    ConversationSessionCreateRequest,
+    ConversationSessionFlagRequest,
+    ConversationSessionRenameRequest,
+    ConversationSessionResponse,
+    ConversationSessionUpdateRequest,
+)
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
 from app.schemas.skill import SkillBindingUpdate, SkillCreate, SkillResponse, SkillUpdate
 from app.schemas.training_plan import (
@@ -35,17 +35,17 @@ __all__ = [
     "AgentCheckinUpdate",
     "AgentChatRequest",
     "AgentChatResponse",
-    "AgentConversationSessionResponse",
     "AgentRunResponse",
-    "AgentSessionArchiveUpdate",
-    "AgentSessionCreate",
-    "AgentSessionPinUpdate",
-    "AgentSessionRename",
-    "AgentSessionUpdate",
     "AgentTraceStep",
     "BodyMetricCreate",
     "BodyMetricResponse",
     "BodyMetricUpdate",
+    "ConversationArchiveRequest",
+    "ConversationSessionCreateRequest",
+    "ConversationSessionFlagRequest",
+    "ConversationSessionRenameRequest",
+    "ConversationSessionResponse",
+    "ConversationSessionUpdateRequest",
     "FitnessContextResponse",
     "OnboardingStatus",
     "RagasExportResponse",

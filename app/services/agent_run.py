@@ -6,11 +6,9 @@ from pathlib import Path
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, selectinload
 
-from app.agent.state.conversation import AskAns
 from app.agent.state.session_state import SessionState
 from app.models.agent_run import AgentRun, AgentTraceStep
 from app.schemas.agent_chat import AgentTraceStep as AgentTraceStepSchema
-from app.services.agent_session import record_agent_run_on_session
 
 
 def create_agent_run(
@@ -48,7 +46,6 @@ def create_agent_run(
             )
         )
 
-    record_agent_run_on_session(db, user_id, state.session_id, message)
     db.commit()
     return get_agent_run_by_id(db, run.id, user_id) or run
 
@@ -102,40 +99,6 @@ def get_latest_agent_memory_payload(
     return run.memory_payload
 
 
-def load_agent_conversation_history(
-    db: Session,
-    user_id: int,
-    session_id: str,
-    max_conversations: int = 6,
-) -> tuple[list[AskAns], list[str]]:
-    runs = (
-        db.query(AgentRun)
-        .filter(AgentRun.user_id == user_id, AgentRun.session_id == session_id)
-        .order_by(AgentRun.created_at.asc(), AgentRun.id.asc())
-        .all()
-    )
-    if not runs:
-        return [], []
-
-    recent_runs = runs[-max_conversations:]
-    conversations = [
-        AskAns(user_ask=run.user_message, ai_ans=run.answer)
-        for run in recent_runs
-    ]
-
-    overflow = runs[:-max_conversations]
-    summaries: list[str] = []
-    if overflow:
-        summary = "；".join(
-            f"用户:{_compact_history_text(run.user_message, 90)} AI:{_compact_history_text(run.answer, 140)}"
-            for run in overflow
-        )
-        if summary:
-            summaries.append(_compact_history_text(summary, 900))
-
-    return conversations, summaries
-
-
 def build_ragas_samples(runs: list[AgentRun]) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     for run in runs:
@@ -162,13 +125,6 @@ def build_ragas_samples(runs: list[AgentRun]) -> list[dict[str, Any]]:
             }
         )
     return samples
-
-
-def _compact_history_text(value: str | None, max_length: int) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= max_length:
-        return text
-    return f"{text[: max_length - 3]}..."
 
 
 def export_single_run_to_local_ragas_json(
