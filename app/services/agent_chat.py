@@ -23,12 +23,12 @@ from app.agent.tools import load_tools
 from app.core.config import settings
 from app.models.user import User
 from app.schemas.agent_chat import AgentTraceStep
-from app.services.agent_run import create_agent_run, get_latest_agent_memory_payload
-from app.services.conversation_session import (
-    ensure_conversation_session,
-    hydrate_state_from_conversation_session,
-    persist_session_turn_artifacts,
+from app.services.agent_run import (
+    create_agent_run,
+    get_latest_agent_memory_payload,
+    load_agent_conversation_history,
 )
+from app.services.agent_session import ensure_agent_session
 from app.services.body_data_ingest import ingest_body_data_from_message
 from app.services.fitness_context import (
     context_for_prompt,
@@ -292,18 +292,19 @@ def _prepare_agent_state(
 
     context_snapshot = None
     if db is not None:
-        conversation_session = ensure_conversation_session(
-            db=db,
-            user_id=user_id,
-            session_id=state.session_id,
-        )
-        state.session_id = conversation_session.session_id
-
-        hydrate_state_from_conversation_session(db, user_id, state.session_id, state)
-
-        memory_payload = get_latest_agent_memory_payload(db, user_id, state.session_id)
-        if memory_payload:
-            state.memory = MemoryState.model_validate(memory_payload)
+        ensure_agent_session(db, user_id, state.session_id)
+        if session_id:
+            memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
+            if memory_payload:
+                state.memory = MemoryState.model_validate(memory_payload)
+            conversations, summaries = load_agent_conversation_history(
+                db,
+                user_id,
+                session_id,
+                max_conversations=state.conversation.max_conversations,
+            )
+            state.conversation.conversations = conversations
+            state.conversation.summaries = summaries
 
         user = db.query(User).filter(User.id == user_id).first()
         if user is not None:
