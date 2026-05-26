@@ -26,6 +26,7 @@ def chat_with_agent(
         user_id=current_user.id,
         message=payload.message,
         session_id=payload.session_id,
+        client_turn_id=payload.client_turn_id,
         db=db,
     )
 
@@ -49,6 +50,7 @@ def stream_chat_with_agent(
                 user_id=current_user.id,
                 message=payload.message,
                 session_id=payload.session_id,
+                client_turn_id=payload.client_turn_id,
                 db=db,
             ):
                 event_type = str(event.get("type", "message"))

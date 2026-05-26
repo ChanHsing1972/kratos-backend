@@ -81,6 +81,9 @@ class WorkoutPlanResult(BaseModel):
     kind: str = "workout_plan"
     title: str | None = None
     goal: str | None = None
+    plan_kind: str = "daily"
+    duration_weeks: int | None = None
+    schedule_json: dict[str, Any] | None = None
     sessions: list[WorkoutSession] = Field(default_factory=list)
     precautions: list[str] = Field(default_factory=list)
     raw_content: Any | None = None

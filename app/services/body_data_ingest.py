@@ -19,9 +19,8 @@ BODY_METRIC_FIELDS = {
     "chest_cm",
     "waist_cm",
     "hip_cm",
-    "sleep_hours",
 }
-CHECKIN_FIELDS = {"energy_level", "sleep_quality", "soreness_level"}
+CHECKIN_FIELDS = {"energy_level", "sleep_quality", "soreness_level", "sleep_hours", "mood", "pain_notes"}
 PROFILE_FIELDS = {
     "gender",
     "age",
@@ -100,6 +99,24 @@ def ingest_body_data_from_message(
     return persisted or None
 
 
+def extract_body_data_from_message(message: str) -> dict[str, Any] | None:
+    """Extract possible health updates for user confirmation without writing them."""
+    parsed = _parse_user_data(message)
+    if not parsed:
+        return None
+    pending: dict[str, Any] = {}
+    metric_fields = {key: parsed[key] for key in BODY_METRIC_FIELDS if key in parsed}
+    checkin_fields = {key: parsed[key] for key in CHECKIN_FIELDS if key in parsed}
+    profile_fields = {key: parsed[key] for key in PROFILE_FIELDS if key in parsed}
+    if metric_fields:
+        pending["body_metric"] = metric_fields
+    if checkin_fields:
+        pending["checkin"] = checkin_fields
+    if profile_fields:
+        pending["profile"] = profile_fields
+    return pending or None
+
+
 def _parse_user_data(message: str) -> dict[str, Any]:
     data: dict[str, Any] = {}
     data.update(_parse_body_metric_data(message))
@@ -131,7 +148,6 @@ def _parse_body_metric_data(message: str) -> dict[str, Any]:
         "chest_cm": r"(?:胸围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
         "waist_cm": r"(?:腰围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
         "hip_cm": r"(?:臀围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
-        "sleep_hours": r"(?:睡眠时长|睡眠|睡了|平均睡眠)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:h|小时|个小时)?",
     }
 
     for key, pattern in patterns.items():
@@ -143,6 +159,7 @@ def _parse_body_metric_data(message: str) -> dict[str, Any]:
 def _parse_checkin_data(message: str) -> dict[str, Any]:
     data: dict[str, Any] = {}
     patterns = {
+        "sleep_hours": r"(?:睡眠时长|睡眠|睡了|平均睡眠)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:h|小时|个小时)?",
         "sleep_quality": r"(?:睡眠质量)\s*[:：为是=]?\s*(\d{1,2})\s*(?:/10|分)?",
         "energy_level": r"(?:精力|能量|energy)\s*[:：为是=]?\s*(\d{1,2})\s*(?:/10|分)?",
         "soreness_level": r"(?:酸痛|疲劳|soreness)\s*[:：为是=]?\s*(\d{1,2})\s*(?:/10|分)?",
@@ -150,7 +167,14 @@ def _parse_checkin_data(message: str) -> dict[str, Any]:
     for key, pattern in patterns.items():
         match = re.search(pattern, message, flags=re.IGNORECASE)
         if match:
-            data[key] = max(1, min(10, int(float(match.group(1)))))
+            value = float(match.group(1))
+            data[key] = round(max(0, min(24, value)), 1) if key == "sleep_hours" else max(1, min(10, int(value)))
+    mood = _match_text(message, r"(?:情绪|心情)\s*[:：为是=]?\s*([^，。,.!?！？]{1,30})")
+    if mood:
+        data["mood"] = mood
+    pain = _match_text(message, r"(?:疼痛说明|不适说明|训练疼痛)\s*[:：为是=]?\s*([^，。,.!?！？]{2,120})")
+    if pain:
+        data["pain_notes"] = pain
     return data
 
 

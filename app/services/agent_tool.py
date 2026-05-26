@@ -127,6 +127,7 @@ def enabled_tool_names_for_user(db: Session, user_id: int) -> set[str]:
         for item in db.query(AgentToolConfig)
         .filter(AgentToolConfig.user_id == user_id, AgentToolConfig.enabled.is_(True))
         .all()
+        if item.name in TOOL_REGISTRY and _api_key_configured(TOOL_REGISTRY[item.name])
     }
 
 
@@ -154,6 +155,7 @@ def record_tool_failures_from_state(db: Session, user_id: int, state) -> None:
     db.commit()
 
 
+def _new_config(user_id: int, metadata: ToolMetadata) -> AgentToolConfig:
     return AgentToolConfig(
         user_id=user_id,
         name=metadata.name,

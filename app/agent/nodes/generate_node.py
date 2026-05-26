@@ -72,10 +72,11 @@ class GenerateNode(BaseNode):
         - 必须使用 Markdown 格式组织内容：用短标题、列表、表格或加粗重点提升可读性；避免整段堆叠。
         - 具体、可执行，避免空泛建议。
         - 回答前必须利用已读取的数据库上下文；如果上下文缺关键数据，先指出缺口并给出下一步引导。
-        - 如果用户刚刚更新了个人信息或身体数据，承认已记录，并基于最新数据回答。
+        - 如果用户在消息中提到新的个人信息或身体数据，说明需由用户确认后才会保存，不得声称已经记录。
         - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
         - 如果某些工具失败或信息不足，明确说明不确定性。
         - 如果启用了 Skill，最终回复必须遵守 Skill 的系统提示片段、输出格式和禁忌规则。
+        - 用户请求每周、长期、周期或多周训练计划时，回复应提供至少一周的多个训练日安排，明确周几、动作、组次和恢复日。
         - 不要把 Skill 描述成会直接执行代码；Skill 只是改变你的领域策略和工具范围。
         - 不要暴露内部任务编号或 JSON。
 
@@ -223,10 +224,16 @@ class GenerateNode(BaseNode):
 
         if isinstance(content, dict):
             session_title = str(content.get("title") or content.get("name") or "训练计划")
-            exercises = []
-            raw_exercises = content.get("exercises") or content.get("actions") or []
-            if isinstance(raw_exercises, list):
-                for item in raw_exercises:
+            raw_sessions = content.get("sessions")
+            if not isinstance(raw_sessions, list) or not raw_sessions:
+                raw_sessions = [content]
+            sessions: list[WorkoutSession] = []
+            for raw_session in raw_sessions:
+                if not isinstance(raw_session, dict):
+                    continue
+                exercises = []
+                raw_exercises = raw_session.get("exercises") or raw_session.get("actions") or []
+                for item in raw_exercises if isinstance(raw_exercises, list) else []:
                     if not isinstance(item, dict):
                         continue
                     name = item.get("name") or item.get("title")
@@ -241,15 +248,46 @@ class GenerateNode(BaseNode):
                             notes=item.get("notes") or item.get("description"),
                         )
                     )
+                title = str(raw_session.get("title") or raw_session.get("focus") or session_title)
+                sessions.append(
+                    WorkoutSession(
+                        title=title,
+                        focus=raw_session.get("focus"),
+                        exercises=exercises,
+                        notes=[str(item) for item in (raw_session.get("notes") or [])],
+                    )
+                )
+            if not sessions:
+                return None
+            plan_kind = "program" if len(sessions) > 1 else "daily"
             return WorkoutPlanResult(
                 title=session_title,
                 goal=goal,
-                sessions=[WorkoutSession(title=session_title, exercises=exercises)],
+                plan_kind=plan_kind,
+                duration_weeks=GenerateNode._to_int(content.get("duration_weeks")),
+                sessions=sessions,
                 raw_content=content,
                 source=source,
             )
 
         if isinstance(content, str) and content.strip():
+            weekly_sessions = GenerateNode._parse_weekly_sessions_from_text(content)
+            if len(weekly_sessions) > 1:
+                precautions = [
+                    line.strip("-• ")
+                    for line in content.splitlines()
+                    if any(keyword in line for keyword in ["注意", "避免", "热身", "拉伸", "疼痛"])
+                ]
+                return WorkoutPlanResult(
+                    title="周期训练计划",
+                    goal=goal,
+                    plan_kind="program",
+                    duration_weeks=4,
+                    sessions=weekly_sessions,
+                    precautions=precautions,
+                    raw_content=content,
+                    source=source,
+                )
             exercises = GenerateNode._parse_exercises_from_text(content)
             notes = [line.strip("-• ") for line in content.splitlines() if line.strip()]
             session = WorkoutSession(
@@ -261,6 +299,7 @@ class GenerateNode(BaseNode):
             return WorkoutPlanResult(
                 title="训练计划",
                 goal=goal,
+                plan_kind="daily",
                 sessions=[session],
                 precautions=precautions,
                 raw_content=content,
@@ -268,6 +307,33 @@ class GenerateNode(BaseNode):
             )
 
         return None
+
+    @staticmethod
+    def _parse_weekly_sessions_from_text(content: str) -> list[WorkoutSession]:
+        sessions: list[WorkoutSession] = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip().strip("-•* ")
+            match = re.match(
+                r"(周[一二三四五六日天])(?:\s*[｜|/-]\s*([^:：]+))?\s*[:：]\s*(.+)",
+                line,
+            )
+            if not match:
+                continue
+            day, focus, exercise_text = match.groups()
+            exercises: list[WorkoutExercise] = []
+            for item in re.split(r"[；;]", exercise_text):
+                exercises.extend(GenerateNode._parse_exercises_from_text(item.strip()))
+            if not exercises:
+                continue
+            title = f"{day} | {focus.strip()}" if focus and focus.strip() else day
+            sessions.append(
+                WorkoutSession(
+                    title=title,
+                    focus=focus.strip() if focus and focus.strip() else None,
+                    exercises=exercises,
+                )
+            )
+        return sessions
 
     @staticmethod
     def _parse_exercises_from_text(content: str) -> list[WorkoutExercise]:

@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -24,7 +24,11 @@ class AgentCheckin(Base):
     sleep_quality: Mapped[int | None] = mapped_column(Integer, nullable=True)
     soreness_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     adherence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checkin_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    sleep_hours: Mapped[float | None] = mapped_column(Numeric(4, 2), nullable=True)
     mood: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    pain_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

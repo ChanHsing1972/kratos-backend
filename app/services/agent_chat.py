@@ -25,10 +25,12 @@ from app.models.user import User
 from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import (
     create_agent_run,
+    fail_reserved_agent_run,
     get_latest_agent_memory_payload,
+    reserve_agent_run,
 )
 from app.services.agent_tool import enabled_tool_names_for_user, record_tool_failures_from_state
-from app.services.body_data_ingest import ingest_body_data_from_message
+from app.services.body_data_ingest import extract_body_data_from_message
 from app.services.conversation_session import (
     ensure_conversation_session,
     hydrate_state_from_conversation_session,
@@ -81,6 +83,7 @@ def run_agent_chat(
     user_id: int,
     message: str,
     session_id: str | None = None,
+    client_turn_id: str | None = None,
     db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
     state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
@@ -89,15 +92,39 @@ def run_agent_chat(
         session_id=session_id,
         db=db,
     )
+    reserved_run = None
+    if db is not None:
+        reserved_run, should_run = reserve_agent_run(
+            db, user_id, state.session_id, message, client_turn_id
+        )
+        if not should_run and reserved_run is not None:
+            state.result.response = reserved_run.answer
+            trace = [
+                AgentTraceStep(type="final", content=reserved_run.answer, raw=reserved_run.result_payload)
+            ]
+            return state, trace
 
-    result = get_agent_graph().invoke(state)
+    try:
+        result = get_agent_graph().invoke(state)
+    except BaseException:
+        if db is not None:
+            fail_reserved_agent_run(db, reserved_run.id if reserved_run else None)
+        raise
     final_state = result if isinstance(result, SessionState) else SessionState(**result)
     trace = build_trace(final_state)
     _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
 
     if db is not None:
         record_tool_failures_from_state(db, user_id, final_state)
-        create_agent_run(db, user_id, message, final_state, trace)
+        create_agent_run(
+            db,
+            user_id,
+            message,
+            final_state,
+            trace,
+            client_turn_id=client_turn_id,
+            reserved_run_id=reserved_run.id if reserved_run else None,
+        )
         persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
 
     return final_state, trace
@@ -107,6 +134,7 @@ def stream_agent_chat(
     user_id: int,
     message: str,
     session_id: str | None = None,
+    client_turn_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     persisted_trace: list[AgentTraceStep] = []
@@ -116,6 +144,31 @@ def stream_agent_chat(
         session_id=session_id,
         db=db,
     )
+    reserved_run = None
+    if db is not None:
+        reserved_run, should_run = reserve_agent_run(
+            db, user_id, state.session_id, message, client_turn_id
+        )
+        if not should_run and reserved_run is not None:
+            if reserved_run.status == "completed":
+                yield {
+                    "type": "final",
+                    "content": reserved_run.answer,
+                    "raw": reserved_run.result_payload,
+                    "session_id": reserved_run.session_id,
+                }
+                yield {
+                    "type": "done",
+                    "session_id": reserved_run.session_id,
+                    "answer": reserved_run.answer,
+                }
+            else:
+                yield {
+                    "type": "error",
+                    "content": "这条消息正在处理或此前未成功完成，请稍后重试。",
+                    "session_id": reserved_run.session_id,
+                }
+            return
 
     event = {
         "type": "status",
@@ -143,7 +196,8 @@ def stream_agent_chat(
     if persisted_updates:
         event = {
             "type": "observation",
-            "content": f"已写入数据库：{_format_persisted_body_data(persisted_updates)}",
+            "content": f"检测到可记录的健康数据，请确认后保存：{_format_persisted_body_data(persisted_updates)}",
+            "raw": {"pending_health_data": persisted_updates},
             "session_id": state.session_id,
         }
         _append_persistable_event(persisted_trace, event)
@@ -152,16 +206,33 @@ def stream_agent_chat(
     emitted_keys: set[tuple[str, str]] = set()
     final_state = state
 
-    for event in _run_streaming_agent(final_state, emitted_keys):
-        _append_persistable_event(persisted_trace, event)
-        yield event
+    try:
+        for event in _run_streaming_agent(final_state, emitted_keys):
+            _append_persistable_event(persisted_trace, event)
+            yield event
+    except GeneratorExit:
+        if db is not None:
+            fail_reserved_agent_run(db, reserved_run.id if reserved_run else None, status="cancelled")
+        raise
+    except BaseException:
+        if db is not None:
+            fail_reserved_agent_run(db, reserved_run.id if reserved_run else None)
+        raise
 
     answer = str(final_state.result.response or "")
 
     if db is not None:
         record_tool_failures_from_state(db, user_id, final_state)
         trace = persisted_trace or build_trace(final_state)
-        create_agent_run(db, user_id, message, final_state, trace)
+        create_agent_run(
+            db,
+            user_id,
+            message,
+            final_state,
+            trace,
+            client_turn_id=client_turn_id,
+            reserved_run_id=reserved_run.id if reserved_run else None,
+        )
         persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
 
     yield {
@@ -292,11 +363,7 @@ def _prepare_agent_state(
     session_id: str | None,
     db: Session | None,
 ) -> tuple[SessionState, dict[str, Any] | None, dict[str, Any] | None, list[dict[str, Any]]]:
-    persisted_updates = (
-        ingest_body_data_from_message(db, user_id, message)
-        if db is not None
-        else None
-    )
+    persisted_updates = extract_body_data_from_message(message)
     enabled_tool_names = enabled_tool_names_for_user(db, user_id) if db is not None else None
     tools = load_tools(enabled_tool_names=enabled_tool_names)
     active_skill_models = []
@@ -304,14 +371,12 @@ def _prepare_agent_state(
     if db is not None:
         active_skill_models = get_enabled_skills_for_user(db, user_id)
         allowed_tools = allowed_tool_names(active_skill_models)
-        if allowed_tools:
-            scoped_tools = {
+        if active_skill_models:
+            tools = {
                 name: tool
                 for name, tool in tools.items()
                 if name in allowed_tools
             }
-            if scoped_tools:
-                tools = scoped_tools
         skill_snapshot = [
             {
                 "id": skill.id,
@@ -377,8 +442,8 @@ def _prepend_context_trace(
         leading_steps.append(
             AgentTraceStep(
                 type="observation",
-                content=f"已写入数据库：{_format_persisted_body_data(persisted_updates)}",
-                raw=persisted_updates,
+                content=f"检测到可记录的健康数据，请确认后保存：{_format_persisted_body_data(persisted_updates)}",
+                raw={"pending_health_data": persisted_updates},
             ),
         )
     trace[0:0] = leading_steps

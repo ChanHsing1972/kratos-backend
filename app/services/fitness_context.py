@@ -1,7 +1,8 @@
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, selectinload
 
 from app.agent.state.session_state import SessionState
 from app.models.agent_checkin import AgentCheckin
@@ -9,7 +10,7 @@ from app.models.body_metric import BodyMetric
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
 from app.models.user_profile import UserProfile
-from app.models.workout_log import WorkoutLog
+from app.models.workout_log import WorkoutExerciseLog, WorkoutLog
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
 
 
@@ -42,12 +43,13 @@ def load_fitness_context(db: Session, user: User, limit: int = 12) -> FitnessCon
     recent_body_metrics = (
         db.query(BodyMetric)
         .filter(BodyMetric.user_id == user.id)
-        .order_by(BodyMetric.recorded_at.desc(), BodyMetric.id.desc())
+        .order_by(func.coalesce(BodyMetric.measured_at, BodyMetric.recorded_at).desc(), BodyMetric.id.desc())
         .limit(limit)
         .all()
     )
     recent_workout_logs = (
         db.query(WorkoutLog)
+        .options(selectinload(WorkoutLog.exercises).selectinload(WorkoutExerciseLog.sets))
         .filter(WorkoutLog.user_id == user.id)
         .order_by(WorkoutLog.workout_date.desc(), WorkoutLog.id.desc())
         .limit(limit)
@@ -66,14 +68,6 @@ def load_fitness_context(db: Session, user: User, limit: int = 12) -> FitnessCon
         .order_by(TrainingPlan.updated_at.desc(), TrainingPlan.id.desc())
         .first()
     )
-    if active_plan is None:
-        active_plan = (
-            db.query(TrainingPlan)
-            .filter(TrainingPlan.user_id == user.id)
-            .order_by(TrainingPlan.updated_at.desc(), TrainingPlan.id.desc())
-            .first()
-        )
-
     latest_body_metric = recent_body_metrics[0] if recent_body_metrics else None
     onboarding = build_onboarding_status(profile, latest_body_metric)
 

@@ -17,8 +17,26 @@ class WorkoutLogBase(BaseModel):
     notes: str | None = None
 
 
+class WorkoutSetLogInput(BaseModel):
+    set_number: int = Field(ge=1, le=100)
+    reps: int | None = Field(default=None, ge=0, le=1000)
+    weight_kg: float | None = Field(default=None, ge=0, le=1000)
+    rpe: float | None = Field(default=None, ge=1, le=10)
+    completed: bool = False
+    pain_notes: str | None = None
+
+
+class WorkoutExerciseLogInput(BaseModel):
+    exercise_id: str | None = Field(default=None, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+    position: int = Field(default=0, ge=0)
+    completed: bool = False
+    notes: str | None = None
+    sets: list[WorkoutSetLogInput] = Field(default_factory=list)
+
+
 class WorkoutLogCreate(WorkoutLogBase):
-    pass
+    exercises: list[WorkoutExerciseLogInput] = Field(default_factory=list)
 
 
 class WorkoutLogUpdate(BaseModel):
@@ -32,6 +50,7 @@ class WorkoutLogUpdate(BaseModel):
     calories_burned: int | None = Field(default=None, ge=0)
     completed: bool | None = None
     notes: str | None = None
+    exercises: list[WorkoutExerciseLogInput] | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +64,22 @@ class WorkoutLogResponse(WorkoutLogBase):
     id: int
     user_id: int
     created_at: datetime
+    exercises: list["WorkoutExerciseLogResponse"] = Field(default_factory=list)
+
+
+class WorkoutSetLogResponse(WorkoutSetLogInput):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    exercise_log_id: int
+
+
+class WorkoutExerciseLogResponse(WorkoutExerciseLogInput):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    workout_log_id: int
+    sets: list[WorkoutSetLogResponse] = Field(default_factory=list)
 
 
 class WorkoutLogConversationExportResponse(BaseModel):

@@ -14,6 +14,9 @@ BODY_METRIC_COLUMN_DDL = {
     "hip_cm": "NUMERIC(5, 2)",
     "sleep_hours": "NUMERIC(4, 2)",
     "notes": "TEXT",
+    "measured_at": "TIMESTAMP",
+    "source": "VARCHAR(30) DEFAULT 'manual' NOT NULL",
+    "external_id": "VARCHAR(120)",
 }
 
 WORKOUT_LOG_COLUMN_DDL = {
@@ -23,6 +26,20 @@ WORKOUT_LOG_COLUMN_DDL = {
 AGENT_RUN_COLUMN_DDL = {
     "memory_payload": "JSON",
     "result_payload": "JSON",
+    "client_turn_id": "VARCHAR(64)",
+}
+
+TRAINING_PLAN_COLUMN_DDL = {
+    "plan_kind": "VARCHAR(30) DEFAULT 'program' NOT NULL",
+    "duration_weeks": "INTEGER",
+    "schedule_json": "JSON",
+}
+
+AGENT_CHECKIN_COLUMN_DDL = {
+    "checkin_date": "DATE",
+    "sleep_hours": "NUMERIC(4, 2)",
+    "pain_notes": "TEXT",
+    "source": "VARCHAR(30) DEFAULT 'manual' NOT NULL",
 }
 
 CONVERSATION_SESSION_COLUMN_DDL = {
@@ -70,6 +87,28 @@ def ensure_runtime_schema(engine: Engine) -> None:
             if name not in existing_columns
         )
 
+    if "training_plans" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("training_plans")
+        }
+        missing_columns.extend(
+            ("training_plans", name, ddl)
+            for name, ddl in TRAINING_PLAN_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "agent_checkins" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("agent_checkins")
+        }
+        missing_columns.extend(
+            ("agent_checkins", name, ddl)
+            for name, ddl in AGENT_CHECKIN_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
     if "agent_runs" in table_names:
         existing_columns = {
             column["name"]
@@ -96,3 +135,12 @@ def ensure_runtime_schema(engine: Engine) -> None:
         with engine.begin() as connection:
             for table_name, name, ddl in missing_columns:
                 connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+
+    if "agent_runs" in table_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_user_client_turn "
+                    "ON agent_runs (user_id, client_turn_id) WHERE client_turn_id IS NOT NULL"
+                )
+            )

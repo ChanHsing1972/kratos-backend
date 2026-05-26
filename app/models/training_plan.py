@@ -1,6 +1,8 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text
+from typing import Any
+
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -18,6 +20,9 @@ class TrainingPlan(Base):
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     goal: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False)
+    plan_kind: Mapped[str] = mapped_column(String(30), default="program", nullable=False)
+    duration_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    schedule_json: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)

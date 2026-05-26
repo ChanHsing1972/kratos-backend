@@ -1,3 +1,4 @@
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.body_metric import BodyMetric
@@ -9,7 +10,7 @@ def get_body_metrics_by_user_id(db: Session, user_id: int) -> list[BodyMetric]:
     return (
         db.query(BodyMetric)
         .filter(BodyMetric.user_id == user_id)
-        .order_by(BodyMetric.recorded_at.desc(), BodyMetric.id.desc())
+        .order_by(func.coalesce(BodyMetric.measured_at, BodyMetric.recorded_at).desc(), BodyMetric.id.desc())
         .all()
     )
 

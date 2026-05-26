@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -27,5 +27,8 @@ class BodyMetric(Base):
     sleep_hours: Mapped[float | None] = mapped_column(Numeric(4, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="body_metrics")

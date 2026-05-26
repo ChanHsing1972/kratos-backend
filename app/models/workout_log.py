@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -35,4 +35,56 @@ class WorkoutLog(Base):
     training_plan: Mapped["TrainingPlan | None"] = relationship(
         "TrainingPlan",
         back_populates="workout_logs",
+    )
+    exercises: Mapped[list["WorkoutExerciseLog"]] = relationship(
+        "WorkoutExerciseLog",
+        back_populates="workout_log",
+        cascade="all, delete-orphan",
+        order_by="WorkoutExerciseLog.position",
+    )
+
+
+class WorkoutExerciseLog(Base):
+    __tablename__ = "workout_exercise_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workout_log_id: Mapped[int] = mapped_column(
+        ForeignKey("workout_logs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    exercise_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    workout_log: Mapped["WorkoutLog"] = relationship("WorkoutLog", back_populates="exercises")
+    sets: Mapped[list["WorkoutSetLog"]] = relationship(
+        "WorkoutSetLog",
+        back_populates="exercise_log",
+        cascade="all, delete-orphan",
+        order_by="WorkoutSetLog.set_number",
+    )
+
+
+class WorkoutSetLog(Base):
+    __tablename__ = "workout_set_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    exercise_log_id: Mapped[int] = mapped_column(
+        ForeignKey("workout_exercise_logs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    set_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    reps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    weight_kg: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    rpe: Mapped[float | None] = mapped_column(Numeric(3, 1), nullable=True)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    pain_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    exercise_log: Mapped["WorkoutExerciseLog"] = relationship(
+        "WorkoutExerciseLog",
+        back_populates="sets",
     )

@@ -8,6 +8,9 @@ class TrainingPlanBase(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     goal: str | None = Field(default=None, max_length=120)
     status: str = Field(default="draft", max_length=30)
+    plan_kind: str = Field(default="program", pattern="^(daily|program)$")
+    duration_weeks: int | None = Field(default=None, ge=1, le=52)
+    schedule_json: dict[str, Any] | None = None
     start_date: date | None = None
     end_date: date | None = None
     summary: str | None = None
@@ -24,6 +27,9 @@ class TrainingPlanUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     goal: str | None = Field(default=None, max_length=120)
     status: str | None = Field(default=None, max_length=30)
+    plan_kind: str | None = Field(default=None, pattern="^(daily|program)$")
+    duration_weeks: int | None = Field(default=None, ge=1, le=52)
+    schedule_json: dict[str, Any] | None = None
     start_date: date | None = None
     end_date: date | None = None
     summary: str | None = None
@@ -52,6 +58,7 @@ class TrainingPlanResponse(TrainingPlanBase):
 
 class TrainingPlanAdjustmentRequest(BaseModel):
     feedback: str = Field(min_length=1, max_length=1000)
+    workout_log_id: int | None = None
     workout_title: str | None = Field(default=None, max_length=120)
     completed: bool | None = None
     duration_seconds: int | None = Field(default=None, ge=0, le=86400)

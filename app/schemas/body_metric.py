@@ -16,6 +16,9 @@ class BodyMetricBase(BaseModel):
     hip_cm: float | None = Field(default=None, ge=0, le=300)
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
     notes: str | None = None
+    measured_at: datetime | None = None
+    source: str = Field(default="manual", max_length=30)
+    external_id: str | None = Field(default=None, max_length=120)
 
 
 class BodyMetricCreate(BodyMetricBase):
@@ -34,6 +37,9 @@ class BodyMetricUpdate(BaseModel):
     hip_cm: float | None = Field(default=None, ge=0, le=300)
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
     notes: str | None = None
+    measured_at: datetime | None = None
+    source: str | None = Field(default=None, max_length=30)
+    external_id: str | None = Field(default=None, max_length=120)
 
     model_config = ConfigDict(extra="forbid")
 

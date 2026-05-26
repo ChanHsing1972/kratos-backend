@@ -22,6 +22,7 @@ class AgentRunResponse(BaseModel):
     id: int
     user_id: int
     session_id: str
+    client_turn_id: str | None = None
     user_message: str
     answer: str
     status: str

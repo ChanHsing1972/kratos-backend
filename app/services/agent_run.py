@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.exc import IntegrityError
 
 from app.agent.state.session_state import SessionState
 from app.models.agent_run import AgentRun, AgentTraceStep
@@ -18,20 +19,32 @@ def create_agent_run(
     state: SessionState,
     trace: list[AgentTraceStepSchema],
     status: str = "completed",
+    client_turn_id: str | None = None,
+    reserved_run_id: int | None = None,
 ) -> AgentRun:
-    run = AgentRun(
-        user_id=user_id,
-        session_id=state.session_id,
-        user_message=message,
-        answer=str(state.result.response or ""),
-        status=status,
-        intent=jsonable_encoder(state.reasoning.intent),
-        task_results=jsonable_encoder(state.result.task_results),
-        tool_results=jsonable_encoder(state.result.tool_results),
-        reflection=jsonable_encoder(state.reasoning.reflection),
-        memory_payload=jsonable_encoder(state.memory.model_dump(mode="json")),
-        result_payload=jsonable_encoder(state.result.model_dump(mode="json")),
-    )
+    run = db.query(AgentRun).filter(AgentRun.id == reserved_run_id).first() if reserved_run_id else None
+    values = {
+        "answer": str(state.result.response or ""),
+        "status": status,
+        "intent": jsonable_encoder(state.reasoning.intent),
+        "task_results": jsonable_encoder(state.result.task_results),
+        "tool_results": jsonable_encoder(state.result.tool_results),
+        "reflection": jsonable_encoder(state.reasoning.reflection),
+        "memory_payload": jsonable_encoder(state.memory.model_dump(mode="json")),
+        "result_payload": jsonable_encoder(state.result.model_dump(mode="json")),
+    }
+    if run is None:
+        run = AgentRun(
+            user_id=user_id,
+            session_id=state.session_id,
+            client_turn_id=client_turn_id,
+            user_message=message,
+            **values,
+        )
+    else:
+        for field, value in values.items():
+            setattr(run, field, value)
+        run.trace_steps.clear()
     db.add(run)
     db.flush()
 
@@ -50,6 +63,46 @@ def create_agent_run(
     return get_agent_run_by_id(db, run.id, user_id) or run
 
 
+def reserve_agent_run(
+    db: Session,
+    user_id: int,
+    session_id: str,
+    message: str,
+    client_turn_id: str | None,
+) -> tuple[AgentRun | None, bool]:
+    if not client_turn_id:
+        return None, True
+    existing = get_agent_run_by_client_turn_id(db, user_id, client_turn_id)
+    if existing is not None:
+        return existing, False
+    try:
+        run = AgentRun(
+            user_id=user_id,
+            session_id=session_id,
+            client_turn_id=client_turn_id,
+            user_message=message,
+            answer="",
+            status="running",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run, True
+    except IntegrityError:
+        db.rollback()
+        return get_agent_run_by_client_turn_id(db, user_id, client_turn_id), False
+
+
+def fail_reserved_agent_run(db: Session, run_id: int | None, status: str = "failed") -> None:
+    if run_id is None:
+        return
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if run is not None and run.status == "running":
+        run.status = status
+        db.add(run)
+        db.commit()
+
+
 def get_agent_run_by_id(
     db: Session,
     run_id: int,
@@ -59,6 +112,19 @@ def get_agent_run_by_id(
         db.query(AgentRun)
         .options(selectinload(AgentRun.trace_steps))
         .filter(AgentRun.id == run_id, AgentRun.user_id == user_id)
+        .first()
+    )
+
+
+def get_agent_run_by_client_turn_id(
+    db: Session,
+    user_id: int,
+    client_turn_id: str,
+) -> AgentRun | None:
+    return (
+        db.query(AgentRun)
+        .options(selectinload(AgentRun.trace_steps))
+        .filter(AgentRun.user_id == user_id, AgentRun.client_turn_id == client_turn_id)
         .first()
     )
 

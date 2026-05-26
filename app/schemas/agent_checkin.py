@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,7 +10,11 @@ class AgentCheckinBase(BaseModel):
     sleep_quality: int | None = Field(default=None, ge=1, le=10)
     soreness_level: int | None = Field(default=None, ge=1, le=10)
     adherence_score: int | None = Field(default=None, ge=1, le=10)
+    checkin_date: date | None = None
+    sleep_hours: float | None = Field(default=None, ge=0, le=24)
     mood: str | None = Field(default=None, max_length=50)
+    pain_notes: str | None = None
+    source: str = Field(default="manual", max_length=30)
     summary: str | None = None
 
 
@@ -24,7 +28,11 @@ class AgentCheckinUpdate(BaseModel):
     sleep_quality: int | None = Field(default=None, ge=1, le=10)
     soreness_level: int | None = Field(default=None, ge=1, le=10)
     adherence_score: int | None = Field(default=None, ge=1, le=10)
+    checkin_date: date | None = None
+    sleep_hours: float | None = Field(default=None, ge=0, le=24)
     mood: str | None = Field(default=None, max_length=50)
+    pain_notes: str | None = None
+    source: str | None = Field(default=None, max_length=30)
     summary: str | None = None
 
     model_config = ConfigDict(extra="forbid")

@@ -1,5 +1,7 @@
 import json
+import re
 from datetime import date
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -36,11 +38,12 @@ def create_training_plan(
     user: User,
     plan_in: TrainingPlanCreate,
 ) -> TrainingPlan:
-    plan = TrainingPlan(user_id=user.id, **plan_in.model_dump())
+    data = _normalize_plan_payload(plan_in.model_dump())
+    plan = TrainingPlan(user_id=user.id, **data)
     db.add(plan)
     db.commit()
     db.refresh(plan)
-    return plan
+    return activate_training_plan(db, plan) if plan.status == "active" else plan
 
 
 def update_training_plan(
@@ -48,12 +51,88 @@ def update_training_plan(
     plan: TrainingPlan,
     plan_in: TrainingPlanUpdate,
 ) -> TrainingPlan:
-    for field, value in plan_in.to_update_dict().items():
+    for field, value in _normalize_plan_payload(plan_in.to_update_dict()).items():
         setattr(plan, field, value)
+    if plan.status == "active":
+        return activate_training_plan(db, plan)
     db.add(plan)
     db.commit()
     db.refresh(plan)
     return plan
+
+
+def activate_training_plan(
+    db: Session,
+    plan: TrainingPlan,
+) -> TrainingPlan:
+    (
+        db.query(TrainingPlan)
+        .filter(
+            TrainingPlan.user_id == plan.user_id,
+            TrainingPlan.id != plan.id,
+            TrainingPlan.status == "active",
+        )
+        .update({"status": "paused"}, synchronize_session=False)
+    )
+    plan.status = "active"
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+def _normalize_plan_payload(data: dict) -> dict:
+    normalized = dict(data)
+    schedule_text = normalized.get("weekly_schedule")
+    if normalized.get("schedule_json") is None and schedule_text:
+        schedule_json = _schedule_json_from_text(schedule_text)
+        if schedule_json:
+            normalized["schedule_json"] = schedule_json
+    if "plan_kind" not in normalized and schedule_text:
+        normalized["plan_kind"] = (
+            "daily"
+            if len([line for line in schedule_text.splitlines() if line.strip()]) == 1
+            else "program"
+        )
+    return normalized
+
+
+def _schedule_json_from_text(schedule_text: str) -> dict | None:
+    sessions: list[dict] = []
+    for line in schedule_text.splitlines():
+        match = re.match(r"\s*(周[一二三四五六日天])\s*[|｜]\s*([^：:]+)[：:]\s*(.+)", line)
+        if not match:
+            continue
+        weekday, title, action_text = match.groups()
+        exercises = []
+        for action in re.split(r"[；;]", action_text):
+            action = action.strip()
+            if not action:
+                continue
+            exercises.append(
+                {
+                    "id": f"exercise-{uuid4().hex[:12]}",
+                    "name": action,
+                    "target_sets": None,
+                    "target_reps": None,
+                    "target_weight_kg": None,
+                    "target_rpe": None,
+                    "rest_seconds": None,
+                    "notes": None,
+                }
+            )
+        if exercises:
+            sessions.append(
+                {
+                    "id": f"session-{uuid4().hex[:12]}",
+                    "weekday": weekday,
+                    "title": title.strip(),
+                    "exercises": exercises,
+                }
+            )
+    if not sessions:
+        return None
+    return {"version": 1, "weeks": [{"week": 1, "sessions": sessions}]}
 
 
 def delete_training_plan(db: Session, plan: TrainingPlan) -> None:
@@ -67,7 +146,10 @@ def propose_training_plan_adjustment(
     completed: bool | None = None,
     workout_title: str | None = None,
     duration_seconds: int | None = None,
+    safety_stop: bool = False,
 ) -> tuple[TrainingPlanUpdate, list[str]]:
+    if safety_stop:
+        return _propose_training_plan_adjustment_fallback(plan, feedback, completed=completed)
     llm_result = _propose_training_plan_adjustment_with_llm(
         plan,
         feedback,
@@ -79,6 +161,55 @@ def propose_training_plan_adjustment(
         return llm_result
 
     return _propose_training_plan_adjustment_fallback(plan, feedback, completed=completed)
+
+
+def progression_guidance_from_history(
+    recent_logs: list,
+    soreness_level: int | None,
+    pain_notes: str | None = None,
+) -> tuple[str | None, bool]:
+    latest = recent_logs[0] if recent_logs else None
+    latest_rpe = latest.perceived_exertion if latest is not None else None
+    set_pain = any(
+        getattr(set_log, "pain_notes", None)
+        for log in recent_logs[:2]
+        for exercise in getattr(log, "exercises", [])
+        for set_log in getattr(exercise, "sets", [])
+    )
+    safety_stop = bool(
+        pain_notes
+        or set_pain
+        or (soreness_level is not None and soreness_level >= 7)
+        or (latest_rpe is not None and latest_rpe >= 9)
+    )
+    if safety_stop:
+        return (
+            "安全门触发：存在疼痛、高酸痛或 RPE 较高信号；不得建议加量，后续应停止相关刺激并优先降级评估。",
+            True,
+        )
+
+    if len(recent_logs) < 2 or latest_rpe is None or latest_rpe > 8:
+        return None, False
+    if soreness_level is not None and soreness_level > 5:
+        return None, False
+
+    completed_names = []
+    for exercise in getattr(recent_logs[0], "exercises", []):
+        if not exercise.completed:
+            continue
+        if any(
+            previous.completed and previous.name == exercise.name
+            for previous in getattr(recent_logs[1], "exercises", [])
+        ):
+            completed_names.append(exercise.name)
+    if not completed_names:
+        return None, False
+
+    return (
+        f"渐进规则命中：{'、'.join(completed_names)}最近两次均完成，最新 RPE 不高于 8 且酸痛不高；"
+        "仅可建议下次小幅增加 2.5-5% 负重或增加 1 组，并继续观察恢复。",
+        False,
+    )
 
 
 def _propose_training_plan_adjustment_with_llm(
@@ -193,8 +324,13 @@ def _propose_training_plan_adjustment_fallback(
             recovery,
             "调整提示｜疼痛反馈日后续：相关部位动作减少 1 组，优先选择低冲击、可控速度的替代动作。",
         )
+        if any(keyword in normalized for keyword in ["头晕", "胸痛", "急性", "明显疼痛"]):
+            recovery = append_guidance(
+                recovery,
+                "若出现头晕、胸痛或急性明显疼痛，立即停止训练；症状持续或严重时及时就医。",
+            )
 
-    if any(keyword in normalized for keyword in ["累", "疲劳", "恢复差", "睡眠差", "酸痛", "没力"]):
+    if any(keyword in lowered for keyword in ["累", "疲劳", "恢复差", "睡眠差", "酸痛", "没力", "rpe 较高"]):
         rationale.append("反馈中出现疲劳或恢复不足，建议降低下一次训练负荷。")
         recovery = append_guidance(
             recovery,
