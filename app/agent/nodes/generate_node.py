@@ -149,9 +149,13 @@ class GenerateNode(BaseNode):
         return state
 
     def _update_structured_artifacts(self, state: SessionState, response_text: str) -> None:
-        strict_workout_plan = self._build_strict_workout_plan_from_context(state, response_text)
-        if strict_workout_plan is not None:
-            state.result.workout_plan = strict_workout_plan
+        structured_workout_plan = self._build_workout_plan_from_task_results(state)
+        if structured_workout_plan is not None:
+            state.result.workout_plan = structured_workout_plan
+        else:
+            strict_workout_plan = self._build_strict_workout_plan_from_context(state, response_text)
+            if strict_workout_plan is not None:
+                state.result.workout_plan = strict_workout_plan
 
         for task in state.reasoning.tasks:
             task_name = (task.name or "").lower()
@@ -174,6 +178,20 @@ class GenerateNode(BaseNode):
                 parsed_workout = self._build_workout_plan_result(task.result, source, state.reasoning.intent)
                 if parsed_workout is not None:
                     state.result.workout_plan = parsed_workout
+
+    def _build_workout_plan_from_task_results(self, state: SessionState) -> WorkoutPlanResult | None:
+        for task in state.reasoning.tasks:
+            if not isinstance(task.result, dict):
+                continue
+            source = ResultSource(
+                task_ids=[task.task_id],
+                tool_names=[tool_call.name for tool_call in task.tool_calls],
+                summary="structured task workout_plan",
+            )
+            parsed_workout = self._build_workout_plan_result(task.result, source, state.reasoning.intent)
+            if parsed_workout is not None:
+                return parsed_workout
+        return None
 
     def _build_strict_workout_plan_from_context(
         self,
@@ -351,6 +369,12 @@ class GenerateNode(BaseNode):
         goal = ", ".join(intents) if intents else None
 
         if isinstance(content, dict):
+            if isinstance(content.get("workout_plan"), dict):
+                content = content["workout_plan"]
+            chinese_plan = GenerateNode._build_chinese_workout_plan_result(content, source, goal)
+            if chinese_plan is not None:
+                return chinese_plan
+
             session_title = str(content.get("title") or content.get("name") or "训练计划")
             raw_sessions = content.get("sessions")
             if not isinstance(raw_sessions, list) or not raw_sessions:
@@ -407,6 +431,113 @@ class GenerateNode(BaseNode):
             )
 
         return None
+
+    @staticmethod
+    def _build_chinese_workout_plan_result(
+        content: dict[str, Any],
+        source: ResultSource,
+        goal: str | None,
+    ) -> WorkoutPlanResult | None:
+        plan_data = None
+        for key in ["今日可执行训练计划", "今日训练计划", "训练计划", "workout_plan"]:
+            value = content.get(key)
+            if isinstance(value, dict):
+                plan_data = value
+                break
+
+        if plan_data is None:
+            return None
+
+        raw_main_training = (
+            plan_data.get("主训练")
+            or plan_data.get("main_training")
+            or plan_data.get("exercises")
+            or plan_data.get("动作")
+        )
+        raw_exercises = raw_main_training if isinstance(raw_main_training, list) else []
+        exercises = [
+            exercise
+            for item in raw_exercises
+            if (exercise := GenerateNode._build_structured_exercise(item)) is not None
+        ]
+        if not exercises:
+            return None
+
+        notes = [
+            *[f"热身建议：{item}" for item in GenerateNode._string_list(plan_data.get("热身"))],
+            *[f"冷身建议：{item}" for item in GenerateNode._string_list(plan_data.get("冷身"))],
+        ]
+        precautions = GenerateNode._string_list(plan_data.get("注意事项"))
+        return WorkoutPlanResult(
+            title=str(content.get("title") or "今日训练计划"),
+            goal=str(content.get("goal") or goal) if (content.get("goal") or goal) else None,
+            plan_kind="daily",
+            sessions=[
+                WorkoutSession(
+                    title=GenerateNode._infer_session_title(exercises),
+                    exercises=exercises,
+                    notes=notes,
+                )
+            ],
+            precautions=precautions,
+            raw_content=content,
+            source=source,
+        )
+
+    @staticmethod
+    def _build_structured_exercise(item: Any) -> WorkoutExercise | None:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("title") or item.get("动作")
+            if not name or GenerateNode._is_guidance_line(str(name)):
+                return None
+            return WorkoutExercise(
+                name=GenerateNode._clean_exercise_name(str(name)),
+                sets=GenerateNode._to_int(item.get("sets") or item.get("组数")),
+                reps=str(item.get("reps") or item.get("次数")) if (item.get("reps") or item.get("次数")) else None,
+                duration_minutes=GenerateNode._to_int(item.get("duration_minutes") or item.get("时长")),
+                notes=item.get("notes") or item.get("备注"),
+            )
+
+        line = str(item or "").strip()
+        if not line or GenerateNode._is_guidance_line(line):
+            return None
+
+        sets_match = re.search(r"(\d+)\s*组", line)
+        reps_match = re.search(
+            r"(?:组\s*[xX×*]?\s*|[xX×*]\s*)(\d+(?:\s*[-~至]\s*\d+)?)\s*(次|秒|分钟)?",
+            line,
+        )
+        duration_match = re.search(r"(\d+)\s*分钟", line)
+        name_part = re.split(r"\s*(?:\d+\s*组|\d+\s*分钟|\d+\s*秒)", line, maxsplit=1)[0]
+        name = GenerateNode._clean_exercise_name(name_part)
+        if not name:
+            return None
+
+        reps = None
+        if reps_match:
+            unit = reps_match.group(2) or "次"
+            reps = f"{reps_match.group(1).replace(' ', '')} {unit}"
+
+        return WorkoutExercise(
+            name=name,
+            sets=int(sets_match.group(1)) if sets_match else None,
+            reps=reps,
+            duration_minutes=int(duration_match.group(1)) if duration_match and not sets_match else None,
+            notes=line,
+        )
+
+    @staticmethod
+    def _infer_session_title(exercises: list[WorkoutExercise]) -> str:
+        names = " ".join(exercise.name for exercise in exercises)
+        if any(keyword in names for keyword in ["卧推", "划船", "臀桥", "核心"]):
+            return "全身辅助训练"
+        if any(keyword in names for keyword in ["深蹲", "硬拉", "腿", "臀"]):
+            return "下肢训练"
+        if any(keyword in names for keyword in ["卧推", "肩推", "飞鸟", "下压"]):
+            return "上肢推训练"
+        if any(keyword in names for keyword in ["引体", "下拉", "划船", "弯举"]):
+            return "上肢拉训练"
+        return "今日训练"
 
     @staticmethod
     def _clean_exercise_name(name: str) -> str:
@@ -482,8 +613,12 @@ class GenerateNode(BaseNode):
     @staticmethod
     def _is_guidance_line(line: str) -> bool:
         guidance_keywords = [
+            "热身",
             "冷身",
             "拉伸",
+            "动态拉伸",
+            "静态拉伸",
+            "关节活动",
             "注意事项",
             "注意",
             "避免",
