@@ -72,6 +72,7 @@ class WorkoutExercise(BaseModel):
 
 class WorkoutSession(BaseModel):
     title: str
+    weekday: str | None = None
     focus: str | None = None
     exercises: list[WorkoutExercise] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)

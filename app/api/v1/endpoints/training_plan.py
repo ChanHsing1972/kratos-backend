@@ -28,6 +28,10 @@ from app.services.exercise_media import (
     list_known_exercise_aliases,
     normalize_action_name,
 )
+from app.services.exercise_library import (
+    exercise_library_count,
+    sync_rapidapi_exercise_library,
+)
 
 router = APIRouter()
 
@@ -35,16 +39,26 @@ router = APIRouter()
 @router.get("/media")
 def get_training_action_media(
     action_name: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
 ):
-    return get_exercise_media(action_name)
+    return get_exercise_media(action_name, db)
 
 
 @router.get("/exercise-library")
-def get_training_exercise_library():
+def get_training_exercise_library(db: Session = Depends(get_db)):
     return {
         "aliases": list_known_exercise_aliases(),
         "count": len(list_known_exercise_aliases()),
+        "library_count": exercise_library_count(db),
     }
+
+
+@router.post("/exercise-library/sync")
+def sync_training_exercise_library(
+    max_pages: int | None = Query(default=None, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    return sync_rapidapi_exercise_library(db, max_pages=max_pages)
 
 
 @router.get("/parse-action")

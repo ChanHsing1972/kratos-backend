@@ -2,12 +2,18 @@ import json
 import re
 import ssl
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 from urllib import error, parse, request
 
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
+from app.models.exercise_media import ExerciseMediaCache
 
 try:
     import certifi
@@ -50,6 +56,7 @@ CHINESE_TO_ENGLISH_MAP: dict[str, list[str]] = {
     "腿弯举": ["leg curl", "lying leg curl"],
     "臀桥": ["glute bridge", "barbell glute bridge"],
     "哑铃臀桥": ["dumbbell glute bridge", "glute bridge"],
+    "小腿提踵": ["standing calf raise", "calf raise"],
     "反向箭步蹲": ["reverse lunge"],
     "台阶上步": ["step up", "dumbbell step up"],
     "平板支撑": ["plank"],
@@ -104,7 +111,7 @@ class ExerciseMediaResult:
         }
 
 
-def get_exercise_media(action_name: str) -> dict[str, Any]:
+def get_exercise_media(action_name: str, db: Session | None = None) -> dict[str, Any]:
     normalized_action = normalize_action_name(action_name)
     if not normalized_action or is_non_exercise(normalized_action):
         return ExerciseMediaResult(
@@ -121,6 +128,17 @@ def get_exercise_media(action_name: str) -> dict[str, Any]:
     cached = _get_cached(normalized_action)
     if cached is not None:
         return cached
+
+    persisted = _get_persisted_media(db, normalized_action)
+    if persisted is not None:
+        _set_cached(normalized_action, persisted)
+        return persisted
+
+    library_match = _get_library_media(db, normalized_action)
+    if library_match is not None:
+        _set_persisted_media(db, normalized_action, library_match)
+        _set_cached(normalized_action, library_match)
+        return library_match
 
     for query_text in build_query_candidates(normalized_action):
         payload = _rapidapi_get("/api/v1/exercises/search", {"search": query_text})
@@ -145,6 +163,7 @@ def get_exercise_media(action_name: str) -> dict[str, Any]:
             video_url=video_url,
             source="rapidapi",
         ).as_dict()
+        _set_persisted_media(db, normalized_action, result)
         _set_cached(normalized_action, result)
         return result
 
@@ -158,6 +177,7 @@ def get_exercise_media(action_name: str) -> dict[str, Any]:
         video_url=None,
         source="not_found",
     ).as_dict()
+    _set_persisted_media(db, normalized_action, result)
     _set_cached(normalized_action, result)
     return result
 
@@ -169,6 +189,31 @@ def list_known_exercise_aliases() -> list[dict[str, Any]]:
     ]
 
 
+def list_supported_exercise_names() -> list[str]:
+    names = list(sorted(CHINESE_TO_ENGLISH_MAP))
+    try:
+        from app.services.exercise_library import list_library_exercise_names
+
+        names.extend(list_library_exercise_names())
+    except Exception:
+        pass
+    return _unique_preserve_order(names)
+
+
+def _get_library_media(db: Session | None, normalized_action: str) -> dict[str, Any] | None:
+    try:
+        from app.services.exercise_library import find_library_media
+
+        for query in [normalized_action, *build_query_candidates(normalized_action)]:
+            match = find_library_media(query, db)
+            if match is not None:
+                match["action_name"] = normalized_action
+                return match
+        return None
+    except Exception:
+        return None
+
+
 def normalize_action_name(raw_action: str) -> str:
     text = str(raw_action or "").strip()
     text = re.sub(r"^[\s\-*•\d.、]+", "", text)
@@ -177,6 +222,7 @@ def normalize_action_name(raw_action: str) -> str:
     if ":" in text or "：" in text:
         text = re.split(r"[:：]", text, maxsplit=1)[-1]
     text = re.split(r"[；;，,。]", text, maxsplit=1)[0]
+    text = re.sub(r"\s*[（(][^）)]*(?:可选|建议|替代|选做|optional)[^）)]*[）)]\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*(\d+|[一二三四五六七八九十]+)\s*组[\s\S]*$", "", text)
     text = re.sub(r"\s*\d+\s*(次|分钟|秒|轮|下)[\s\S]*$", "", text)
     text = re.sub(r"\s*[xX×]\s*\d+[\s\S]*$", "", text)
@@ -334,3 +380,68 @@ def _get_cached(key: str) -> dict[str, Any] | None:
 
 def _set_cached(key: str, value: dict[str, Any]) -> None:
     _MEDIA_CACHE[key] = (time.time(), value)
+
+
+def _get_persisted_media(db: Session | None, normalized_action: str) -> dict[str, Any] | None:
+    if db is None:
+        return None
+
+    try:
+        cache = db.scalar(
+            select(ExerciseMediaCache).where(
+                ExerciseMediaCache.normalized_action == normalized_action
+            )
+        )
+    except SQLAlchemyError:
+        return None
+
+    if cache is None:
+        return None
+
+    return ExerciseMediaResult(
+        action_name=cache.action_name,
+        query=cache.query,
+        exercise_id=cache.exercise_id,
+        exercise_name=cache.exercise_name,
+        media_url=cache.media_url,
+        image_url=cache.image_url,
+        video_url=cache.video_url,
+        source=cache.source,
+    ).as_dict()
+
+
+def _set_persisted_media(
+    db: Session | None,
+    normalized_action: str,
+    result: dict[str, Any],
+) -> None:
+    if db is None:
+        return
+
+    now = datetime.utcnow()
+    try:
+        cache = db.scalar(
+            select(ExerciseMediaCache).where(
+                ExerciseMediaCache.normalized_action == normalized_action
+            )
+        )
+        if cache is None:
+            cache = ExerciseMediaCache(
+                action_name=str(result.get("action_name") or normalized_action),
+                normalized_action=normalized_action,
+            )
+            db.add(cache)
+
+        cache.action_name = str(result.get("action_name") or normalized_action)
+        cache.query = _clean_optional_text(result.get("query"))
+        cache.exercise_id = _clean_optional_text(result.get("exercise_id"))
+        cache.exercise_name = _clean_optional_text(result.get("exercise_name"))
+        cache.media_url = _clean_optional_url(result.get("media_url"))
+        cache.image_url = _clean_optional_url(result.get("image_url"))
+        cache.video_url = _clean_optional_url(result.get("video_url"))
+        cache.source = str(result.get("source") or "rapidapi")
+        cache.last_checked_at = now
+        cache.updated_at = now
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()

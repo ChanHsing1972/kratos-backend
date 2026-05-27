@@ -108,7 +108,7 @@ class IntentNode(BaseNode):
             "goal": self._clean_str(data.get("goal")),
             "activity_level": self._clean_str(data.get("activity_level")),
             "exercise_intensity": self._clean_str(data.get("exercise_intensity")),
-            "available_time_minutes": self._extract_int(
+            "available_time_minutes": self._extract_available_time_minutes(
                 user_message,
                 data.get("available_time_minutes"),
             ),
@@ -131,7 +131,13 @@ class IntentNode(BaseNode):
         print("=" * 20)
         print("IntentNode")
         print("=" * 20)
-        print(data)
+        print(
+            {
+                "raw": data,
+                "intent": state.reasoning.intent,
+                "extracted_info": state.reasoning.extracted_info,
+            }
+        )
 
         return state
 
@@ -212,13 +218,28 @@ class IntentNode(BaseNode):
 
     @staticmethod
     def _extract_age(user_message: str, llm_value: Any) -> int | None:
-        parsed = IntentNode._extract_int(user_message, llm_value)
+        parsed = IntentNode._extract_age_value(user_message, llm_value)
         if parsed and 0 < parsed < 120:
             return parsed
         return None
 
     @staticmethod
-    def _extract_int(user_message: str, llm_value: Any) -> int | None:
+    def _extract_age_value(user_message: str, llm_value: Any) -> int | None:
+        if isinstance(llm_value, int):
+            return llm_value
+        if isinstance(llm_value, float):
+            return int(llm_value)
+        if isinstance(llm_value, str):
+            text = llm_value.strip()
+            if text.isdigit():
+                return int(text)
+        match = re.search(r"(?:年龄|我|今年)?\s*(\d{1,3})\s*岁", user_message)
+        if match:
+            return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_available_time_minutes(user_message: str, llm_value: Any) -> int | None:
         if isinstance(llm_value, int):
             return llm_value
         if isinstance(llm_value, float):
@@ -287,7 +308,7 @@ class IntentNode(BaseNode):
         if profile["exercise_intensity"]:
             lifestyle.exercise_intensity = profile["exercise_intensity"]
         if profile["available_time_minutes"] is not None:
-            lifestyle.available_cooking_time_minutes = profile["available_time_minutes"]
+            lifestyle.workout_minutes_per_session = profile["available_time_minutes"]
         if profile["goal"]:
             lifestyle.goal = profile["goal"]
 

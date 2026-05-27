@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.services.agent_chat import get_agent_llm
+from app.services.exercise_media import list_supported_exercise_names
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
 from app.schemas.training_plan import TrainingPlanCreate, TrainingPlanUpdate
@@ -256,6 +257,7 @@ def _build_training_plan_adjustment_prompt(
     workout_title: str | None = None,
     duration_seconds: int | None = None,
 ) -> str:
+    supported_exercises = "、".join(list_supported_exercise_names())
     plan_snapshot = {
         "id": plan.id,
         "title": plan.title,
@@ -278,11 +280,16 @@ def _build_training_plan_adjustment_prompt(
 - proposal 只能包含需要修改的训练计划字段，字段名必须使用下面这些英文键：title, goal, status, start_date, end_date, summary, weekly_schedule, nutrition_guidance, recovery_guidance。
 - 如果某个字段不需要改，就不要在 proposal 里输出它；不要输出 null。
 - 如果计划已经有周训练安排，优先修改 weekly_schedule，让后续训练更符合这次反馈。
+- 如果修改 weekly_schedule 或替换动作，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
+- 如果反馈需要的动作不在可展示动作库里，选择最接近的可展示动作替代，并在 rationale 中说明替代原因。
+- weekly_schedule 必须使用干净训练行，例如：周三｜恢复训练：动作A 2组 x 12次；动作B 2组 x 10次。
+- 不要把用户反馈、年龄、身高、体重、训练经验或解释文字放进 weekly_schedule 的训练标题和动作列表；这些内容只允许放在 rationale 或 recovery_guidance。
 - 如果反馈涉及疼痛、疲劳、提前结束、补给不足，请同步调整 recovery_guidance 或 nutrition_guidance。
 - 请保留已经发生的训练历史，不要回写历史日志；你的修改只作用于当前计划及未来训练。
 - 如果用户提供了具体训练名称或时长，请把它们作为上下文，但不要把它们原样塞进 JSON。
 
 当前日期：{date.today().isoformat()}
+可展示动作库：{supported_exercises}
 计划上下文：{json.dumps(plan_snapshot, ensure_ascii=False)}
 本次训练名称：{workout_title or "未提供"}
 本次训练时长（秒）：{duration_seconds if duration_seconds is not None else "未提供"}

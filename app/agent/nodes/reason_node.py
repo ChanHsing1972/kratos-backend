@@ -71,6 +71,10 @@ class ReasonNode(BaseNode):
         规则：
         - Skill 是领域能力包，不是代码执行插件；你只能遵守其策略、工具范围、输出格式和禁忌规则。
         - 如果启用 Skill 声明了可用工具，当前工具列表已经按这些 Skill 做了范围约束。
+        - 严禁编造用户资料；年龄、身高、体重、目标、训练经验等只能来自“已提取关键信息”或“当前长期/中期记忆”。
+        - 字段为 null、None、空字符串或未出现时，必须视为未知，不得自行填充。
+        - 严格区分“60分钟”和“60岁”：available_time_minutes 或“60分钟”只表示训练时长，绝不能当作年龄。
+        - 如果任务描述与已提取信息冲突，以已提取信息和数据库记忆为准，并在结果中纠正，不要沿用错误任务描述。
         - 如果用户在询问“我叫什么”“我的身高是多少”“我的体重是多少”“我最近吃了什么”这类可直接从记忆回答的问题，优先直接用记忆回答，不调用工具。
         - 如果用户要求根据身体状态、训练强度、可用时间、饮食限制制定饮食计划，优先调用 diet_plan_generator。
         - 如果用户提到急性疼痛、膝盖/腰/肩不适、极度疲劳，必须优先调用 pain_safety_gate，再决定是否替代训练或休息。
@@ -551,6 +555,9 @@ class ReasonNode(BaseNode):
     @staticmethod
     def _answer_from_memory(state) -> str | None:
         user_message = str(ReasonNode.latest_user_text(state)).strip().lower()
+        if any(intent in state.reasoning.intent for intent in ["健身计划", "饮食计划", "调整计划"]):
+            return None
+
         long_term = state.memory.long_term_memory
         physical = long_term.physical_profile
         lifestyle = long_term.lifestyle_profile
