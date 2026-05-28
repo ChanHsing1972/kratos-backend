@@ -17,6 +17,7 @@ from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.state.memory import MemoryState
+from app.agent.state.result import ExerciseMedia
 from app.agent.state.session_state import ActiveSkill, SessionState
 from app.agent.state.tools import ToolCall, ToolsState
 from app.agent.tools import load_tools
@@ -36,6 +37,7 @@ from app.services.conversation_session import (
     hydrate_state_from_conversation_session,
     persist_session_turn_artifacts,
 )
+from app.services.exercise_media import get_exercise_media
 from app.services.fitness_context import (
     context_for_prompt,
     hydrate_agent_memory,
@@ -56,6 +58,8 @@ def get_agent_llm():
         base_url=settings.AGENT_LLM_BASE_URL,
         model=settings.AGENT_LLM_MODEL,
         temperature=settings.AGENT_LLM_TEMPERATURE,
+        timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,
+        max_retries=settings.AGENT_LLM_MAX_RETRIES,
     )
 
 
@@ -111,6 +115,7 @@ def run_agent_chat(
             fail_reserved_agent_run(db, reserved_run.id if reserved_run else None)
         raise
     final_state = result if isinstance(result, SessionState) else SessionState(**result)
+    enrich_workout_plan_media(final_state, db)
     trace = build_trace(final_state)
     _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
 
@@ -207,7 +212,7 @@ def stream_agent_chat(
     final_state = state
 
     try:
-        for event in _run_streaming_agent(final_state, emitted_keys):
+        for event in _run_streaming_agent(final_state, emitted_keys, db=db):
             _append_persistable_event(persisted_trace, event)
             yield event
     except GeneratorExit:
@@ -245,6 +250,7 @@ def stream_agent_chat(
 def _run_streaming_agent(
     state: SessionState,
     emitted_keys: set[tuple[str, str]],
+    db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     nodes = get_stream_agent_nodes()
     final_generated = False
@@ -300,6 +306,7 @@ def _run_streaming_agent(
         yield from _emit_new_trace(state, emitted_keys, include_final=False)
 
     if final_generated:
+        enrich_workout_plan_media(state, db)
         answer = str(state.result.response or "")
         final_step = AgentTraceStep(
             type="final",
@@ -314,6 +321,21 @@ def _run_streaming_agent(
             yield event
 
     nodes["end"](state)
+
+
+def enrich_workout_plan_media(state: SessionState, db: Session | None = None) -> None:
+    workout_plan = state.result.workout_plan
+    if workout_plan is None:
+        return
+
+    for session in workout_plan.sessions:
+        for exercise in session.exercises:
+            if exercise.media is not None and exercise.media.media_url:
+                continue
+            media = get_exercise_media(exercise.name, db)
+            if media.get("source") == "skipped":
+                continue
+            exercise.media = ExerciseMedia(**media)
 
 
 def _emit_new_trace(

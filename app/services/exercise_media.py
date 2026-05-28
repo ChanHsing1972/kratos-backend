@@ -69,6 +69,33 @@ CHINESE_TO_ENGLISH_MAP: dict[str, list[str]] = {
     "弹力带面拉": ["band face pull", "face pull"],
 }
 
+ENGLISH_TO_CHINESE_EXERCISE_MAP: dict[str, str] = {
+    query.lower(): zh
+    for zh, queries in CHINESE_TO_ENGLISH_MAP.items()
+    for query in queries
+}
+ENGLISH_TO_CHINESE_EXERCISE_MAP.update(
+    {
+        "bench press": "卧推",
+        "dead bug": "死虫",
+        "dumbbell shoulder press": "哑铃肩推",
+        "elliptical machine walk": "椭圆机",
+        "hamstring stretch": "腘绳肌拉伸",
+        "high knees": "高抬腿",
+        "leg curl": "腿弯举",
+        "lunge": "弓步",
+        "push-up": "俯卧撑",
+        "push up": "俯卧撑",
+        "quadriceps stretch": "股四头肌拉伸",
+        "run on treadmill": "跑步机慢跑",
+        "seated row with towel": "坐姿划船",
+        "squat": "深蹲",
+        "standing arms circling": "站姿绕臂",
+        "chest stretch": "胸部拉伸",
+        "glute stretch": "臀部拉伸",
+    }
+)
+
 NON_EXERCISE_KEYWORDS = (
     "休息",
     "恢复",
@@ -125,17 +152,24 @@ def get_exercise_media(action_name: str, db: Session | None = None) -> dict[str,
             source="skipped",
         ).as_dict()
 
+    from app.services.exercise_video import get_teaching_videos
+
     cached = _get_cached(normalized_action)
     if cached is not None:
+        cached = dict(cached)
+        cached["teaching_videos"] = get_teaching_videos(normalized_action, db)
+        _set_cached(normalized_action, cached)
         return cached
 
     persisted = _get_persisted_media(db, normalized_action)
     if persisted is not None:
+        persisted["teaching_videos"] = get_teaching_videos(normalized_action, db)
         _set_cached(normalized_action, persisted)
         return persisted
 
     library_match = _get_library_media(db, normalized_action)
     if library_match is not None:
+        library_match["teaching_videos"] = get_teaching_videos(normalized_action, db)
         _set_persisted_media(db, normalized_action, library_match)
         _set_cached(normalized_action, library_match)
         return library_match
@@ -163,6 +197,7 @@ def get_exercise_media(action_name: str, db: Session | None = None) -> dict[str,
             video_url=video_url,
             source="rapidapi",
         ).as_dict()
+        result["teaching_videos"] = get_teaching_videos(normalized_action, db)
         _set_persisted_media(db, normalized_action, result)
         _set_cached(normalized_action, result)
         return result
@@ -177,6 +212,7 @@ def get_exercise_media(action_name: str, db: Session | None = None) -> dict[str,
         video_url=None,
         source="not_found",
     ).as_dict()
+    result["teaching_videos"] = get_teaching_videos(normalized_action, db)
     _set_persisted_media(db, normalized_action, result)
     _set_cached(normalized_action, result)
     return result
@@ -204,7 +240,11 @@ def _get_library_media(db: Session | None, normalized_action: str) -> dict[str, 
     try:
         from app.services.exercise_library import find_library_media
 
-        for query in [normalized_action, *build_query_candidates(normalized_action)]:
+        queries = build_query_candidates(normalized_action)
+        if re.search(r"[A-Za-z]", normalized_action):
+            queries.append(normalized_action)
+
+        for query in _unique_preserve_order(queries):
             match = find_library_media(query, db)
             if match is not None:
                 match["action_name"] = normalized_action
@@ -228,6 +268,22 @@ def normalize_action_name(raw_action: str) -> str:
     text = re.sub(r"\s*[xX×]\s*\d+[\s\S]*$", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def display_exercise_name(raw_action: str) -> str:
+    normalized = normalize_action_name(raw_action)
+    key = normalized.lower()
+    if key in ENGLISH_TO_CHINESE_EXERCISE_MAP:
+        return ENGLISH_TO_CHINESE_EXERCISE_MAP[key]
+
+    for english_name, chinese_name in sorted(
+        ENGLISH_TO_CHINESE_EXERCISE_MAP.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        if english_name in key:
+            return chinese_name
+    return normalized
 
 
 def is_non_exercise(action_name: str) -> bool:
@@ -329,7 +385,15 @@ def _pick_best_exercise(exercises: list[dict[str, Any]], query_text: str) -> dic
             return 2
         return SequenceMatcher(None, query, name).ratio()
 
-    return max(exercises, key=score, default=None)
+    best = max(exercises, key=score, default=None)
+    if best is None:
+        return None
+
+    best_score = score(best)
+    if best_score < 1.5:
+        return None
+
+    return best
 
 
 def _select_image_url(exercise: dict[str, Any]) -> str | None:

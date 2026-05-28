@@ -125,7 +125,7 @@ def find_library_media(action_name: str, db: Session | None = None) -> dict[str,
         return None
 
     best = max(items, key=lambda item: _match_score(query, item.search_name), default=None)
-    if best is None or _match_score(query, best.search_name) < 0.45:
+    if best is None or _match_score(query, best.search_name) < 1.5:
         return None
 
     return {

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     AGENT_LLM_MODEL: str = "qwen-turbo"
     AGENT_LLM_API_KEY: str | None = None
     AGENT_LLM_TEMPERATURE: float = 0.5
+    AGENT_LLM_TIMEOUT_SECONDS: int = 60
+    AGENT_LLM_MAX_RETRIES: int = 2
     AGENT_CHAT_RATE_LIMIT_COUNT: int = 8
     AGENT_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
     TAVILY_API_KEY: str | None = None
@@ -85,6 +87,8 @@ class Settings(BaseSettings):
     RAPIDAPI_HOST: str = "edb-with-videos-and-images-by-ascendapi.p.rapidapi.com"
     RAPIDAPI_KEY: str | None = None
     RAPIDAPI_TIMEOUT_SECONDS: int = 30
+    BILIBILI_SEARCH_TIMEOUT_SECONDS: int = 10
+    BILIBILI_TEACHING_VIDEO_LIMIT: int = 3
 
     # Backward compatibility for existing local .env files.
     QWEN_API_KEY: str | None = None

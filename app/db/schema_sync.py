@@ -53,6 +53,10 @@ CONVERSATION_SESSION_COLUMN_DDL = {
     "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL",
 }
 
+EXERCISE_VIDEO_LINK_COLUMN_DDL = {
+    "search_query": "VARCHAR(240)",
+}
+
 
 def ensure_runtime_schema(engine: Engine) -> None:
     """Add nullable columns introduced after the course prototype shipped.
@@ -128,6 +132,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
         missing_columns.extend(
             ("conversation_sessions", name, ddl)
             for name, ddl in CONVERSATION_SESSION_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "exercise_video_links" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("exercise_video_links")
+        }
+        missing_columns.extend(
+            ("exercise_video_links", name, ddl)
+            for name, ddl in EXERCISE_VIDEO_LINK_COLUMN_DDL.items()
             if name not in existing_columns
         )
 

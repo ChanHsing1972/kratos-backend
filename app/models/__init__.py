@@ -5,6 +5,7 @@ from app.models.body_metric import BodyMetric
 from app.models.conversation_session import ConversationSession
 from app.models.exercise_library import ExerciseLibraryItem
 from app.models.exercise_media import ExerciseMediaCache
+from app.models.exercise_video import ExerciseVideoLink
 from app.models.skill import Skill, UserSkill
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
@@ -20,6 +21,7 @@ __all__ = [
     "ConversationSession",
     "ExerciseLibraryItem",
     "ExerciseMediaCache",
+    "ExerciseVideoLink",
     "Skill",
     "TrainingPlan",
     "User",

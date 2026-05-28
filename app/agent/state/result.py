@@ -10,6 +10,18 @@ class ResultSource(BaseModel):
     summary: str | None = None
 
 
+class ExerciseMedia(BaseModel):
+    action_name: str | None = None
+    query: str | None = None
+    exercise_id: str | None = None
+    exercise_name: str | None = None
+    media_url: str | None = None
+    image_url: str | None = None
+    video_url: str | None = None
+    source: str | None = None
+    teaching_videos: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DietPlanRecipe(BaseModel):
     id: int | None = None
     title: str | None = None
@@ -68,6 +80,7 @@ class WorkoutExercise(BaseModel):
     reps: str | None = None
     duration_minutes: int | None = None
     notes: str | None = None
+    media: ExerciseMedia | None = None
 
 
 class WorkoutSession(BaseModel):

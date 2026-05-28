@@ -15,6 +15,16 @@ from app.services.rate_limit import check_agent_chat_rate_limit
 router = APIRouter()
 
 
+def _agent_stream_error_message(exc: Exception) -> str:
+    detail = str(exc)
+    if "incomplete chunked read" in detail or "peer closed connection" in detail:
+        return (
+            "模型服务连接中途断开了，请确认 4141 端口的 SSH 隧道仍然可用，"
+            "然后重试本次消息。"
+        )
+    return detail
+
+
 @router.post("/chat", response_model=AgentChatResponse)
 def chat_with_agent(
     payload: AgentChatRequest,
@@ -61,7 +71,7 @@ def stream_chat_with_agent(
             data = json.dumps(
                 {
                     "type": "error",
-                    "content": str(exc),
+                    "content": _agent_stream_error_message(exc),
                 },
                 ensure_ascii=False,
             )

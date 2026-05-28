@@ -11,6 +11,8 @@ engine = create_engine(
     settings.DATABASE_URI,
     pool_pre_ping=True,
     future=True,
+    use_native_hstore=False,
+    connect_args={"connect_timeout": 5},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

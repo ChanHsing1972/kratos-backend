@@ -17,7 +17,7 @@ from app.agent.state.result import (
     WorkoutSession,
 )
 from app.agent.state.session_state import SessionState
-from app.services.exercise_media import list_supported_exercise_names
+from app.services.exercise_media import display_exercise_name, list_supported_exercise_names
 
 
 class GenerateNode(BaseNode):
@@ -222,6 +222,8 @@ class GenerateNode(BaseNode):
             summary="strict workout_plan JSON",
         )
         supported_exercises = "、".join(list_supported_exercise_names())
+        user_text = self.latest_user_text(state)
+        force_daily = self._is_daily_request(user_text)
         prompt = f"""
         你是 Kratos 训练计划结构化输出器。
         只返回一个 JSON 对象，不要 Markdown，不要解释，不要代码块。
@@ -265,13 +267,16 @@ class GenerateNode(BaseNode):
         - 动作名称必须优先从“可展示动作库”中选择，并使用库里的准确名称。
         - 如果原文动作不在库里，选择最接近的库内动作替代，并把替代说明写进 notes。
         - daily 表示今日/本次训练；program 表示一周/多周/周期计划。
+        - 如果用户要求“今日/今天/本次/一次训练”，plan_kind 必须是 daily，sessions 只能有 1 个；只保留主训练动作，热身、冷身、拉伸只能写入 notes 或 precautions。
+        - 除非用户明确要求周计划、多周计划、周期计划，否则不要输出 program，不要把热身/主训练/冷身拆成不同 weekday。
+        - 面向中文前端展示，动作名优先使用中文常用名；需要匹配媒体时可在 notes 里保留英文别名。
         - 不得编造用户年龄、训练经验、身高、体重等档案信息。
 
         可展示动作库:
         {supported_exercises}
 
         用户问题:
-        {self.latest_user_text(state)}
+        {user_text}
 
         用户意图:
         {state.reasoning.intent}
@@ -281,6 +286,9 @@ class GenerateNode(BaseNode):
 
         最终回复:
         {self._clip_text(response_text, 4000)}
+
+        是否强制今日训练 daily:
+        {str(force_daily).lower()}
         """
 
         try:
@@ -292,7 +300,10 @@ class GenerateNode(BaseNode):
         workout_plan = payload.get("workout_plan")
         if not isinstance(workout_plan, dict):
             return None
-        return self._build_workout_plan_result(workout_plan, source, state.reasoning.intent)
+        parsed = self._build_workout_plan_result(workout_plan, source, state.reasoning.intent)
+        if parsed is not None and force_daily:
+            self._coerce_daily_plan(parsed)
+        return parsed
 
     def _should_emit_workout_plan(self, state: SessionState, response_text: str) -> bool:
         intent_text = " ".join(state.reasoning.intent)
@@ -418,7 +429,7 @@ class GenerateNode(BaseNode):
             plan_kind = requested_plan_kind if requested_plan_kind in {"daily", "program"} else (
                 "program" if len(sessions) > 1 else "daily"
             )
-            return WorkoutPlanResult(
+            plan = WorkoutPlanResult(
                 title=session_title,
                 goal=str(content.get("goal") or goal) if (content.get("goal") or goal) else None,
                 plan_kind=plan_kind,
@@ -429,6 +440,9 @@ class GenerateNode(BaseNode):
                 raw_content=content,
                 source=source,
             )
+            if plan.plan_kind == "daily":
+                GenerateNode._coerce_daily_plan(plan)
+            return plan
 
         return None
 
@@ -544,7 +558,82 @@ class GenerateNode(BaseNode):
         cleaned = re.sub(r"[（(].*?[）)]", "", name)
         cleaned = re.split(r"[，,；;:：|｜]", cleaned, maxsplit=1)[0]
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" -*•\t")
-        return cleaned
+        return display_exercise_name(cleaned)
+
+    @staticmethod
+    def _is_daily_request(user_text: str) -> bool:
+        return any(
+            keyword in str(user_text or "")
+            for keyword in ["今日", "今天", "本次", "一次", "单次", "今晚", "上午", "下午"]
+        )
+
+    @staticmethod
+    def _coerce_daily_plan(plan: WorkoutPlanResult) -> None:
+        plan.plan_kind = "daily"
+        plan.duration_weeks = None
+        if not plan.sessions:
+            return
+
+        primary = next(
+            (
+                session
+                for session in plan.sessions
+                if not GenerateNode._is_guidance_line(f"{session.title} {session.focus or ''}")
+            ),
+            plan.sessions[0],
+        )
+        guidance_notes: list[str] = []
+        for session in plan.sessions:
+            if session is primary:
+                guidance_notes.extend(session.notes)
+                continue
+            exercise_text = "；".join(
+                GenerateNode._format_exercise_note(exercise)
+                for exercise in session.exercises
+            )
+            if exercise_text:
+                guidance_notes.append(f"{session.title}：{exercise_text}")
+            guidance_notes.extend(session.notes)
+
+        primary.exercises = [
+            exercise
+            for exercise in primary.exercises
+            if not GenerateNode._is_guidance_line(exercise.name)
+        ]
+        for exercise in primary.exercises:
+            exercise.name = display_exercise_name(exercise.name)
+        primary.title = GenerateNode._infer_session_title(primary.exercises)
+        primary.weekday = None
+        primary.notes = GenerateNode._unique_strings(guidance_notes)
+        plan.sessions = [primary]
+
+    @staticmethod
+    def _format_exercise_note(exercise: WorkoutExercise) -> str:
+        parts = [display_exercise_name(exercise.name)]
+        prescription = []
+        if exercise.sets:
+            prescription.append(f"{exercise.sets}组")
+        if exercise.reps:
+            prescription.append(str(exercise.reps))
+        if exercise.duration_minutes:
+            prescription.append(f"{exercise.duration_minutes}分钟")
+        if prescription:
+            parts.append(" x ".join(prescription))
+        if exercise.notes:
+            parts.append(str(exercise.notes))
+        return "，".join(part for part in parts if part)
+
+    @staticmethod
+    def _unique_strings(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            text = str(value or "").strip()
+            key = re.sub(r"\s+", "", text)
+            if text and key not in seen:
+                seen.add(key)
+                result.append(text)
+        return result
 
     @staticmethod
     def _string_list(value: Any) -> list[str]:

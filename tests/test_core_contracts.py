@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 from app.agent.tool_registry import ToolMetadata
 from app.agent.nodes.generate_node import GenerateNode
+from app.services.exercise_library import _match_score
+from app.services.exercise_media import _pick_best_exercise
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
 from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
@@ -86,3 +88,20 @@ def test_pain_or_high_strain_triggers_safety_stop():
 
     assert safety_stop is True
     assert "不得建议加量" in (guidance or "")
+
+
+def test_exercise_library_rejects_unrelated_fuzzy_media_matches():
+    assert _match_score("dead bug", "side lunge") < 1.5
+
+
+def test_rapidapi_search_rejects_unrelated_media_matches():
+    result = _pick_best_exercise(
+        [
+            {"name": "Close-grip Push-up"},
+            {"name": "Triceps Dip"},
+            {"name": "Clap Push Up"},
+        ],
+        "cable triceps pushdown",
+    )
+
+    assert result is None

@@ -23,9 +23,12 @@ try:
     ensure_runtime_schema(engine)
 except SQLAlchemyError as exc:
     print(f"[startup] Database initialization skipped: {exc}")
-with SessionLocal() as seed_db:
-    seed_builtin_skills(seed_db)
-    backfill_conversation_sessions_from_agent_runs(seed_db)
+try:
+    with SessionLocal() as seed_db:
+        seed_builtin_skills(seed_db)
+        backfill_conversation_sessions_from_agent_runs(seed_db)
+except SQLAlchemyError as exc:
+    print(f"[startup] Database seed/backfill skipped: {exc}")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
