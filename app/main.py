@@ -4,11 +4,13 @@ FastAPI 应用入口文件
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1 import api_router
 from app.core.config import settings
+from app.services.upload import UPLOAD_DIR
 from app.db.schema_sync import ensure_runtime_schema
 from app.db.session import Base, SessionLocal, engine
 from app.models import User
@@ -44,6 +46,8 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/")

@@ -10,6 +10,7 @@ from app.api.v1.endpoints.body_metric import router as body_metric_router
 from app.api.v1.endpoints.profile import router as profile_router
 from app.api.v1.endpoints.skill import router as skill_router
 from app.api.v1.endpoints.training_plan import router as training_plan_router
+from app.api.v1.endpoints.upload import router as upload_router
 from app.api.v1.endpoints.workout_log import router as workout_log_router
 
 api_router = APIRouter()
@@ -23,4 +24,5 @@ api_router.include_router(body_metric_router, prefix="/body-metrics", tags=["bod
 api_router.include_router(profile_router, prefix="/profile", tags=["profile"])
 api_router.include_router(skill_router, prefix="/skills", tags=["skills"])
 api_router.include_router(training_plan_router, prefix="/plans", tags=["plans"])
+api_router.include_router(upload_router, prefix="/uploads", tags=["uploads"])
 api_router.include_router(workout_log_router, prefix="/workout-logs", tags=["workout-logs"])

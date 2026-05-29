@@ -26,6 +26,7 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    avatar_url: str | None = None
     created_at: datetime
 
 

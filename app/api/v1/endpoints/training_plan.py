@@ -1,4 +1,7 @@
+from urllib import error, parse, request
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -42,6 +45,40 @@ def get_training_action_media(
     db: Session = Depends(get_db),
 ):
     return get_exercise_media(action_name, db)
+
+
+@router.get("/media/proxy-image")
+def proxy_training_media_image(url: str = Query(..., min_length=1)):
+    parsed = parse.urlparse(url)
+    host = parsed.netloc.lower()
+    if parsed.scheme not in {"http", "https"} or not (
+        host.endswith("hdslb.com") or host.endswith("biliimg.com")
+    ):
+        raise HTTPException(status_code=400, detail="不支持代理此图片地址")
+
+    req = request.Request(
+        url,
+        headers={
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Referer": "https://www.bilibili.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as upstream:
+            content_type = upstream.headers.get("Content-Type", "image/jpeg")
+            return Response(
+                upstream.read(),
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+    except (error.HTTPError, error.URLError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="B 站封面加载失败") from exc
 
 
 @router.get("/exercise-library")

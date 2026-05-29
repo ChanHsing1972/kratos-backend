@@ -55,6 +55,18 @@ def stream_chat_with_agent(
 ):
     check_agent_chat_rate_limit(current_user.id)
     def event_generator():
+        yield "event: status\n"
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "status",
+                    "content": "已连接 Kratos Agent，正在读取上下文...",
+                },
+                ensure_ascii=False,
+            )
+            + "\n\n"
+        )
         try:
             for event in stream_agent_chat(
                 user_id=current_user.id,

@@ -31,6 +31,15 @@ ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 5432:localhost:5
 # 连接大模型端口
 ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 root@192.0.2.1
 
+# 如果使用 Autossh
+autossh -M 0 -f -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -L 5432:localhost:5432 \
+  -L 4141:localhost:4141 \
+  root@192.0.2.1
+
 # 启动服务器，默认端口 8000
 uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
 

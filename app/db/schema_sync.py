@@ -57,6 +57,10 @@ EXERCISE_VIDEO_LINK_COLUMN_DDL = {
     "search_query": "VARCHAR(240)",
 }
 
+USER_COLUMN_DDL = {
+    "avatar_url": "TEXT",
+}
+
 
 def ensure_runtime_schema(engine: Engine) -> None:
     """Add nullable columns introduced after the course prototype shipped.
@@ -143,6 +147,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
         missing_columns.extend(
             ("exercise_video_links", name, ddl)
             for name, ddl in EXERCISE_VIDEO_LINK_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "users" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("users")
+        }
+        missing_columns.extend(
+            ("users", name, ddl)
+            for name, ddl in USER_COLUMN_DDL.items()
             if name not in existing_columns
         )
 
