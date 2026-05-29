@@ -87,6 +87,7 @@ class GenerateNode(BaseNode):
         - 训练计划行必须保持干净格式：`周三｜训练主题：动作A 3组 x 10次；动作B 3组 x 12次`。
         - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划行的标题或动作列表里；这些内容只能放在计划前后的说明段。
         - 今日训练只输出当天安排，不要把用户原话重复成标题；标题优先使用“上肢训练”“下肢训练”“全身训练”“恢复训练”等短主题。
+        - 生成训练计划时，必须提供可直接保存的训练安排：周/周期计划使用包含“周几｜训练主题｜动作与组次”的 Markdown 表格；今日计划列出动作、组数/次数或时长。不要在正文与训练安排中给出互相冲突的内容。
         - 不要把 Skill 描述成会直接执行代码；Skill 只是改变你的领域策略和工具范围。
         - 不要暴露内部任务编号或 JSON。
 
@@ -645,7 +646,7 @@ class GenerateNode(BaseNode):
 
     @staticmethod
     def _parse_weekly_sessions_from_text(content: str) -> list[WorkoutSession]:
-        sessions: list[WorkoutSession] = []
+        sessions = GenerateNode._parse_weekly_table_sessions(content)
         for raw_line in content.splitlines():
             line = raw_line.strip().strip("-•* ")
             match = re.match(
@@ -658,14 +659,47 @@ class GenerateNode(BaseNode):
             exercises: list[WorkoutExercise] = []
             for item in re.split(r"[；;]", exercise_text):
                 exercises.extend(GenerateNode._parse_exercises_from_text(item.strip()))
-            if not exercises:
+            if not exercises and not re.search(r"恢复|休息|拉伸|快走|瑜伽|活动", exercise_text):
                 continue
-            title = f"{day} | {focus.strip()}" if focus and focus.strip() else day
+            title = focus.strip() if focus and focus.strip() else "训练安排"
+            if any(session.weekday == day for session in sessions):
+                continue
             sessions.append(
                 WorkoutSession(
                     title=title,
+                    weekday=day,
                     focus=focus.strip() if focus and focus.strip() else None,
                     exercises=exercises,
+                    notes=[exercise_text.strip()],
+                )
+            )
+        return sessions
+
+    @staticmethod
+    def _parse_weekly_table_sessions(content: str) -> list[WorkoutSession]:
+        sessions: list[WorkoutSession] = []
+        for raw_line in content.splitlines():
+            if "|" not in raw_line:
+                continue
+            cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
+            if len(cells) < 2 or re.search(r"周几|星期|训练内容|主要动作|说明", cells[0]):
+                continue
+            day_match = re.fullmatch(r"((?:周|星期)[一二三四五六日天](?:/[日天])?)", cells[0])
+            if not day_match:
+                continue
+            day = day_match.group(1).replace("星期", "周")
+            focus = cells[1] if len(cells) >= 3 else None
+            details = "；".join(cells[2:] if len(cells) >= 3 else cells[1:]).strip()
+            exercises: list[WorkoutExercise] = []
+            for item in re.split(r"[；;，,、](?=\s*[\u4e00-\u9fffA-Za-z])", details):
+                exercises.extend(GenerateNode._parse_exercises_from_text(item.strip()))
+            sessions.append(
+                WorkoutSession(
+                    title=focus or "训练安排",
+                    weekday=day,
+                    focus=focus,
+                    exercises=exercises,
+                    notes=[details] if details else [],
                 )
             )
         return sessions
@@ -677,27 +711,105 @@ class GenerateNode(BaseNode):
             line = raw_line.strip().strip("-•")
             if not line:
                 continue
-            sets_match = re.search(r"(\d+)\s*组", line)
-            reps_match = re.search(r"每组\s*(\d+\s*(?:次|分钟))|(\d+\s*(?:次|分钟))", line)
-            if not sets_match and not reps_match:
+            sets_match = re.search(r"(\d+)\s*(?:组(?:\s*[x×]\s*)?|[x×])\s*(\d+(?:\s*[-~至]\s*\d+)?)(?:\s*(次|秒|分钟))?", line)
+            duration_match = re.search(r"(\d+(?:\s*[-~至]\s*\d+)?)\s*分钟", line)
+            if not sets_match and not duration_match:
                 continue
             if GenerateNode._is_guidance_line(line):
                 continue
-            name = re.split(r"[:：,，]\s*", line, maxsplit=1)[0].strip()
+            prescription_start = sets_match.start() if sets_match else duration_match.start()
+            name = line[:prescription_start].strip(" ：:,，")
             if not name:
                 continue
             reps_value = None
-            if reps_match:
-                reps_value = reps_match.group(1) or reps_match.group(2)
+            if sets_match:
+                reps_value = f"{sets_match.group(2).replace(' ', '')} {sets_match.group(3) or '次'}"
             exercises.append(
                 WorkoutExercise(
                     name=name,
                     sets=int(sets_match.group(1)) if sets_match else None,
                     reps=reps_value,
+                    duration_minutes=int(re.search(r"\d+", duration_match.group(1)).group()) if duration_match and not sets_match else None,
                     notes=line,
                 )
             )
         return exercises
+
+    @staticmethod
+    def _requested_plan_kind(user_message: str) -> str | None:
+        if not re.search(r"训练|健身|计划|安排|怎么练", user_message):
+            return None
+        if re.search(r"一周|周计划|每周|长期|周期|多周|月度", user_message):
+            return "program"
+        if re.search(r"今日|今天|每日|日计划|本次", user_message):
+            return "daily"
+        return None
+
+    @staticmethod
+    def _build_visible_workout_plan_result(
+        content: str,
+        source: ResultSource,
+        intents: list[str],
+        requested_kind: str,
+        duration_weeks: int | None = None,
+    ) -> WorkoutPlanResult | None:
+        goal = ", ".join(intents) if intents else None
+        if requested_kind == "program":
+            sessions = GenerateNode._parse_weekly_sessions_from_text(content)
+            if len(sessions) < 2:
+                return None
+            return WorkoutPlanResult(
+                title=GenerateNode._plan_title_from_text(content, "周期训练计划"),
+                goal=goal,
+                plan_kind="program",
+                duration_weeks=duration_weeks or 4,
+                sessions=sessions,
+                precautions=GenerateNode._precautions_from_text(content),
+                raw_content=content,
+                source=source,
+            )
+
+        exercises = GenerateNode._parse_exercises_from_text(content)
+        if not exercises:
+            return None
+        return WorkoutPlanResult(
+            title=GenerateNode._plan_title_from_text(content, "今日训练计划"),
+            goal=goal,
+            plan_kind="daily",
+            sessions=[WorkoutSession(title="今日训练", exercises=exercises)],
+            precautions=GenerateNode._precautions_from_text(content),
+            raw_content=content,
+            source=source,
+        )
+
+    @staticmethod
+    def _requested_duration_weeks(user_message: str) -> int | None:
+        arabic = re.search(r"(\d+)\s*周", user_message)
+        if arabic:
+            return max(1, int(arabic.group(1)))
+        chinese = re.search(r"([一二三四五六七八九十])\s*周", user_message)
+        if chinese:
+            values = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+            return values.get(chinese.group(1))
+        if "周计划" in user_message:
+            return 1
+        return None
+
+    @staticmethod
+    def _plan_title_from_text(content: str, fallback: str) -> str:
+        for line in content.splitlines():
+            candidate = line.lstrip("#* ").strip()
+            if "计划" in candidate and "|" not in candidate and len(candidate) <= 40:
+                return candidate
+        return fallback
+
+    @staticmethod
+    def _precautions_from_text(content: str) -> list[str]:
+        return [
+            line.strip("-•| ")
+            for line in content.splitlines()
+            if any(keyword in line for keyword in ["注意", "避免", "热身", "拉伸", "疼痛", "头晕"])
+        ]
 
     @staticmethod
     def _is_guidance_line(line: str) -> bool:

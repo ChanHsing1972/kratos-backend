@@ -4,6 +4,7 @@ from app.agent.tool_registry import ToolMetadata
 from app.agent.nodes.generate_node import GenerateNode
 from app.services.exercise_library import _match_score
 from app.services.exercise_media import _pick_best_exercise
+from app.agent.state.result import ResultSource
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
 from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
@@ -53,8 +54,31 @@ def test_agent_weekly_text_creates_multiple_editable_sessions():
     )
 
     assert len(sessions) == 2
-    assert sessions[0].title == "周一 | 上肢推"
-    assert sessions[0].exercises[0].name == "卧推 4 组 x 8 次"
+    assert sessions[0].title == "上肢推"
+    assert sessions[0].exercises[0].name == "卧推"
+
+
+def test_agent_weekly_markdown_table_creates_program_from_visible_answer():
+    plan = GenerateNode._build_visible_workout_plan_result(
+        "| 周几 | 训练内容 | 主要动作/说明 |\n"
+        "| --- | --- | --- |\n"
+        "| 周一 | 下肢+核心 | 深蹲 4x8-12、平板支撑 3x40秒 |\n"
+        "| 周三 | 有氧+体态 | 快走 30分钟；面拉 3x15 |\n"
+        "| 周六/日 | 恢复 | 拉伸 15分钟，促进恢复 |",
+        ResultSource(),
+        ["健身计划"],
+        "program",
+        1,
+    )
+
+    assert plan is not None
+    assert plan.plan_kind == "program"
+    assert plan.duration_weeks == 1
+    assert len(plan.sessions) == 3
+    assert plan.sessions[0].weekday == "周一"
+    assert plan.sessions[0].exercises[0].name == "深蹲"
+    assert plan.sessions[0].exercises[1].name == "平板支撑"
+    assert plan.sessions[-1].weekday == "周六/日"
 
 
 def test_progression_is_allowed_only_after_two_low_strain_completions():
