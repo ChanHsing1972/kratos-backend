@@ -10,6 +10,7 @@ from app.services.upload import (
     ALLOWED_AVATAR_TYPES,
     is_allowed_upload,
     save_upload_file,
+    upload_avatar_to_oss,
 )
 
 
@@ -45,7 +46,7 @@ async def upload_avatar(
     if not is_allowed_upload(file, ALLOWED_AVATAR_TYPES):
         raise HTTPException(status_code=400, detail="头像仅支持 JPG、PNG 或 WebP")
     try:
-        uploaded = await save_upload_file(file, user_id=current_user.id, purpose="avatar")
+        uploaded = await upload_avatar_to_oss(file, user_id=current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

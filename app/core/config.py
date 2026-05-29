@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     BILIBILI_SEARCH_TIMEOUT_SECONDS: int = 10
     BILIBILI_TEACHING_VIDEO_LIMIT: int = 3
 
+    ALIYUN_OSS_ACCESS_KEY_ID: str | None = None
+    ALIYUN_OSS_ACCESS_KEY_SECRET: str | None = None
+    ALIYUN_OSS_BUCKET: str = "chanhsing"
+    ALIYUN_OSS_ENDPOINT: str = "https://oss-cn-shanghai.aliyuncs.com"
+    ALIYUN_OSS_PUBLIC_BASE_URL: str | None = None
+
     # Backward compatibility for existing local .env files.
     QWEN_API_KEY: str | None = None
 
