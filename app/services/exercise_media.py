@@ -230,7 +230,10 @@ def list_supported_exercise_names() -> list[str]:
     try:
         from app.services.exercise_library import list_library_exercise_names
 
-        names.extend(list_library_exercise_names())
+        for name in list_library_exercise_names():
+            display_name = display_exercise_name(name)
+            if re.search(r"[\u4e00-\u9fff]", display_name):
+                names.append(display_name)
     except Exception:
         pass
     return _unique_preserve_order(names)
