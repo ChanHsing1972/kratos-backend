@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -19,6 +20,22 @@ from app.schemas.conversation_session import ConversationSessionResponse
 DEFAULT_SESSION_TITLE = "新会话"
 SESSION_SUMMARY_LIMIT = 1200
 SESSION_SUMMARY_COMPRESSION_TARGET = 600
+SESSION_TITLE_MIN_CHARS = 6
+SESSION_TITLE_MAX_CHARS = 10
+
+TITLE_FALLBACK_KEYWORDS = [
+    ("训练计划", "训练计划制定"),
+    ("今日训练", "今日训练安排"),
+    ("一周训练", "一周训练规划"),
+    ("饮食建议", "饮食建议方案"),
+    ("恢复建议", "恢复调整建议"),
+    ("风险评估", "训练风险评估"),
+    ("身体数据", "身体数据分析"),
+    ("减脂", "减脂训练方案"),
+    ("增肌", "增肌训练方案"),
+    ("跑步路线", "跑步路线规划"),
+    ("动作纠正", "动作纠正建议"),
+]
 
 
 def _session_response_from_model(session: ConversationSession) -> ConversationSessionResponse:
@@ -284,7 +301,11 @@ def persist_session_turn_artifacts(
         session.summary = compress_session_summary(combined_summary)
 
     if session.title == DEFAULT_SESSION_TITLE and user_message.strip():
-        session.title = _build_title_from_message(user_message)
+        session.title = _build_title_from_message(
+            user_message,
+            assistant_message=str(state.result.response or ""),
+            summary=session.summary,
+        )
 
     session.updated_at = datetime.utcnow()
     db.add(session)
@@ -424,9 +445,107 @@ def compress_session_summary(summary: str) -> str:
     return cleaned_summary[-SESSION_SUMMARY_LIMIT:]
 
 
-def _build_title_from_message(message: str) -> str:
-    cleaned_message = " ".join(message.split()).strip()
+def _build_title_from_message(
+    message: str,
+    assistant_message: str | None = None,
+    summary: str | None = None,
+) -> str:
+    cleaned_message = _clip_title_context(message)
     if not cleaned_message:
         return DEFAULT_SESSION_TITLE
-    title = cleaned_message[:24].strip()
+
+    generated_title = _generate_session_title_with_llm(
+        user_message=cleaned_message,
+        assistant_message=_clip_title_context(assistant_message or ""),
+        summary=_clip_title_context(summary or "", limit=500),
+    )
+    if generated_title:
+        return generated_title
+
+    return _fallback_session_title(cleaned_message)
+
+
+def _generate_session_title_with_llm(
+    *,
+    user_message: str,
+    assistant_message: str,
+    summary: str,
+) -> str | None:
+    prompt = f"""
+    你是中文会话标题生成器。请根据下面的对话内容生成一个标题。
+
+    要求：
+    - 标题必须是对用户消息的概括，不要照抄或截取用户原句。
+    - 使用中文，控制在 {SESSION_TITLE_MIN_CHARS}-{SESSION_TITLE_MAX_CHARS} 个字。
+    - 不要输出引号、标点、Markdown、解释或多个候选。
+    - 如果内容与运动、饮食、恢复、健康数据相关，优先体现核心任务或目标。
+
+    用户消息：
+    {user_message}
+
+    助手回复：
+    {assistant_message or "暂无"}
+
+    会话摘要：
+    {summary or "暂无"}
+    """
+
+    try:
+        llm = ChatOpenAI(
+            api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
+            base_url=settings.AGENT_LLM_BASE_URL,
+            model=settings.AGENT_LLM_MODEL,
+            temperature=0,
+            timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,
+            max_retries=settings.AGENT_LLM_MAX_RETRIES,
+        )
+        response = llm.invoke(prompt)
+        content = getattr(response, "content", response)
+        return _normalize_session_title(str(content))
+    except Exception:
+        return None
+
+
+def _normalize_session_title(value: str) -> str | None:
+    title = str(value or "").strip()
+    title = re.sub(r"^```(?:\w+)?|```$", "", title).strip()
+    title = re.sub(r"^(标题|会话标题|主题)\s*[:：]\s*", "", title).strip()
+    title = re.sub(r"^[\"'“”‘’「」『』【】\s]+|[\"'“”‘’「」『』【】\s]+$", "", title)
+    title = re.sub(r"[，。,.!?！？；;：:\-—\s]+", "", title)
+    if not title:
+        return None
+
+    title = title[:SESSION_TITLE_MAX_CHARS]
+    if len(title) < SESSION_TITLE_MIN_CHARS:
+        title = f"{title}相关对话"[:SESSION_TITLE_MAX_CHARS]
+
+    if len(title) < SESSION_TITLE_MIN_CHARS:
+        return None
+    return title
+
+
+def _fallback_session_title(message: str) -> str:
+    compacted = re.sub(r"[#>*_`~(){}\[\]]", "", message)
+    compacted = " ".join(compacted.split()).strip()
+    if not compacted:
+        return DEFAULT_SESSION_TITLE
+
+    for keyword, title in TITLE_FALLBACK_KEYWORDS:
+        if keyword in compacted:
+            return title
+
+    chinese_only = re.sub(r"[^\u4e00-\u9fff]", "", compacted)
+    if len(chinese_only) >= SESSION_TITLE_MIN_CHARS:
+        return chinese_only[:SESSION_TITLE_MAX_CHARS]
+
+    title = re.sub(r"\s+", "", compacted)[:SESSION_TITLE_MAX_CHARS]
+    if len(title) < SESSION_TITLE_MIN_CHARS:
+        title = f"{title}相关对话"[:SESSION_TITLE_MAX_CHARS]
     return title or DEFAULT_SESSION_TITLE
+
+
+def _clip_title_context(value: str, limit: int = 1000) -> str:
+    cleaned = " ".join(str(value or "").split()).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[:limit]}..."

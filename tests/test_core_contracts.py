@@ -7,6 +7,7 @@ from app.services.exercise_media import _pick_best_exercise
 from app.agent.state.result import ResultSource
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
+from app.services.conversation_session import _build_title_from_message
 from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
 
 
@@ -129,3 +130,45 @@ def test_rapidapi_search_rejects_unrelated_media_matches():
     )
 
     assert result is None
+
+
+def test_conversation_title_uses_llm_summary(monkeypatch):
+    class FakeTitleLLM:
+        def __init__(self, **kwargs):
+            pass
+
+        def invoke(self, prompt):
+            assert "不要照抄或截取用户原句" in prompt
+            return SimpleNamespace(content="「膝盖恢复训练」")
+
+    monkeypatch.setattr(
+        "app.services.conversation_session.ChatOpenAI",
+        FakeTitleLLM,
+    )
+
+    title = _build_title_from_message(
+        "我今天右膝不舒服，帮我调整训练强度",
+        assistant_message="建议降低下肢负荷，改为低冲击恢复训练。",
+    )
+
+    assert title == "膝盖恢复训练"
+    assert 6 <= len(title) <= 12
+
+
+def test_conversation_title_falls_back_without_raw_prompt_truncation(monkeypatch):
+    class FailingTitleLLM:
+        def __init__(self, **kwargs):
+            pass
+
+        def invoke(self, prompt):
+            raise RuntimeError("llm unavailable")
+
+    monkeypatch.setattr(
+        "app.services.conversation_session.ChatOpenAI",
+        FailingTitleLLM,
+    )
+
+    title = _build_title_from_message("请帮我制定一份训练计划，目标是减脂并保护膝盖")
+
+    assert title == "训练计划制定"
+    assert title != "请帮我制定一份训练计划"
