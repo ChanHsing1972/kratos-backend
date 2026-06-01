@@ -268,6 +268,14 @@ def hydrate_state_from_conversation_session(
         state.conversation.session_summary_snapshot = session.summary.strip()
         state.conversation.summaries = [session.summary.strip()]
 
+    shared_summaries = list_shared_conversation_knowledge(
+        db,
+        user_id,
+        exclude_session_id=session_id,
+    )
+    if shared_summaries:
+        state.conversation.summaries.extend(shared_summaries)
+
     recent_runs = session.runs[-state.conversation.max_conversations :]
     for run in recent_runs:
         state.conversation.conversations.append(
@@ -277,6 +285,34 @@ def hydrate_state_from_conversation_session(
         state.conversation.messages.append(AIMessage(content=run.answer))
 
     return session
+
+
+def list_shared_conversation_knowledge(
+    db: Session,
+    user_id: int,
+    *,
+    exclude_session_id: str | None = None,
+    limit: int = 5,
+) -> list[str]:
+    query = (
+        db.query(ConversationSession)
+        .filter(
+            ConversationSession.user_id == user_id,
+            ConversationSession.is_shared.is_(True),
+            ConversationSession.is_deleted.is_(False),
+            ConversationSession.summary != "",
+        )
+    )
+    if exclude_session_id:
+        query = query.filter(ConversationSession.session_id != exclude_session_id)
+    query = query.order_by(ConversationSession.updated_at.desc()).limit(limit)
+
+    summaries = []
+    for session in query.all():
+        summary = session.summary.strip()
+        if summary:
+            summaries.append(f"共享对话《{session.title}》：{summary}")
+    return summaries
 
 
 def persist_session_turn_artifacts(

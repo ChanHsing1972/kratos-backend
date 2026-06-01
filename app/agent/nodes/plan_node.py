@@ -45,7 +45,7 @@ class PlanNode(BaseNode):
         }}
         """
 
-        data = self.invoke_json(prompt)
+        data = self.invoke_json(prompt, state)
         tasks_data = data.get("tasks") or []
         tasks: list[Task] = []
         for index, raw_task in enumerate(tasks_data):

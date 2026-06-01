@@ -143,7 +143,7 @@ class ReasonNode(BaseNode):
 
         if not task.tool_calls:
             try:
-                data = self.invoke_json(prompt_reason)
+                data = self.invoke_json(prompt_reason, state)
             except LLMJsonParseError as exc:
                 data = self._fallback_reason_data(state, task, str(exc))
             task.tool_calls = self._parse_tool_calls(
@@ -162,7 +162,7 @@ class ReasonNode(BaseNode):
                 return state
         else:
             try:
-                data = self.invoke_json(prompt_observation)
+                data = self.invoke_json(prompt_observation, state)
             except LLMJsonParseError as exc:
                 data = {
                     "result": f"工具结果已获取，但模型解析工具观察结果时失败：{exc}。请根据已有工具结果保守生成回答。"

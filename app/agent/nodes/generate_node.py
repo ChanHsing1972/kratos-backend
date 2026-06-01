@@ -24,21 +24,45 @@ class GenerateNode(BaseNode):
 
     def __call__(self, state: SessionState):
         prompt = self.build_prompt(state)
-        response = self.llm.invoke(prompt)
+        response = self.llm.invoke(self.prompt_input(prompt, state))
         response_text = self.message_text(response)
         self.apply_response(state, response, response_text)
         return state
 
     def stream_response(self, state: SessionState):
+        for event in self.stream_response_events(state):
+            if event.get("type") == "answer_delta":
+                yield str(event.get("delta") or "")
+
+    def stream_response_events(self, state: SessionState):
         prompt = self.build_prompt(state)
         response_text = ""
 
-        for chunk in self.llm.stream(prompt):
+        for chunk in self.llm.stream(self.prompt_input(prompt, state)):
             delta = self.message_text(chunk)
             if not delta:
                 continue
             response_text += delta
-            yield delta
+            yield {
+                "type": "answer_delta",
+                "delta": delta,
+                "content": delta,
+            }
+
+        structured_card_pending = self._should_emit_workout_plan(state, response_text)
+        if response_text:
+            yield {
+                "type": "status",
+                "content": (
+                    "Markdown 回答已生成，正在整理可保存的 AI 周期计划草稿"
+                    if structured_card_pending
+                    else "Markdown 回答已生成，正在完成最终校验"
+                ),
+                "raw": {
+                    "answer_stream_complete": True,
+                    "structured_card_pending": structured_card_pending,
+                },
+            }
 
         self.apply_response(state, AIMessage(content=response_text), response_text)
 
@@ -294,7 +318,7 @@ class GenerateNode(BaseNode):
         """
 
         try:
-            payload = self.invoke_json(prompt)
+            payload = self.invoke_json(prompt, state)
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Failed to build strict workout_plan JSON: %s", exc)
             return None

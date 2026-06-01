@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from app.agent.json_utils import parse_json_object
 from app.agent.state.session_state import SessionState
@@ -15,25 +15,69 @@ class BaseNode:
     def __call__(self, state: SessionState) -> SessionState:
         raise NotImplementedError("Subclasses must implement this method")
 
-    def invoke_json(self, prompt: str) -> dict[str, Any]:
-        response = self.llm.invoke(prompt)
+    def invoke_json(self, prompt: str, state: SessionState | None = None) -> dict[str, Any]:
+        response = self.llm.invoke(self.prompt_input(prompt, state))
         content = getattr(response, "content", response)
         if not isinstance(content, str):
             content = str(content)
         return parse_json_object(content)
 
+    def prompt_input(self, prompt: str, state: SessionState | None = None):
+        attachment_parts = self.latest_attachment_parts(state) if state else []
+        if not attachment_parts:
+            return prompt
+        return [HumanMessage(content=[{"type": "text", "text": prompt}, *attachment_parts])]
+
     @staticmethod
     def latest_user_text(state: SessionState) -> str:
         for message in reversed(state.conversation.messages):
             if getattr(message, "type", None) == "human":
-                return str(message.content)
+                return BaseNode.message_text(message)
         if state.conversation.messages:
-            return str(state.conversation.messages[-1].content)
+            return BaseNode.message_text(state.conversation.messages[-1])
         return ""
 
     @staticmethod
     def message_text(message: BaseMessage | Any) -> str:
-        return str(getattr(message, "content", message))
+        content = getattr(message, "content", message)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    parts.append(str(item))
+                    continue
+                item_type = item.get("type")
+                if item_type == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif item_type == "image_url":
+                    parts.append("[用户上传了一张图片]")
+                elif item_type == "file":
+                    file_info = item.get("file")
+                    filename = (
+                        file_info.get("filename")
+                        if isinstance(file_info, dict)
+                        else None
+                    )
+                    parts.append(f"[用户上传了文件：{filename or '未命名文件'}]")
+            return "\n".join(part for part in parts if part)
+        return str(content)
+
+    @staticmethod
+    def latest_attachment_parts(state: SessionState | None) -> list[dict[str, Any]]:
+        if state is None:
+            return []
+        for message in reversed(state.conversation.messages):
+            if getattr(message, "type", None) != "human":
+                continue
+            content = getattr(message, "content", None)
+            if not isinstance(content, list):
+                return []
+            return [
+                item
+                for item in content
+                if isinstance(item, dict) and item.get("type") in {"image_url", "file"}
+            ]
+        return []
 
     @staticmethod
     def describe_tools(tools: dict[str, Any]) -> list[dict[str, Any]]:

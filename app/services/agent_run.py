@@ -56,6 +56,7 @@ def create_agent_run(
                 step_type=step.type,
                 content=step.content,
                 raw=jsonable_encoder(step.raw),
+                created_at=step.timestamp,
             )
         )
 

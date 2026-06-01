@@ -5,10 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.models.user import User
-from app.schemas.workout_log import WorkoutLogCreate, WorkoutLogResponse, WorkoutLogUpdate
+from app.schemas.workout_log import (
+    WorkoutLogCreate,
+    WorkoutLogResponse,
+    WorkoutLogUpdate,
+    WorkoutShareCardResponse,
+)
 from app.services.auth import get_current_user
 from app.services.training_plan import get_training_plan_by_id
 from app.services.workout_log import (
+    build_workout_share_card_summary,
     create_workout_log,
     delete_workout_log,
     get_workout_log_by_id,
@@ -97,6 +103,18 @@ def patch_log(
         raise HTTPException(status_code=404, detail="训练记录不存在")
     _ensure_plan_belongs_to_user(db, current_user.id, log_in.training_plan_id)
     return update_workout_log(db, log, log_in)
+
+
+@router.get("/{log_id}/share-card", response_model=WorkoutShareCardResponse)
+def get_workout_share_card(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    log = get_workout_log_by_id(db, log_id, current_user.id)
+    if not log:
+        raise HTTPException(status_code=404, detail="训练记录不存在")
+    return build_workout_share_card_summary(db, current_user.id, log)
 
 
 @router.delete("/{log_id}", status_code=status.HTTP_204_NO_CONTENT)

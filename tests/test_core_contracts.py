@@ -7,7 +7,7 @@ from app.services.exercise_media import _pick_best_exercise
 from app.agent.state.result import ResultSource
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
-from app.services.conversation_session import _build_title_from_message
+from app.services.conversation_session import _build_title_from_message, list_shared_conversation_knowledge
 from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
 
 
@@ -27,7 +27,21 @@ def test_new_tool_config_can_be_initialized_without_api_key():
 
 
 def test_health_data_is_extracted_for_confirmation():
-    pending = extract_body_data_from_message("我今天体重 68.5 kg，睡了 7.5 小时，睡眠质量 8/10，精力 7/10")
+    class FakeHealthDataLLM:
+        def invoke(self, prompt):
+            assert "健康数据抽取器" in prompt
+            return SimpleNamespace(
+                content=(
+                    '{"pending_health_data": {"body_metric": {"weight_kg": 68.5}, '
+                    '"checkin": {"sleep_hours": 7.5, "sleep_quality": 8, "energy_level": 7}, '
+                    '"profile": {}}}'
+                )
+            )
+
+    pending = extract_body_data_from_message(
+        "我今天体重 68.5 kg，睡了 7.5 小时，睡眠质量 8/10，精力 7/10",
+        llm=FakeHealthDataLLM(),
+    )
 
     assert pending == {
         "body_metric": {"weight_kg": 68.5},
@@ -172,3 +186,39 @@ def test_conversation_title_falls_back_without_raw_prompt_truncation(monkeypatch
 
     assert title == "训练计划制定"
     assert title != "请帮我制定一份训练计划"
+
+
+def test_shared_conversation_filter_is_applied_before_limit():
+    class FakeSharedSession:
+        title = "共享训练总结"
+        summary = "用户偏好晨练，膝盖需要低冲击安排。"
+
+    class FakeQuery:
+        def __init__(self):
+            self.limited = False
+
+        def filter(self, *args):
+            assert not self.limited
+            return self
+
+        def order_by(self, *args):
+            return self
+
+        def limit(self, value):
+            self.limited = True
+            return self
+
+        def all(self):
+            return [FakeSharedSession()]
+
+    class FakeDb:
+        def query(self, *args):
+            return FakeQuery()
+
+    summaries = list_shared_conversation_knowledge(
+        FakeDb(),
+        user_id=1,
+        exclude_session_id="current-session",
+    )
+
+    assert summaries == ["共享对话《共享训练总结》：用户偏好晨练，膝盖需要低冲击安排。"]

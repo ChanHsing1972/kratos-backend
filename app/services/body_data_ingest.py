@@ -1,8 +1,12 @@
+import json
 import re
 from typing import Any
 
+from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
+from app.agent.json_utils import LLMJsonParseError, parse_json_object
+from app.core.config import settings
 from app.models.agent_checkin import AgentCheckin
 from app.models.body_metric import BodyMetric
 from app.models.user import User
@@ -51,17 +55,17 @@ def ingest_body_data_from_message(
     fields go only to user_profiles, body measurements go only to body_metrics,
     and subjective daily state goes to agent_checkins.
     """
-    parsed = _parse_user_data(message)
-    if not parsed:
+    pending = extract_body_data_from_message(message)
+    if not pending:
         return None
 
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         return None
 
-    metric_fields = {key: parsed[key] for key in BODY_METRIC_FIELDS if key in parsed}
-    checkin_fields = {key: parsed[key] for key in CHECKIN_FIELDS if key in parsed}
-    profile_fields = {key: parsed[key] for key in PROFILE_FIELDS if key in parsed}
+    metric_fields = pending.get("body_metric") or {}
+    checkin_fields = pending.get("checkin") or {}
+    profile_fields = pending.get("profile") or {}
 
     persisted: dict[str, Any] = {}
 
@@ -99,22 +103,186 @@ def ingest_body_data_from_message(
     return persisted or None
 
 
-def extract_body_data_from_message(message: str) -> dict[str, Any] | None:
-    """Extract possible health updates for user confirmation without writing them."""
-    parsed = _parse_user_data(message)
-    if not parsed:
+def extract_body_data_from_message(
+    message: str,
+    *,
+    context_snapshot: dict[str, Any] | None = None,
+    llm: Any | None = None,
+) -> dict[str, Any] | None:
+    """Extract possible health updates for user confirmation without writing them.
+
+    This intentionally uses the language model instead of regular expressions:
+    the confirmation card should be based on semantic extraction from the user
+    message and known profile context, not brittle text patterns.
+    """
+    if not message.strip():
         return None
-    pending: dict[str, Any] = {}
-    metric_fields = {key: parsed[key] for key in BODY_METRIC_FIELDS if key in parsed}
-    checkin_fields = {key: parsed[key] for key in CHECKIN_FIELDS if key in parsed}
-    profile_fields = {key: parsed[key] for key in PROFILE_FIELDS if key in parsed}
-    if metric_fields:
-        pending["body_metric"] = metric_fields
-    if checkin_fields:
-        pending["checkin"] = checkin_fields
-    if profile_fields:
-        pending["profile"] = profile_fields
-    return pending or None
+    try:
+        raw_payload = _extract_user_health_data_with_llm(
+            message=message,
+            context_snapshot=context_snapshot,
+            llm=llm,
+        )
+    except Exception:
+        return None
+    return _normalize_pending_health_data(raw_payload)
+
+
+def _extract_user_health_data_with_llm(
+    *,
+    message: str,
+    context_snapshot: dict[str, Any] | None,
+    llm: Any | None,
+) -> dict[str, Any]:
+    resolved_llm = llm or ChatOpenAI(
+        api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
+        base_url=settings.AGENT_LLM_BASE_URL,
+        model=settings.AGENT_LLM_MODEL,
+        temperature=0,
+        timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,
+        max_retries=1,
+    )
+    context_json = json.dumps(context_snapshot or {}, ensure_ascii=False, default=str)
+    prompt = f"""
+    你是健康数据抽取器。请只从用户这条消息中抽取用户明确提供、请求更新或可由上下文消解的健康/训练档案数据。
+
+    重要规则：
+    - 只返回 JSON，不要 Markdown，不要解释。
+    - 不要因为用户询问训练计划就推测年龄、身高、体重、目标或伤病。
+    - 已知上下文只用于理解“和上次一样”“目标不变”这类引用；不要主动把上下文已有值重复返回。
+    - 用户只是问问题、请求建议、上传附件但没有表达要更新资料时，返回 null。
+    - “60分钟”只能是训练时长，绝不能抽成年龄。
+    - 数值字段必须是数字；无法确定就填 null。
+
+    可抽取字段：
+    profile: gender, age, location, fitness_goal, fitness_summary, activity_level,
+      experience_level, available_days_per_week, workout_minutes_per_session,
+      equipment_access, injury_history, medical_conditions,
+      preferred_workout_types, dietary_habits, dietary_restrictions
+    body_metric: height_cm, weight_kg, target_weight_kg, body_fat_percentage,
+      skeletal_muscle_mass_kg, bmi, chest_cm, waist_cm, hip_cm
+    checkin: energy_level, sleep_quality, soreness_level, sleep_hours, mood, pain_notes
+
+    返回格式：
+    {{
+      "pending_health_data": {{
+        "profile": {{}},
+        "body_metric": {{}},
+        "checkin": {{}}
+      }}
+    }}
+    如果没有可确认保存的数据，返回：
+    {{"pending_health_data": null}}
+
+    已知上下文：
+    {context_json}
+
+    用户消息：
+    {message}
+    """
+
+    response = resolved_llm.invoke(prompt)
+    content = getattr(response, "content", response)
+    if not isinstance(content, str):
+        content = str(content)
+    try:
+        return parse_json_object(content)
+    except LLMJsonParseError:
+        return {"pending_health_data": None}
+
+
+def _normalize_pending_health_data(payload: dict[str, Any]) -> dict[str, Any] | None:
+    pending = payload.get("pending_health_data")
+    if pending is None:
+        return None
+    if not isinstance(pending, dict):
+        return None
+
+    normalized: dict[str, Any] = {}
+    section_specs = {
+        "profile": PROFILE_FIELDS,
+        "body_metric": BODY_METRIC_FIELDS,
+        "checkin": CHECKIN_FIELDS,
+    }
+    for section, allowed_fields in section_specs.items():
+        values = pending.get(section)
+        if not isinstance(values, dict):
+            continue
+        cleaned = {
+            key: _clean_health_value(section, key, value)
+            for key, value in values.items()
+            if key in allowed_fields
+        }
+        cleaned = {
+            key: value
+            for key, value in cleaned.items()
+            if value is not None
+        }
+        if cleaned:
+            normalized[section] = cleaned
+    return normalized or None
+
+
+def _clean_health_value(section: str, key: str, value: Any) -> Any | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+
+    if section == "profile":
+        if key in {"age", "available_days_per_week", "workout_minutes_per_session"}:
+            number = _to_float(value)
+            if number is None:
+                return None
+            if key == "age" and 0 < number <= 120:
+                return int(number)
+            if key == "available_days_per_week" and 0 <= number <= 7:
+                return int(number)
+            if key == "workout_minutes_per_session" and 0 < number <= 1440:
+                return int(number)
+            return None
+        return str(value)[:500]
+
+    if section == "checkin":
+        if key == "sleep_hours":
+            number = _to_float(value)
+            return round(number, 1) if number is not None and 0 <= number <= 24 else None
+        if key in {"energy_level", "sleep_quality", "soreness_level"}:
+            number = _to_float(value)
+            return int(number) if number is not None and 1 <= number <= 10 else None
+        return str(value)[:500]
+
+    number = _to_float(value)
+    if number is None:
+        return None
+    bounds = {
+        "height_cm": (50, 260),
+        "weight_kg": (20, 500),
+        "target_weight_kg": (20, 500),
+        "body_fat_percentage": (0, 80),
+        "skeletal_muscle_mass_kg": (0, 200),
+        "bmi": (5, 80),
+        "chest_cm": (30, 220),
+        "waist_cm": (30, 220),
+        "hip_cm": (30, 220),
+    }
+    lower, upper = bounds.get(key, (0, 10_000))
+    if lower <= number <= upper:
+        return round(float(number), 2)
+    return None
+
+
+def _to_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_user_data(message: str) -> dict[str, Any]:

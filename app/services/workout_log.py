@@ -1,7 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 
+from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import settings
 from app.models.user import User
 from app.models.workout_log import WorkoutExerciseLog, WorkoutLog, WorkoutSetLog
 from app.schemas.workout_log import WorkoutLogCreate, WorkoutLogUpdate
@@ -78,6 +80,57 @@ def delete_workout_log(db: Session, log: WorkoutLog) -> None:
     db.commit()
 
 
+def build_workout_share_card_summary(
+    db: Session,
+    user_id: int,
+    log: WorkoutLog,
+) -> dict:
+    logs = get_workout_logs_by_user_id(db, user_id, completed=True)
+    week_start = log.workout_date - timedelta(days=log.workout_date.weekday())
+    week_end = week_start + timedelta(days=6)
+    week_logs = [
+        item
+        for item in logs
+        if week_start <= item.workout_date <= week_end
+    ]
+    duration_seconds = _workout_seconds(log)
+    week_duration_seconds = sum(_workout_seconds(item) for item in week_logs)
+    streak_days = _calculate_streak_days(logs, cursor=log.workout_date)
+    total_completed_count = len(logs)
+    completed_actions = [
+        exercise.name
+        for exercise in log.exercises
+        if exercise.completed
+    ]
+    highlights = [
+        f"本次 {format_duration_text(duration_seconds)}",
+        f"本周完成 {len(week_logs)} 次训练",
+        f"连续训练 {streak_days} 天",
+    ]
+    if completed_actions:
+        highlights.append(f"完成动作：{'、'.join(completed_actions[:3])}")
+
+    return {
+        "workout_title": log.title or "未命名训练",
+        "workout_date": log.workout_date,
+        "completed": log.completed,
+        "duration_seconds": duration_seconds,
+        "week_completed_count": len(week_logs),
+        "week_duration_seconds": week_duration_seconds,
+        "streak_days": streak_days,
+        "total_completed_count": total_completed_count,
+        "coach_comment": _generate_coach_comment(
+            title=log.title or "训练",
+            completed=log.completed,
+            duration_seconds=duration_seconds,
+            week_completed_count=len(week_logs),
+            streak_days=streak_days,
+            actions=completed_actions,
+        ),
+        "highlights": highlights,
+    }
+
+
 def _replace_exercises(db: Session, log: WorkoutLog, exercises) -> None:
     log.exercises.clear()
     db.flush()
@@ -94,3 +147,68 @@ def _replace_exercises(db: Session, log: WorkoutLog, exercises) -> None:
         db.flush()
         for set_in in exercise_in.sets:
             db.add(WorkoutSetLog(exercise_log_id=exercise.id, **set_in.model_dump()))
+
+
+def _workout_seconds(log: WorkoutLog) -> int:
+    return int(log.duration_seconds or (log.duration_minutes or 0) * 60)
+
+
+def _calculate_streak_days(logs: list[WorkoutLog], *, cursor: date) -> int:
+    trained_dates = {item.workout_date for item in logs if item.completed}
+    streak = 0
+    current = cursor
+    while current in trained_dates and streak < 365:
+        streak += 1
+        current -= timedelta(days=1)
+    return streak
+
+
+def format_duration_text(total_seconds: int) -> str:
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    if minutes <= 0:
+        return f"{seconds} 秒"
+    if seconds == 0:
+        return f"{minutes} 分钟"
+    return f"{minutes} 分 {seconds:02d} 秒"
+
+
+def _generate_coach_comment(
+    *,
+    title: str,
+    completed: bool,
+    duration_seconds: int,
+    week_completed_count: int,
+    streak_days: int,
+    actions: list[str],
+) -> str:
+    fallback = (
+        "节奏很好，继续把每一次完成感累积成稳定进步。"
+        if completed
+        else "提前结束也算有效反馈，下次把目标调到更容易完成。"
+    )
+    prompt = f"""
+    你是简洁的 AI 健身教练。请根据训练数据写一句适合分享卡的中文评价。
+    要求：一句话，28 字以内，真诚、克制，不要夸张，不要输出引号。
+
+    训练：{title}
+    完成：{completed}
+    本次时长：{format_duration_text(duration_seconds)}
+    本周完成：{week_completed_count} 次
+    连续天数：{streak_days}
+    完成动作：{'、'.join(actions[:5]) or '未标记'}
+    """
+    try:
+        llm = ChatOpenAI(
+            api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
+            base_url=settings.AGENT_LLM_BASE_URL,
+            model=settings.AGENT_LLM_MODEL,
+            temperature=0.4,
+            timeout=12,
+            max_retries=1,
+        )
+        response = llm.invoke(prompt)
+        content = str(getattr(response, "content", response)).strip()
+        return content.strip("\"'“”‘’")[:60] or fallback
+    except Exception:
+        return fallback

@@ -49,6 +49,7 @@ from app.services.skill import (
     normalize_tool_names,
     skill_to_prompt_payload,
 )
+from app.services.upload import build_agent_attachment_parts
 
 
 @lru_cache(maxsize=1)
@@ -86,20 +87,23 @@ def get_stream_agent_nodes():
 def run_agent_chat(
     user_id: int,
     message: str,
+    attachments: list[dict[str, Any]] | None = None,
     session_id: str | None = None,
     client_turn_id: str | None = None,
     db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
+    stored_message = _message_for_storage(message, attachments)
     state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
         user_id=user_id,
         message=message,
+        attachments=attachments,
         session_id=session_id,
         db=db,
     )
     reserved_run = None
     if db is not None:
         reserved_run, should_run = reserve_agent_run(
-            db, user_id, state.session_id, message, client_turn_id
+            db, user_id, state.session_id, stored_message, client_turn_id
         )
         if not should_run and reserved_run is not None:
             state.result.response = reserved_run.answer
@@ -124,13 +128,13 @@ def run_agent_chat(
         create_agent_run(
             db,
             user_id,
-            message,
+            stored_message,
             final_state,
             trace,
             client_turn_id=client_turn_id,
             reserved_run_id=reserved_run.id if reserved_run else None,
         )
-        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
+        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, stored_message)
 
     return final_state, trace
 
@@ -138,21 +142,24 @@ def run_agent_chat(
 def stream_agent_chat(
     user_id: int,
     message: str,
+    attachments: list[dict[str, Any]] | None = None,
     session_id: str | None = None,
     client_turn_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     persisted_trace: list[AgentTraceStep] = []
+    stored_message = _message_for_storage(message, attachments)
     state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
         user_id=user_id,
         message=message,
+        attachments=attachments,
         session_id=session_id,
         db=db,
     )
     reserved_run = None
     if db is not None:
         reserved_run, should_run = reserve_agent_run(
-            db, user_id, state.session_id, message, client_turn_id
+            db, user_id, state.session_id, stored_message, client_turn_id
         )
         if not should_run and reserved_run is not None:
             if reserved_run.status == "completed":
@@ -232,13 +239,13 @@ def stream_agent_chat(
         create_agent_run(
             db,
             user_id,
-            message,
+            stored_message,
             final_state,
             trace,
             client_turn_id=client_turn_id,
             reserved_run_id=reserved_run.id if reserved_run else None,
         )
-        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, message)
+        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, stored_message)
 
     yield {
         "type": "done",
@@ -283,13 +290,10 @@ def _run_streaming_agent(
             "session_id": state.session_id,
         }
         state.result.response = ""
-        for delta in nodes["generate"].stream_response(state):
-            yield {
-                "type": "answer_delta",
-                "delta": delta,
-                "content": delta,
-                "session_id": state.session_id,
-            }
+        for generated_event in nodes["generate"].stream_response_events(state):
+            event = dict(generated_event)
+            event["session_id"] = state.session_id
+            yield event
         final_generated = True
 
         state = nodes["reflect"](state)
@@ -306,7 +310,6 @@ def _run_streaming_agent(
         yield from _emit_new_trace(state, emitted_keys, include_final=False)
 
     if final_generated:
-        enrich_workout_plan_media(state, db)
         answer = str(state.result.response or "")
         final_step = AgentTraceStep(
             type="final",
@@ -382,10 +385,10 @@ def _append_persistable_event(
 def _prepare_agent_state(
     user_id: int,
     message: str,
+    attachments: list[dict[str, Any]] | None,
     session_id: str | None,
     db: Session | None,
 ) -> tuple[SessionState, dict[str, Any] | None, dict[str, Any] | None, list[dict[str, Any]]]:
-    persisted_updates = extract_body_data_from_message(message)
     enabled_tool_names = enabled_tool_names_for_user(db, user_id) if db is not None else None
     tools = load_tools(enabled_tool_names=enabled_tool_names)
     active_skill_models = []
@@ -433,7 +436,13 @@ def _prepare_agent_state(
             hydrate_agent_memory(state, context)
             context_snapshot = context_for_prompt(context)
 
-    state.conversation.messages.append(HumanMessage(content=message))
+    persisted_updates = extract_body_data_from_message(message, context_snapshot=context_snapshot)
+    content = build_agent_attachment_parts(
+        user_id=user_id,
+        message=message,
+        attachments=attachments or [],
+    )
+    state.conversation.messages.append(HumanMessage(content=content))
     return state, persisted_updates, context_snapshot, skill_snapshot
 
 
@@ -469,6 +478,23 @@ def _prepend_context_trace(
             ),
         )
     trace[0:0] = leading_steps
+
+
+def _message_for_storage(
+    message: str,
+    attachments: list[dict[str, Any]] | None,
+) -> str:
+    text = message.strip()
+    if not attachments:
+        return text
+
+    attachment_lines = [
+        f"- {item.get('filename') or '附件'} ({item.get('content_type') or 'unknown'})"
+        for item in attachments
+    ]
+    parts = [text] if text else []
+    parts.append("附件：\n" + "\n".join(attachment_lines))
+    return "\n\n".join(parts)
 
 
 def _coerce_session_state(value: Any) -> SessionState:

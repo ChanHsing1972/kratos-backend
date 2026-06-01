@@ -89,3 +89,16 @@ class WorkoutLogConversationExportResponse(BaseModel):
     file_path: str
     exported_at: datetime
     session_id: str | None = None
+
+
+class WorkoutShareCardResponse(BaseModel):
+    workout_title: str
+    workout_date: date
+    completed: bool
+    duration_seconds: int
+    week_completed_count: int
+    week_duration_seconds: int
+    streak_days: int
+    total_completed_count: int
+    coach_comment: str
+    highlights: list[str] = Field(default_factory=list)

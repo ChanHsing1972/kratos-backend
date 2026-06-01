@@ -89,6 +89,7 @@ def chat_with_agent(
     state, trace = run_agent_chat(
         user_id=current_user.id,
         message=payload.message,
+        attachments=[item.model_dump() for item in payload.attachments],
         session_id=payload.session_id,
         client_turn_id=payload.client_turn_id,
         db=db,
@@ -132,6 +133,7 @@ def stream_chat_with_agent(
             for event in stream_agent_chat(
                 user_id=user_id,
                 message=payload.message,
+                attachments=[item.model_dump() for item in payload.attachments],
                 session_id=payload.session_id,
                 client_turn_id=payload.client_turn_id,
                 db=db,

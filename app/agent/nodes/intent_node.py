@@ -77,7 +77,7 @@ class IntentNode(BaseNode):
         }}
         """
 
-        data = self.invoke_json(prompt)
+        data = self.invoke_json(prompt, state)
         intents = data.get("intent") or ["闲聊"]
         if isinstance(intents, str):
             intents = [intents]

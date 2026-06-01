@@ -36,7 +36,7 @@ class ReflectNode(BaseNode):
         }}
         """
 
-        data = self.invoke_json(prompt)
+        data = self.invoke_json(prompt, state)
         is_pass = bool(data.get("is_pass", data.get("is_PASS", True)))
         suggestions = [str(item) for item in (data.get("suggestions") or []) if str(item).strip()]
 

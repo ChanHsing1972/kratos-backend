@@ -129,7 +129,7 @@ class EndNode(BaseNode):
         }}
         """
 
-        data = self.invoke_json(prompt)
+        data = self.invoke_json(prompt, state)
         summary_text = str(data.get("turn_summary") or "").strip() or None
         tags = data.get("tags") or []
         if isinstance(tags, str):
