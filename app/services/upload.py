@@ -165,6 +165,11 @@ def build_agent_attachment_parts(
     for attachment in attachments[:8]:
         filename = str(attachment.get("filename") or "attachment")
         content_type = str(attachment.get("content_type") or "application/octet-stream")
+        inline_data_url = str(attachment.get("data_url") or "")
+        if content_type.startswith("image/") and inline_data_url.startswith("data:image/"):
+            parts.append({"type": "image_url", "image_url": {"url": inline_data_url}})
+            continue
+
         url = str(attachment.get("url") or "")
         file_path = resolve_upload_url_for_user(user_id=user_id, url=url)
         if file_path is None or not file_path.is_file():

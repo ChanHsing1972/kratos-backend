@@ -18,6 +18,7 @@ TraceStepType = Literal[
 class AgentAttachment(BaseModel):
     filename: str = Field(min_length=1, max_length=200)
     content_type: str = Field(min_length=1, max_length=120)
+    data_url: str | None = Field(default=None, max_length=18 * 1024 * 1024)
     size: int = Field(ge=0, le=12 * 1024 * 1024)
     url: str = Field(min_length=1, max_length=1000)
 
