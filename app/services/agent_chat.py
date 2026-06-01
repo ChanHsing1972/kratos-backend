@@ -420,6 +420,7 @@ def _prepare_agent_state(
             for skill in active_skill_models
         ],
     )
+    state.result.user_attachments = _attachments_for_history(attachments or [])
 
     context_snapshot = None
     if db is not None:
@@ -495,6 +496,19 @@ def _message_for_storage(
     parts = [text] if text else []
     parts.append("附件：\n" + "\n".join(attachment_lines))
     return "\n\n".join(parts)
+
+
+def _attachments_for_history(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "content_type": str(item.get("content_type") or "application/octet-stream"),
+            "filename": str(item.get("filename") or "附件"),
+            "size": int(item.get("size") or 0),
+            "url": str(item.get("url") or ""),
+        }
+        for item in attachments
+        if item.get("url")
+    ]
 
 
 def _coerce_session_state(value: Any) -> SessionState:

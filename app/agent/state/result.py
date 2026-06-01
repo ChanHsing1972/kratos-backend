@@ -111,6 +111,7 @@ class ResultState(BaseModel):
     first_response: str | None = None
     response: str | None = None
     reflection_suggestions: list[str] = Field(default_factory=list)
+    user_attachments: list[dict[str, Any]] = Field(default_factory=list)
 
     task_results: list[dict[str, Any]] = Field(default_factory=list)
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -130,6 +131,7 @@ class ResultState(BaseModel):
         self.first_response = None
         self.response = None
         self.reflection_suggestions = []
+        self.user_attachments = []
         self.task_results = []
         self.tool_results = []
         self.final_answer_ready = False
