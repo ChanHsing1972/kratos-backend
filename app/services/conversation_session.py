@@ -16,7 +16,6 @@ from app.models.agent_run import AgentRun
 from app.models.conversation_session import ConversationSession
 from app.schemas.conversation_session import ConversationSessionResponse
 
-
 DEFAULT_SESSION_TITLE = "新会话"
 SESSION_SUMMARY_LIMIT = 1200
 SESSION_SUMMARY_COMPRESSION_TARGET = 600
@@ -39,16 +38,9 @@ TITLE_FALLBACK_KEYWORDS = [
 
 
 def _session_response_from_model(session: ConversationSession) -> ConversationSessionResponse:
-    run_count = len([
-        run for run in session.runs
-        if run.user_id == session.user_id and run.session_id == session.session_id
-    ])
+    run_count = len([run for run in session.runs if run.user_id == session.user_id and run.session_id == session.session_id])
     last_run = next(
-        (
-            run
-            for run in reversed(session.runs)
-            if run.user_id == session.user_id and run.session_id == session.session_id
-        ),
+        (run for run in reversed(session.runs) if run.user_id == session.user_id and run.session_id == session.session_id),
         None,
     )
     return ConversationSessionResponse(
@@ -73,12 +65,7 @@ def session_run_count(
     user_id: int,
     session_id: str,
 ) -> int:
-    return int(
-        db.query(func.count(AgentRun.id))
-        .filter(AgentRun.user_id == user_id, AgentRun.session_id == session_id)
-        .scalar()
-        or 0
-    )
+    return int(db.query(func.count(AgentRun.id)).filter(AgentRun.user_id == user_id, AgentRun.session_id == session_id).scalar() or 0)
 
 
 def get_conversation_session(
@@ -148,21 +135,21 @@ def list_conversation_sessions(
     include_deleted: bool = False,
     limit: int = 100,
 ) -> list[ConversationSessionResponse]:
-    query = (
-        db.query(ConversationSession)
-        .options(selectinload(ConversationSession.runs))
-        .filter(ConversationSession.user_id == user_id)
-    )
+    query = db.query(ConversationSession).options(selectinload(ConversationSession.runs)).filter(ConversationSession.user_id == user_id)
     if not include_archived:
         query = query.filter(ConversationSession.is_archived.is_(False))
     if not include_deleted:
         query = query.filter(ConversationSession.is_deleted.is_(False))
 
-    sessions = query.order_by(
-        ConversationSession.is_pinned.desc(),
-        ConversationSession.updated_at.desc(),
-        ConversationSession.created_at.desc(),
-    ).limit(limit).all()
+    sessions = (
+        query.order_by(
+            ConversationSession.is_pinned.desc(),
+            ConversationSession.updated_at.desc(),
+            ConversationSession.created_at.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
     return [_session_response_from_model(session) for session in sessions]
 
 
@@ -278,9 +265,7 @@ def hydrate_state_from_conversation_session(
 
     recent_runs = session.runs[-state.conversation.max_conversations :]
     for run in recent_runs:
-        state.conversation.conversations.append(
-            AskAns(user_ask=run.user_message, ai_ans=run.answer)
-        )
+        state.conversation.conversations.append(AskAns(user_ask=run.user_message, ai_ans=run.answer))
         state.conversation.messages.append(HumanMessage(content=run.user_message))
         state.conversation.messages.append(AIMessage(content=run.answer))
 
@@ -294,14 +279,11 @@ def list_shared_conversation_knowledge(
     exclude_session_id: str | None = None,
     limit: int = 5,
 ) -> list[str]:
-    query = (
-        db.query(ConversationSession)
-        .filter(
-            ConversationSession.user_id == user_id,
-            ConversationSession.is_shared.is_(True),
-            ConversationSession.is_deleted.is_(False),
-            ConversationSession.summary != "",
-        )
+    query = db.query(ConversationSession).filter(
+        ConversationSession.user_id == user_id,
+        ConversationSession.is_shared.is_(True),
+        ConversationSession.is_deleted.is_(False),
+        ConversationSession.summary != "",
     )
     if exclude_session_id:
         query = query.filter(ConversationSession.session_id != exclude_session_id)
@@ -327,11 +309,7 @@ def persist_session_turn_artifacts(
         return None
 
     snapshot = (state.conversation.session_summary_snapshot or "").strip()
-    summary_chunks = [
-        chunk.strip()
-        for chunk in state.conversation.summaries
-        if chunk and chunk.strip() and chunk.strip() != snapshot
-    ]
+    summary_chunks = [chunk.strip() for chunk in state.conversation.summaries if chunk and chunk.strip() and chunk.strip() != snapshot]
     if summary_chunks:
         combined_summary = "\n".join(filter(None, [session.summary.strip(), *summary_chunks]))
         session.summary = compress_session_summary(combined_summary)
@@ -351,22 +329,14 @@ def persist_session_turn_artifacts(
 
 
 def backfill_conversation_sessions_from_agent_runs(db: Session) -> int:
-    existing_ids = {
-        row[0]
-        for row in db.query(ConversationSession.session_id).all()
-    }
+    existing_ids = {row[0] for row in db.query(ConversationSession.session_id).all()}
     created = 0
 
     session_ids = [row[0] for row in db.query(AgentRun.session_id).distinct().all()]
     for session_id in session_ids:
         if session_id in existing_ids:
             continue
-        first_run = (
-            db.query(AgentRun)
-            .filter(AgentRun.session_id == session_id)
-            .order_by(AgentRun.created_at.asc(), AgentRun.id.asc())
-            .first()
-        )
+        first_run = db.query(AgentRun).filter(AgentRun.session_id == session_id).order_by(AgentRun.created_at.asc(), AgentRun.id.asc()).first()
         if first_run is None:
             continue
         db.add(
@@ -508,13 +478,16 @@ def _generate_session_title_with_llm(
     summary: str,
 ) -> str | None:
     prompt = f"""
-    你是中文会话标题生成器。请根据下面的对话内容生成一个标题。
+    你是中文会话标题生成器。请根据对话内容生成一个极简标题。
 
     要求：
-    - 标题必须是对用户消息的概括，不要照抄或截取用户原句。
-    - 使用中文，控制在 {SESSION_TITLE_MIN_CHARS}-{SESSION_TITLE_MAX_CHARS} 个字。
+    - 标题必须概括用户的核心问题或任务。
+    - 使用中文为主，必要时保留英文产品名或技术名词。
+    - 控制在 4-10 个汉字左右，最长不超过 14 个字符。
+    - 只输出一个短语，不要输出完整句。
+    - 不要照抄用户原句。
     - 不要输出引号、标点、Markdown、解释或多个候选。
-    - 如果内容与运动、饮食、恢复、健康数据相关，优先体现核心任务或目标。
+    - 如果涉及运动、饮食、恢复、健康数据，优先体现核心目标。
 
     用户消息：
     {user_message}
@@ -551,11 +524,11 @@ def _normalize_session_title(value: str) -> str | None:
     if not title:
         return None
 
-    title = title[:SESSION_TITLE_MAX_CHARS]
-    if len(title) < SESSION_TITLE_MIN_CHARS:
-        title = f"{title}相关对话"[:SESSION_TITLE_MAX_CHARS]
+    title = _truncate_session_title(title)
+    if _session_title_units(title) < SESSION_TITLE_MIN_CHARS:
+        title = _truncate_session_title(f"{title}相关对话")
 
-    if len(title) < SESSION_TITLE_MIN_CHARS:
+    if _session_title_units(title) < SESSION_TITLE_MIN_CHARS:
         return None
     return title
 
@@ -574,10 +547,40 @@ def _fallback_session_title(message: str) -> str:
     if len(chinese_only) >= SESSION_TITLE_MIN_CHARS:
         return chinese_only[:SESSION_TITLE_MAX_CHARS]
 
-    title = re.sub(r"\s+", "", compacted)[:SESSION_TITLE_MAX_CHARS]
-    if len(title) < SESSION_TITLE_MIN_CHARS:
-        title = f"{title}相关对话"[:SESSION_TITLE_MAX_CHARS]
+    title = _truncate_session_title(re.sub(r"\s+", "", compacted))
+    if _session_title_units(title) < SESSION_TITLE_MIN_CHARS:
+        title = _truncate_session_title(f"{title}相关对话")
     return title or DEFAULT_SESSION_TITLE
+
+
+def _session_title_tokens(value: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]|[^A-Za-z0-9\u4e00-\u9fff]", value)
+
+
+def _session_title_units(value: str) -> int:
+    units = 0
+    for token in _session_title_tokens(value):
+        if not token.strip():
+            continue
+        units += 1
+    return units
+
+
+def _truncate_session_title(value: str) -> str:
+    tokens = _session_title_tokens(value)
+    result: list[str] = []
+    units = 0
+    for token in tokens:
+        if not token.strip():
+            continue
+        next_units = units + 1
+        if result and next_units > SESSION_TITLE_MAX_CHARS:
+            break
+        result.append(token)
+        units = next_units
+        if units >= SESSION_TITLE_MAX_CHARS:
+            break
+    return "".join(result).strip()
 
 
 def _clip_title_context(value: str, limit: int = 1000) -> str:

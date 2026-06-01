@@ -7,7 +7,11 @@ from app.services.exercise_media import _pick_best_exercise
 from app.agent.state.result import ResultSource
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
-from app.services.conversation_session import _build_title_from_message, list_shared_conversation_knowledge
+from app.services.conversation_session import (
+    _build_title_from_message,
+    _normalize_session_title,
+    list_shared_conversation_knowledge,
+)
 from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
 
 
@@ -186,6 +190,11 @@ def test_conversation_title_falls_back_without_raw_prompt_truncation(monkeypatch
 
     assert title == "训练计划制定"
     assert title != "请帮我制定一份训练计划"
+
+
+def test_conversation_title_keeps_english_terms_complete():
+    assert _normalize_session_title("Copilot 对话历史迁移") == "Copilot对话历史迁移"
+    assert _normalize_session_title("GitHub Copilot 对话历史整理教程") == "GitHubCopilot对话历史整理教程"
 
 
 def test_shared_conversation_filter_is_applied_before_limit():
