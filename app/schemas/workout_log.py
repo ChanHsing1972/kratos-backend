@@ -95,6 +95,8 @@ class WorkoutShareCardResponse(BaseModel):
     workout_title: str
     workout_date: date
     completed: bool
+    calories_burned: int | None = None
+    completion_rate: int
     duration_seconds: int
     week_completed_count: int
     week_duration_seconds: int

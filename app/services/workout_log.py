@@ -102,8 +102,15 @@ def build_workout_share_card_summary(
         for exercise in log.exercises
         if exercise.completed
     ]
+    total_actions = len(log.exercises)
+    completion_rate = (
+        round(len(completed_actions) / total_actions * 100)
+        if total_actions
+        else (100 if log.completed else 0)
+    )
     highlights = [
         f"本次 {format_duration_text(duration_seconds)}",
+        f"完成度 {completion_rate}%",
         f"本周完成 {len(week_logs)} 次训练",
         f"连续训练 {streak_days} 天",
     ]
@@ -114,6 +121,8 @@ def build_workout_share_card_summary(
         "workout_title": log.title or "未命名训练",
         "workout_date": log.workout_date,
         "completed": log.completed,
+        "calories_burned": log.calories_burned,
+        "completion_rate": completion_rate,
         "duration_seconds": duration_seconds,
         "week_completed_count": len(week_logs),
         "week_duration_seconds": week_duration_seconds,
