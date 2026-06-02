@@ -67,3 +67,7 @@ class TrainingPlanAdjustmentRequest(BaseModel):
 class TrainingPlanAdjustmentResponse(BaseModel):
     proposal: TrainingPlanUpdate
     rationale: list[str]
+
+
+class TrainingPlanGuidanceResponse(BaseModel):
+    message: str

@@ -213,6 +213,117 @@ def progression_guidance_from_history(
     )
 
 
+def generate_training_guidance(
+    plan: TrainingPlan,
+    recent_logs: list,
+    latest_checkin=None,
+) -> str:
+    llm_message = _generate_training_guidance_with_llm(
+        plan,
+        recent_logs=recent_logs,
+        latest_checkin=latest_checkin,
+    )
+    if llm_message:
+        return llm_message
+    return _generate_training_guidance_fallback(plan, recent_logs, latest_checkin)
+
+
+def _generate_training_guidance_with_llm(
+    plan: TrainingPlan,
+    recent_logs: list,
+    latest_checkin=None,
+) -> str | None:
+    try:
+        llm = get_agent_llm()
+        prompt = _build_training_guidance_prompt(plan, recent_logs, latest_checkin)
+        response = llm.invoke(prompt)
+        content = getattr(response, "content", response)
+        if not isinstance(content, str):
+            content = str(content)
+        data = parse_json_object(content)
+        message = str(data.get("message") or "").strip()
+        if not message:
+            return None
+        return message[:180]
+    except Exception:
+        return None
+
+
+def _build_training_guidance_prompt(
+    plan: TrainingPlan,
+    recent_logs: list,
+    latest_checkin=None,
+) -> str:
+    recent_log_snapshot = [
+        {
+            "title": getattr(log, "title", None),
+            "workout_date": log.workout_date.isoformat() if getattr(log, "workout_date", None) else None,
+            "completed": getattr(log, "completed", None),
+            "duration_seconds": getattr(log, "duration_seconds", None),
+            "duration_minutes": getattr(log, "duration_minutes", None),
+            "perceived_exertion": getattr(log, "perceived_exertion", None),
+            "notes": getattr(log, "notes", None),
+        }
+        for log in recent_logs[:5]
+    ]
+    checkin_snapshot = None
+    if latest_checkin is not None:
+        checkin_snapshot = {
+            "checkin_date": latest_checkin.checkin_date.isoformat()
+            if getattr(latest_checkin, "checkin_date", None)
+            else None,
+            "sleep_hours": latest_checkin.sleep_hours,
+            "soreness_level": latest_checkin.soreness_level,
+            "energy_level": latest_checkin.energy_level,
+            "pain_notes": latest_checkin.pain_notes,
+        }
+    plan_snapshot = {
+        "title": plan.title,
+        "goal": plan.goal,
+        "summary": plan.summary,
+        "weekly_schedule": plan.weekly_schedule,
+        "recovery_guidance": plan.recovery_guidance,
+        "nutrition_guidance": plan.nutrition_guidance,
+    }
+    return f"""
+你是 Kratos 的训练建议 Agent。请根据当前训练计划、最近训练记录和最近恢复打卡，给用户一句下一次训练建议。
+
+要求：
+- 只输出 JSON 对象：{{"message": "..."}}
+- message 用中文，控制在 60 字以内。
+- 要具体、可执行，不要泛泛鼓励。
+- 如果有疼痛、高酸痛、低精力或提前结束，优先建议降量/恢复/低冲击。
+- 如果最近完成稳定且恢复良好，可以建议小幅加量。
+- 不要建议冒险冲刺；不要使用 Markdown。
+
+当前日期：{date.today().isoformat()}
+训练计划：{json.dumps(plan_snapshot, ensure_ascii=False)}
+最近训练：{json.dumps(recent_log_snapshot, ensure_ascii=False)}
+最近打卡：{json.dumps(checkin_snapshot, ensure_ascii=False)}
+"""
+
+
+def _generate_training_guidance_fallback(
+    plan: TrainingPlan,
+    recent_logs: list,
+    latest_checkin=None,
+) -> str:
+    if latest_checkin is not None:
+        if latest_checkin.pain_notes or (latest_checkin.soreness_level or 0) >= 7 or (latest_checkin.energy_level or 10) <= 3:
+            return "今天恢复信号偏弱，下一次训练优先降量，避免冲击和引发不适的动作。"
+        if (latest_checkin.sleep_hours or 8) < 7 or (latest_checkin.soreness_level or 0) >= 5:
+            return "今天恢复不足，下一次按计划保守训练，降低训练量并避免挑战新重量。"
+
+    latest_log = recent_logs[0] if recent_logs else None
+    if latest_log is not None and latest_log.completed is False:
+        return "下一次训练总量降低 15-25%，主动作保留 2 次以上余力，必要时改为恢复训练。"
+    if latest_log is not None and latest_log.notes and ("膝" in latest_log.notes or "疼" in latest_log.notes):
+        return "最近反馈有不适信号，下一次优先低冲击动作，疼痛超过 3/10 立即停止。"
+    if plan.recovery_guidance:
+        return plan.recovery_guidance.splitlines()[-1][:180]
+    return "下一次训练先保证动作质量，再根据当日疲劳决定是否小幅加量。"
+
+
 def _propose_training_plan_adjustment_with_llm(
     plan: TrainingPlan,
     feedback: str,

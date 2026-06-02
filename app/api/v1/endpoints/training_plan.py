@@ -10,6 +10,7 @@ from app.schemas.training_plan import (
     TrainingPlanAdjustmentRequest,
     TrainingPlanAdjustmentResponse,
     TrainingPlanCreate,
+    TrainingPlanGuidanceResponse,
     TrainingPlanResponse,
     TrainingPlanUpdate,
 )
@@ -19,6 +20,7 @@ from app.services.training_plan import (
     delete_training_plan,
     get_training_plan_by_id,
     get_training_plans_by_user_id,
+    generate_training_guidance,
     propose_training_plan_adjustment,
     progression_guidance_from_history,
     update_training_plan,
@@ -193,6 +195,25 @@ def preview_plan_adjustment(
         safety_stop=safety_stop
     )
     return TrainingPlanAdjustmentResponse(proposal=proposal, rationale=rationale)
+
+
+@router.get("/{plan_id}/guidance", response_model=TrainingPlanGuidanceResponse)
+def get_plan_guidance(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    plan = get_training_plan_by_id(db, plan_id, current_user.id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="训练计划不存在")
+    latest_checkins = get_agent_checkins_by_user_id(db, current_user.id, training_plan_id=plan.id)
+    recent_logs = get_workout_logs_by_user_id(db, current_user.id, training_plan_id=plan.id)
+    message = generate_training_guidance(
+        plan,
+        recent_logs=recent_logs,
+        latest_checkin=latest_checkins[0] if latest_checkins else None,
+    )
+    return TrainingPlanGuidanceResponse(message=message)
 
 
 @router.post("/{plan_id}/activate", response_model=TrainingPlanResponse)
