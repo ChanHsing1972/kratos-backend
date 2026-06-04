@@ -1,5 +1,12 @@
 from types import SimpleNamespace
 
+from langchain_core.messages import HumanMessage
+
+from app.agent.nodes.intent_node import IntentNode
+from app.agent.nodes.reflect_node import ReflectNode
+from app.agent.nodes.reason_node import ReasonNode
+from app.agent.state.reasoning import Task
+from app.agent.state.session_state import SessionState
 from app.agent.tool_registry import ToolMetadata
 from app.agent.nodes.generate_node import GenerateNode
 from app.services.exercise_library import _match_score
@@ -28,6 +35,90 @@ def test_new_tool_config_can_be_initialized_without_api_key():
     assert config.user_id == 7
     assert config.name == "calculate_bmr"
     assert config.health_status == "healthy"
+
+
+def test_intent_node_does_not_mutate_confirmed_memory():
+    class FakeIntentLLM:
+        def invoke(self, prompt):
+            assert "意图识别器" in prompt
+            return SimpleNamespace(
+                content=(
+                    '{"intent":["健身计划"],"daily_diet":[],"training_feedback":[],'
+                    '"name":null,"job":null,"gender":"男","age":28,'
+                    '"height_cm":180,"weight_kg":75,"body_condition":null,'
+                    '"goal":"增肌","activity_level":null,"exercise_intensity":null,'
+                    '"available_time_minutes":60,"diet":null,"intolerances":[],'
+                    '"preferred_ingredients":[],"disliked_ingredients":[],'
+                    '"preferred_cuisines":[]}'
+                )
+            )
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="我男，28岁，180cm，75kg，每次60分钟，想增肌"))
+
+    IntentNode(FakeIntentLLM())(state)
+
+    assert state.reasoning.extracted_info["profile"]["weight_kg"] == 75
+    assert state.memory.ephemeral_turn_info["profile"]["height_cm"] == 180
+    assert state.memory.long_term_memory.physical_profile.weight_kg is None
+    assert state.memory.long_term_memory.lifestyle_profile.goal is None
+
+
+def test_tool_arg_repair_uses_known_profile_without_unsafe_defaults():
+    task = Task(task_id=0, name="计算基础代谢")
+    empty_state = SessionState(session_id="s1", user_id="u1")
+
+    args = ReasonNode._repair_tool_args(
+        "calculate_bmr",
+        {},
+        "帮我算一下基础代谢",
+        task,
+        empty_state,
+    )
+    assert args == {}
+
+    known_state = SessionState(session_id="s1", user_id="u1")
+    known_state.reasoning.extracted_info = {
+        "profile": {
+            "gender": "男",
+            "age": 28,
+            "height_cm": 180,
+            "weight_kg": 75,
+        }
+    }
+
+    repaired = ReasonNode._repair_tool_args(
+        "calculate_bmr",
+        {},
+        "帮我算一下基础代谢",
+        task,
+        known_state,
+    )
+    assert repaired == {
+        "gender": "男",
+        "age": 28,
+        "height_cm": 180,
+        "weight_kg": 75,
+    }
+
+
+def test_reflection_quality_gate_rejects_sixty_minutes_as_age():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="我每次训练60分钟，帮我安排今天训练"))
+    state.reasoning.intent = ["健身计划"]
+    state.reasoning.extracted_info = {
+        "profile": {
+            "age": None,
+            "available_time_minutes": 60,
+        }
+    }
+    state.result.response = "考虑到你60岁，建议做老年低强度训练。"
+
+    ReflectNode(llm=None)(state)
+
+    assert state.result.final_answer_ready is False
+    assert state.reasoning.need_replan is True
+    assert any("60 分钟" in item for item in state.result.reflection_suggestions)
 
 
 def test_health_data_is_extracted_for_confirmation():

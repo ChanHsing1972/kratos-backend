@@ -19,10 +19,7 @@ class ReasonNode(BaseNode):
             task.result = memory_answer
             state.reasoning.advance_task()
 
-            print("=" * 20)
-            print("ReasonNode - Memory Result")
-            print("=" * 20)
-            print({"result": memory_answer})
+            self.logger.debug("ReasonNode memory result: %s", {"result": memory_answer})
 
             return state
 
@@ -73,6 +70,7 @@ class ReasonNode(BaseNode):
         - 如果启用 Skill 声明了可用工具，当前工具列表已经按这些 Skill 做了范围约束。
         - 严禁编造用户资料；年龄、身高、体重、目标、训练经验等只能来自“已提取关键信息”或“当前长期/中期记忆”。
         - 字段为 null、None、空字符串或未出现时，必须视为未知，不得自行填充。
+        - 计算 BMR、热量或 1RM 时，如果缺少必需的性别、年龄、身高、体重、重量或次数，不要用默认值硬算；直接说明缺少哪些信息。
         - 严格区分“60分钟”和“60岁”：available_time_minutes 或“60分钟”只表示训练时长，绝不能当作年龄。
         - 如果任务描述与已提取信息冲突，以已提取信息和数据库记忆为准，并在结果中纠正，不要沿用错误任务描述。
         - 如果用户在询问“我叫什么”“我的身高是多少”“我的体重是多少”“我最近吃了什么”这类可直接从记忆回答的问题，优先直接用记忆回答，不调用工具。
@@ -147,17 +145,14 @@ class ReasonNode(BaseNode):
             except LLMJsonParseError as exc:
                 data = self._fallback_reason_data(state, task, str(exc))
             task.tool_calls = self._parse_tool_calls(
-                data.get("tool_calls"), available_tools, user_message, task
+                data.get("tool_calls"), available_tools, user_message, task, state
             )
             task.result = data.get("result")
 
             if task.tool_calls and not task.result:
                 task.status = TaskStatus.waiting_for_tool
 
-                print("=" * 20)
-                print("ReasonNode - Tool Calls")
-                print("=" * 20)
-                print(data)
+                self.logger.debug("ReasonNode tool calls: %s", data)
 
                 return state
         else:
@@ -173,10 +168,7 @@ class ReasonNode(BaseNode):
             task.status = TaskStatus.done
             state.reasoning.advance_task()
 
-            print("=" * 20)
-            print("ReasonNode - Task Result")
-            print("=" * 20)
-            print(data)
+            self.logger.debug("ReasonNode task result: %s", data)
 
             return state
 
@@ -184,10 +176,7 @@ class ReasonNode(BaseNode):
         task.error = "Reasoning step did not produce a task result."
         state.reasoning.errors.append(f"{task.name}: {task.error}")
 
-        print("=" * 20)
-        print("ReasonNode - Failed Task")
-        print("=" * 20)
-        print(data)
+        self.logger.debug("ReasonNode failed task: %s", data)
 
         return state
 
@@ -247,6 +236,7 @@ class ReasonNode(BaseNode):
                             {},
                             user_message,
                             task,
+                            state,
                         ),
                         "id": "fallback-safety-gate",
                     }
@@ -265,6 +255,7 @@ class ReasonNode(BaseNode):
                             {},
                             user_message,
                             task,
+                            state,
                         ),
                         "id": "fallback-workout-volume",
                     }
@@ -283,6 +274,7 @@ class ReasonNode(BaseNode):
                             {},
                             user_message,
                             task,
+                            state,
                         ),
                         "id": "fallback-calories",
                     }
@@ -301,6 +293,7 @@ class ReasonNode(BaseNode):
                             {},
                             user_message,
                             task,
+                            state,
                         ),
                         "id": "fallback-bodyparts",
                     }
@@ -319,6 +312,7 @@ class ReasonNode(BaseNode):
                             {},
                             user_message,
                             task,
+                            state,
                         ),
                         "id": "fallback-running-route",
                     }
@@ -329,39 +323,70 @@ class ReasonNode(BaseNode):
 
         if is_diet_plan_request and "diet_plan_generator" in available_tools:
             long_term = state.memory.long_term_memory
+            extracted_profile = state.reasoning.extracted_info.get("profile", {}) or {}
+            current_daily_diet = ReasonNode._ensure_unique_text(
+                [
+                    *state.memory.mid_term_memory.daily_diet,
+                    *(state.reasoning.extracted_info.get("daily_diet") or []),
+                ]
+            )
             user_profile = {
                 "name": long_term.name,
-                "gender": long_term.gender,
+                "gender": extracted_profile.get("gender") or long_term.gender,
                 "job": long_term.job,
-                "height_cm": long_term.physical_profile.height_cm,
-                "weight_kg": long_term.physical_profile.weight_kg,
-                "age": long_term.physical_profile.age,
+                "height_cm": extracted_profile.get("height_cm") or long_term.physical_profile.height_cm,
+                "weight_kg": extracted_profile.get("weight_kg") or long_term.physical_profile.weight_kg,
+                "age": extracted_profile.get("age") or long_term.physical_profile.age,
                 "body_fat_rate": long_term.physical_profile.body_fat_rate,
-                "body_condition": long_term.physical_profile.body_condition,
-                "goal": state.reasoning.extracted_info.get("profile", {}).get("goal")
-                or long_term.lifestyle_profile.goal
-                or "增肌",
-                "activity_level": long_term.lifestyle_profile.activity_level,
-                "exercise_intensity": long_term.lifestyle_profile.exercise_intensity,
-                "available_cooking_time_minutes": long_term.lifestyle_profile.available_cooking_time_minutes,
-                "diet": long_term.dietary_profile.diet,
+                "body_condition": extracted_profile.get("body_condition") or long_term.physical_profile.body_condition,
+                "goal": extracted_profile.get("goal")
+                or long_term.lifestyle_profile.goal,
+                "activity_level": extracted_profile.get("activity_level") or long_term.lifestyle_profile.activity_level,
+                "exercise_intensity": extracted_profile.get("exercise_intensity") or long_term.lifestyle_profile.exercise_intensity,
+                "available_cooking_time_minutes": (
+                    extracted_profile.get("available_time_minutes")
+                    or long_term.lifestyle_profile.available_cooking_time_minutes
+                ),
+                "diet": extracted_profile.get("diet") or long_term.dietary_profile.diet,
                 "dietary_restrictions": long_term.dietary_profile.restrictions_text,
-                "intolerances": long_term.dietary_profile.intolerances,
-                "preferred_cuisines": long_term.dietary_profile.preferred_cuisines,
-                "preferred_ingredients": long_term.dietary_profile.preferred_ingredients,
-                "disliked_ingredients": long_term.dietary_profile.disliked_ingredients,
-                "daily_diet": state.memory.mid_term_memory.daily_diet,
+                "intolerances": ReasonNode._ensure_unique_text(
+                    [
+                        *long_term.dietary_profile.intolerances,
+                        *(extracted_profile.get("intolerances") or []),
+                    ]
+                ),
+                "preferred_cuisines": ReasonNode._ensure_unique_text(
+                    [
+                        *long_term.dietary_profile.preferred_cuisines,
+                        *(extracted_profile.get("preferred_cuisines") or []),
+                    ]
+                ),
+                "preferred_ingredients": ReasonNode._ensure_unique_text(
+                    [
+                        *long_term.dietary_profile.preferred_ingredients,
+                        *(extracted_profile.get("preferred_ingredients") or []),
+                    ]
+                ),
+                "disliked_ingredients": ReasonNode._ensure_unique_text(
+                    [
+                        *long_term.dietary_profile.disliked_ingredients,
+                        *(extracted_profile.get("disliked_ingredients") or []),
+                    ]
+                ),
+                "daily_diet": current_daily_diet,
             }
+            tool_args = {
+                "user_profile": user_profile,
+                "meal_count": 3,
+                "number_per_meal": 2,
+            }
+            if user_profile["goal"]:
+                tool_args["goal"] = user_profile["goal"]
             return {
                 "tool_calls": [
                     {
                         "tool_name": "diet_plan_generator",
-                        "args": {
-                            "user_profile": user_profile,
-                            "meal_count": 3,
-                            "number_per_meal": 2,
-                            "goal": user_profile["goal"],
-                        },
+                        "args": tool_args,
                         "id": "fallback-diet-plan",
                     }
                 ],
@@ -381,6 +406,7 @@ class ReasonNode(BaseNode):
         available_tools: list[str],
         user_message: str,
         task: Task,
+        state=None,
     ) -> list[ToolCall]:
         if not isinstance(raw_calls, list):
             return []
@@ -398,7 +424,7 @@ class ReasonNode(BaseNode):
             args = raw_call.get("args") or {}
             if not isinstance(args, dict):
                 args = {}
-            args = ReasonNode._repair_tool_args(name, args, user_message, task)
+            args = ReasonNode._repair_tool_args(name, args, user_message, task, state)
             parsed.append(
                 ToolCall(
                     id=raw_call.get("id"),
@@ -415,6 +441,7 @@ class ReasonNode(BaseNode):
         args: dict,
         user_message: str,
         task: Task,
+        state=None,
     ) -> dict:
         if tool_name == "tavily_search" and not args.get("query"):
             query_parts = [user_message, task.name, task.description]
@@ -519,7 +546,11 @@ class ReasonNode(BaseNode):
                     args["activity"] = "中等强度训练"
             if not args.get("weight_kg"):
                 weight_match = re.search(r"体重(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
-                args["weight_kg"] = float(weight_match.group(1)) if weight_match else 70
+                known_weight = ReasonNode._known_profile_value(state, "weight_kg")
+                if weight_match:
+                    args["weight_kg"] = float(weight_match.group(1))
+                elif known_weight is not None:
+                    args["weight_kg"] = known_weight
             if not args.get("target_kcal"):
                 kcal_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kcal|千卡|卡路里|大卡)", user_message, re.IGNORECASE)
                 if kcal_match:
@@ -531,26 +562,85 @@ class ReasonNode(BaseNode):
 
         if tool_name == "calculate_bmr":
             if not args.get("gender"):
-                args["gender"] = "男" if "男" in user_message else "女" if "女" in user_message else "男"
+                known_gender = ReasonNode._known_profile_value(state, "gender")
+                if "男" in user_message:
+                    args["gender"] = "男"
+                elif "女" in user_message:
+                    args["gender"] = "女"
+                elif known_gender is not None:
+                    args["gender"] = known_gender
             if not args.get("weight_kg"):
                 weight_match = re.search(r"体重(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
-                args["weight_kg"] = float(weight_match.group(1)) if weight_match else 70
+                known_weight = ReasonNode._known_profile_value(state, "weight_kg")
+                if weight_match:
+                    args["weight_kg"] = float(weight_match.group(1))
+                elif known_weight is not None:
+                    args["weight_kg"] = known_weight
             if not args.get("height_cm"):
                 height_match = re.search(r"身高(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:厘米|cm|CM)", user_message)
-                args["height_cm"] = float(height_match.group(1)) if height_match else 175
+                height_m_match = re.search(r"身高(?:是|为)?\s*(\d+(?:\.\d+)?)\s*米", user_message)
+                known_height = ReasonNode._known_profile_value(state, "height_cm")
+                if height_match:
+                    args["height_cm"] = float(height_match.group(1))
+                elif height_m_match:
+                    args["height_cm"] = round(float(height_m_match.group(1)) * 100, 1)
+                elif known_height is not None:
+                    args["height_cm"] = known_height
             if not args.get("age"):
                 age_match = re.search(r"(\d+)\s*岁", user_message)
-                args["age"] = int(age_match.group(1)) if age_match else 25
+                known_age = ReasonNode._known_profile_value(state, "age")
+                if age_match:
+                    args["age"] = int(age_match.group(1))
+                elif known_age is not None:
+                    args["age"] = known_age
 
         if tool_name == "estimate_1rm":
             if not args.get("weight_kg"):
                 weight_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
-                args["weight_kg"] = float(weight_match.group(1)) if weight_match else 60
+                if weight_match:
+                    args["weight_kg"] = float(weight_match.group(1))
             if not args.get("reps"):
                 reps_match = re.search(r"(\d+)\s*(?:次|rep|reps)", user_message, re.IGNORECASE)
-                args["reps"] = int(reps_match.group(1)) if reps_match else 5
+                if reps_match:
+                    args["reps"] = int(reps_match.group(1))
 
         return args
+
+    @staticmethod
+    def _known_profile_value(state, field: str):
+        if state is None:
+            return None
+        extracted_profile = getattr(getattr(state, "reasoning", None), "extracted_info", {}) or {}
+        extracted_profile = extracted_profile.get("profile", {}) if isinstance(extracted_profile, dict) else {}
+        value = extracted_profile.get(field) if isinstance(extracted_profile, dict) else None
+        if value is not None:
+            return value
+
+        memory = getattr(state, "memory", None)
+        if memory is None:
+            return None
+        long_term = memory.long_term_memory
+        if field == "gender":
+            return long_term.gender
+        physical = long_term.physical_profile
+        lifestyle = long_term.lifestyle_profile
+        if hasattr(physical, field):
+            return getattr(physical, field)
+        if hasattr(lifestyle, field):
+            return getattr(lifestyle, field)
+        return None
+
+    @staticmethod
+    def _ensure_unique_text(values) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values or []:
+            text = str(value).strip()
+            key = text.lower()
+            if text and key not in seen:
+                seen.add(key)
+                result.append(text)
+        return result
 
     @staticmethod
     def _answer_from_memory(state) -> str | None:

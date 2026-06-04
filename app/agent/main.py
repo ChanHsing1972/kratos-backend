@@ -1,9 +1,8 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
-from langchain_tavily import TavilySearch
 
 from app.core.config import settings
-from app.agent.graph import build_graph
+from app.agent.runner import AgentRunner, build_agent_nodes
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolsState
 from app.agent.tools import load_tools
@@ -25,7 +24,7 @@ def main():
         tools=ToolsState(available_tools=available_tools),
     )
 
-    graph = build_graph(llm)
+    runner = AgentRunner(build_agent_nodes(llm))
 
     while True:
         # 输入问题
@@ -42,9 +41,7 @@ def main():
         print("=" * 20)
         print(initial_state)
 
-        # 🔥 把当前 state 丢进图执行
-        initial_state = graph.invoke(initial_state)
-        initial_state = SessionState(**initial_state)
+        initial_state = runner.run(initial_state)
 
         print("=" * 20)
         print("当前状态")
@@ -57,4 +54,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

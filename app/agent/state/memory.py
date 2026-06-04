@@ -77,6 +77,8 @@ class MemoryState(BaseModel):
     long_term_memory: LongTermMemory = Field(default_factory=LongTermMemory)
     mid_term_memory: MidTermMemory = Field(default_factory=MidTermMemory)
     database_context: dict[str, Any] = Field(default_factory=dict)
+    pending_confirmation_updates: dict[str, Any] = Field(default_factory=dict)
+    ephemeral_turn_info: dict[str, Any] = Field(default_factory=dict)
     turn_summaries: list[TurnMemory] = Field(default_factory=list)
     max_turn_summaries: int = 12
 

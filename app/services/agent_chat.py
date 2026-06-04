@@ -6,16 +6,7 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
-from app.agent.graph import build_graph
-from app.agent.nodes.act_node import ActNode
-from app.agent.nodes.end_node import EndNode
-from app.agent.nodes.finish_node import FinishNode
-from app.agent.nodes.generate_node import GenerateNode
-from app.agent.nodes.intent_node import IntentNode
-from app.agent.nodes.plan_node import PlanNode
-from app.agent.nodes.reason_node import ReasonNode
-from app.agent.nodes.reflect_node import ReflectNode
-from app.agent.state.reasoning import TaskStatus
+from app.agent.runner import AgentRunner, build_agent_nodes
 from app.agent.state.memory import MemoryState
 from app.agent.state.result import ExerciseMedia
 from app.agent.state.session_state import ActiveSkill, SessionState
@@ -65,23 +56,8 @@ def get_agent_llm():
 
 
 @lru_cache(maxsize=1)
-def get_agent_graph():
-    return build_graph(get_agent_llm())
-
-
-@lru_cache(maxsize=1)
-def get_stream_agent_nodes():
-    llm = get_agent_llm()
-    return {
-        "intent": IntentNode(llm),
-        "plan": PlanNode(llm),
-        "reason": ReasonNode(llm),
-        "act": ActNode(llm),
-        "finish": FinishNode(llm),
-        "generate": GenerateNode(llm),
-        "reflect": ReflectNode(llm),
-        "end": EndNode(),
-    }
+def get_agent_runner():
+    return AgentRunner(build_agent_nodes(get_agent_llm()))
 
 
 def run_agent_chat(
@@ -113,12 +89,11 @@ def run_agent_chat(
             return state, trace
 
     try:
-        result = get_agent_graph().invoke(state)
+        final_state = get_agent_runner().run(state)
     except BaseException:
         if db is not None:
             fail_reserved_agent_run(db, reserved_run.id if reserved_run else None)
         raise
-    final_state = result if isinstance(result, SessionState) else SessionState(**result)
     enrich_workout_plan_media(final_state, db)
     trace = build_trace(final_state)
     _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
@@ -259,71 +234,30 @@ def _run_streaming_agent(
     emitted_keys: set[tuple[str, str]],
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
-    nodes = get_stream_agent_nodes()
-    final_generated = False
+    def emit_trace(_node_name: str, current_state: SessionState) -> Iterator[dict[str, Any]]:
+        yield from _emit_new_trace(current_state, emitted_keys, include_final=False)
 
-    state = nodes["intent"](state)
-    yield from _emit_new_trace(state, emitted_keys, include_final=False)
-    state = nodes["plan"](state)
-    yield from _emit_new_trace(state, emitted_keys, include_final=False)
-
-    while state.reasoning.replan_count <= state.reasoning.max_replans:
-        while True:
-            state = nodes["reason"](state)
-            yield from _emit_new_trace(state, emitted_keys, include_final=False)
-
-            task = state.reasoning.current_task()
-            if task is None:
-                break
-
-            if task.status == TaskStatus.waiting_for_tool:
-                state = nodes["act"](state)
-                yield from _emit_new_trace(state, emitted_keys, include_final=False)
-                continue
-
-            state = nodes["finish"](state)
-            yield from _emit_new_trace(state, emitted_keys, include_final=False)
-
-        yield {
-            "type": "status",
-            "content": "正在组织最终答案",
-            "session_id": state.session_id,
-        }
-        state.result.response = ""
-        for generated_event in nodes["generate"].stream_response_events(state):
-            event = dict(generated_event)
-            event["session_id"] = state.session_id
-            yield event
-        final_generated = True
-
-        state = nodes["reflect"](state)
-        yield from _emit_new_trace(state, emitted_keys, include_final=False)
-        if not state.reasoning.need_replan:
-            break
-
-        yield {
-            "type": "status",
-            "content": "反思发现需要补充推理，正在重新规划",
-            "session_id": state.session_id,
-        }
-        state = nodes["plan"](state)
-        yield from _emit_new_trace(state, emitted_keys, include_final=False)
-
-    if final_generated:
-        answer = str(state.result.response or "")
-        final_step = AgentTraceStep(
-            type="final",
-            content=answer,
-            raw=state.result.model_dump(mode="json"),
-        )
-        key = _trace_key(final_step)
-        if key not in emitted_keys:
-            emitted_keys.add(key)
-            event = final_step.model_dump(mode="json")
-            event["session_id"] = state.session_id
-            yield event
-
-    nodes["end"](state)
+    for raw_event in get_agent_runner().iter_events(
+        state,
+        stream_answer=True,
+        after_node=emit_trace,
+    ):
+        event = dict(raw_event)
+        event["session_id"] = state.session_id
+        if event.get("type") == "final_state":
+            final_step = AgentTraceStep(
+                type="final",
+                content=str(event.get("content") or ""),
+                raw=event.get("raw"),
+            )
+            key = _trace_key(final_step)
+            if key not in emitted_keys:
+                emitted_keys.add(key)
+                final_event = final_step.model_dump(mode="json")
+                final_event["session_id"] = state.session_id
+                yield final_event
+            continue
+        yield event
 
 
 def enrich_workout_plan_media(state: SessionState, db: Session | None = None) -> None:
@@ -438,6 +372,7 @@ def _prepare_agent_state(
             context_snapshot = context_for_prompt(context)
 
     persisted_updates = extract_body_data_from_message(message, context_snapshot=context_snapshot)
+    state.memory.pending_confirmation_updates = persisted_updates or {}
     content = build_agent_attachment_parts(
         user_id=user_id,
         message=message,

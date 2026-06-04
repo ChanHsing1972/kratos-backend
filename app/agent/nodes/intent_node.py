@@ -125,18 +125,15 @@ class IntentNode(BaseNode):
             "training_feedback": training_feedback,
             "profile": extracted_profile,
         }
+        state.memory.ephemeral_turn_info = state.reasoning.extracted_info
 
-        self._merge_memory(state, daily_diet, training_feedback, extracted_profile)
-
-        print("=" * 20)
-        print("IntentNode")
-        print("=" * 20)
-        print(
+        self.logger.debug(
+            "IntentNode result: %s",
             {
                 "raw": data,
                 "intent": state.reasoning.intent,
                 "extracted_info": state.reasoning.extracted_info,
-            }
+            },
         )
 
         return state
@@ -263,73 +260,3 @@ class IntentNode(BaseNode):
             except ValueError:
                 return None
         return None
-
-    @staticmethod
-    def _merge_unique_text(target: list[str], values: list[str]) -> list[str]:
-        seen = {item.strip().lower() for item in target if item.strip()}
-        for value in values:
-            normalized = value.strip().lower()
-            if normalized and normalized not in seen:
-                target.append(value)
-                seen.add(normalized)
-        return target
-
-    def _merge_memory(
-        self,
-        state: SessionState,
-        daily_diet: list[str],
-        training_feedback: list[str],
-        profile: dict[str, Any],
-    ) -> None:
-        long_term = state.memory.long_term_memory
-        physical = long_term.physical_profile
-        lifestyle = long_term.lifestyle_profile
-        dietary = long_term.dietary_profile
-        mid_term = state.memory.mid_term_memory
-
-        if profile["name"]:
-            long_term.name = profile["name"]
-        if profile["job"]:
-            long_term.job = profile["job"]
-        if profile["gender"]:
-            long_term.gender = profile["gender"]
-
-        if profile["height_cm"] is not None:
-            physical.height_cm = profile["height_cm"]
-        if profile["weight_kg"] is not None:
-            physical.weight_kg = profile["weight_kg"]
-        if profile["age"] is not None:
-            physical.age = profile["age"]
-        if profile["body_condition"]:
-            physical.body_condition = profile["body_condition"]
-
-        if profile["activity_level"]:
-            lifestyle.activity_level = profile["activity_level"]
-        if profile["exercise_intensity"]:
-            lifestyle.exercise_intensity = profile["exercise_intensity"]
-        if profile["available_time_minutes"] is not None:
-            lifestyle.workout_minutes_per_session = profile["available_time_minutes"]
-        if profile["goal"]:
-            lifestyle.goal = profile["goal"]
-
-        if profile["diet"]:
-            dietary.diet = profile["diet"]
-        dietary.intolerances = self._merge_unique_text(dietary.intolerances, profile["intolerances"])
-        dietary.preferred_ingredients = self._merge_unique_text(
-            dietary.preferred_ingredients,
-            profile["preferred_ingredients"],
-        )
-        dietary.disliked_ingredients = self._merge_unique_text(
-            dietary.disliked_ingredients,
-            profile["disliked_ingredients"],
-        )
-        dietary.preferred_cuisines = self._merge_unique_text(
-            dietary.preferred_cuisines,
-            profile["preferred_cuisines"],
-        )
-
-        mid_term.daily_diet = self._merge_unique_text(mid_term.daily_diet, daily_diet)
-        mid_term.training_feedbacks = self._merge_unique_text(
-            mid_term.training_feedbacks,
-            training_feedback,
-        )

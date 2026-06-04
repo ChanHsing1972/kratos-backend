@@ -1,4 +1,5 @@
 from app.agent.nodes.base_node import BaseNode
+from app.agent.quality import validate_agent_result
 
 
 class ReflectNode(BaseNode):
@@ -36,7 +37,24 @@ class ReflectNode(BaseNode):
         }}
         """
 
-        data = self.invoke_json(prompt, state)
+        deterministic_suggestions = validate_agent_result(state)
+        if deterministic_suggestions:
+            data = {
+                "is_pass": False,
+                "suggestions": deterministic_suggestions,
+                "source": "deterministic_quality_gate",
+            }
+        else:
+            try:
+                data = self.invoke_json(prompt, state)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Reflection LLM failed: %s", exc)
+                data = {
+                    "is_pass": True,
+                    "suggestions": [],
+                    "source": "reflection_fallback",
+                }
+
         is_pass = bool(data.get("is_pass", data.get("is_PASS", True)))
         suggestions = [str(item) for item in (data.get("suggestions") or []) if str(item).strip()]
 
@@ -54,9 +72,6 @@ class ReflectNode(BaseNode):
         if state.reasoning.need_replan:
             state.reasoning.replan_count += 1
 
-        print("=" * 20)
-        print("ReflectNode")
-        print("=" * 20)
-        print(data)
+        self.logger.debug("ReflectNode result: %s", data)
 
         return state

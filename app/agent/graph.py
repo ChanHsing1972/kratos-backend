@@ -1,29 +1,23 @@
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
-from app.agent.nodes.act_node import ActNode
-from app.agent.nodes.end_node import EndNode
-from app.agent.nodes.finish_node import FinishNode
-from app.agent.nodes.generate_node import GenerateNode
-from app.agent.nodes.intent_node import IntentNode
-from app.agent.nodes.plan_node import PlanNode
-from app.agent.nodes.reason_node import ReasonNode
-from app.agent.nodes.reflect_node import ReflectNode
+from app.agent.runner import build_agent_nodes
 from app.agent.state.reasoning import TaskStatus
 from app.agent.state.session_state import SessionState
 
 
 def build_graph(llm):
     builder = StateGraph(SessionState)
+    nodes = build_agent_nodes(llm)
 
-    builder.add_node("intent", IntentNode(llm))
-    builder.add_node("plan", PlanNode(llm))
-    builder.add_node("reason", ReasonNode(llm))
-    builder.add_node("act", ActNode(llm))
-    builder.add_node("finish", FinishNode(llm))
-    builder.add_node("generate", GenerateNode(llm))
-    builder.add_node("reflect", ReflectNode(llm))
-    builder.add_node("end", EndNode(llm))
+    builder.add_node("intent", nodes.intent)
+    builder.add_node("plan", nodes.plan)
+    builder.add_node("reason", nodes.reason)
+    builder.add_node("act", nodes.act)
+    builder.add_node("finish", nodes.finish)
+    builder.add_node("generate", nodes.generate)
+    builder.add_node("reflect", nodes.reflect)
+    builder.add_node("end", nodes.end)
 
     builder.set_entry_point("intent")
 

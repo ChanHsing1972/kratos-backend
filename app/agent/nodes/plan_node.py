@@ -75,11 +75,7 @@ class PlanNode(BaseNode):
         state.reasoning.current_task_index = 0
         state.reasoning.need_replan = False
 
-        # 禁止删除以下打印语句
-        print("=" * 20)
-        print("PlanNode")
-        print("=" * 20)
-        print({"tasks": [task.model_dump() for task in tasks]})
+        self.logger.debug("PlanNode result: %s", {"tasks": [task.model_dump() for task in tasks]})
 
         return state
 
@@ -88,13 +84,7 @@ class PlanNode(BaseNode):
         if extracted_info.get("age") is not None:
             return description
 
-        return (
-            description
-            .replace("60岁、", "")
-            .replace("60岁", "年龄未提供")
-            .replace("高龄", "")
-            .replace("老年", "")
-        )
+        return description.replace("60岁、", "").replace("60岁", "年龄未提供").replace("高龄", "").replace("老年", "")
 
     @staticmethod
     def _ensure_actionable_fitness_plan_task(
@@ -106,9 +96,7 @@ class PlanNode(BaseNode):
             return tasks
 
         has_plan_task = any(
-            any(keyword in f"{task.name} {task.description}" for keyword in ["制定", "生成", "安排", "训练内容", "主训练"])
-            and "收集" not in task.name
-            for task in tasks
+            any(keyword in f"{task.name} {task.description}" for keyword in ["制定", "生成", "安排", "训练内容", "主训练"]) and "收集" not in task.name for task in tasks
         )
         if has_plan_task:
             return tasks
@@ -117,9 +105,7 @@ class PlanNode(BaseNode):
             task_id=len(tasks),
             name="生成今日训练计划",
             description=(
-                "基于已读取的数据库上下文和用户当前请求，生成今日可执行训练计划。"
-                "如果档案信息不完整，先采用保守默认强度并在结果中说明缺口；"
-                "不要只要求用户补充信息。"
+                "基于已读取的数据库上下文和用户当前请求，生成今日可执行训练计划。" "如果档案信息不完整，先采用保守默认强度并在结果中说明缺口；" "不要只要求用户补充信息。"
             ),
         )
         return [*tasks, actionable_task] if tasks else [actionable_task]
