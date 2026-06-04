@@ -94,11 +94,7 @@ def prepare_agent_state(
         active_skill_models = get_enabled_skills_for_user(db, user_id)
         allowed_tools = allowed_tool_names(active_skill_models)
         if active_skill_models:
-            tools = {
-                name: tool
-                for name, tool in tools.items()
-                if name in allowed_tools
-            }
+            tools = {name: tool for name, tool in tools.items() if name in allowed_tools}
         skill_snapshot = [
             {
                 "id": skill.id,
@@ -112,10 +108,7 @@ def prepare_agent_state(
         session_id=session_id or str(uuid4()),
         user_id=str(user_id),
         tools=ToolsState(available_tools=tools),
-        active_skills=[
-            ActiveSkill(**skill_to_prompt_payload(skill))
-            for skill in active_skill_models
-        ],
+        active_skills=[ActiveSkill(**skill_to_prompt_payload(skill)) for skill in active_skill_models],
     )
     state.result.user_attachments = attachments_for_history(attachments or [])
 
@@ -129,15 +122,9 @@ def prepare_agent_state(
             hydrate_state_from_conversation_session(db, user_id, session_id, state)
 
         user = db.query(User).filter(User.id == user_id).first()
-        state.memory.replace_long_term_memory_points(
-            hydrate_state_long_term_memory_points(db, user_id)
-        )
-        state.memory.replace_short_term_memory_points(
-            hydrate_state_short_term_memory_points(db, user_id)
-        )
-        state.memory.replace_working_memory_points(
-            hydrate_state_working_memory_points(db, user_id)
-        )
+        state.memory.replace_long_term_memory_points(hydrate_state_long_term_memory_points(db, user_id))
+        state.memory.replace_short_term_memory_points(hydrate_state_short_term_memory_points(db, user_id))
+        state.memory.replace_working_memory_points(hydrate_state_working_memory_points(db, user_id))
         if user is not None:
             context = load_fitness_context(db, user)
             hydrate_agent_memory(state, context)
@@ -188,10 +175,7 @@ def message_for_storage(
     if not attachments:
         return text
 
-    attachment_lines = [
-        f"- {item.get('filename') or '附件'} ({item.get('content_type') or 'unknown'})"
-        for item in attachments
-    ]
+    attachment_lines = [f"- {item.get('filename') or '附件'} ({item.get('content_type') or 'unknown'})" for item in attachments]
     parts = [text] if text else []
     parts.append("附件：\n" + "\n".join(attachment_lines))
     return "\n\n".join(parts)
