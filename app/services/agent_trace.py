@@ -262,8 +262,8 @@ def format_context_snapshot(snapshot: dict[str, Any]) -> str:
     metric = snapshot.get("latest_body_metric") or {}
     onboarding = snapshot.get("onboarding") or {}
     parts = [
-        f"目标 {profile.get('fitness_goal') or '未设置'}",
-        f"经验 {profile.get('experience_level') or '未设置'}",
+        f"目标{profile.get('fitness_goal') or '未设置'}",
+        f"经验{profile.get('experience_level') or '未设置'}",
         f"体重 {metric.get('weight_kg') or '未记录'}kg",
         f"身高 {metric.get('height_cm') or '未记录'}cm",
     ]
