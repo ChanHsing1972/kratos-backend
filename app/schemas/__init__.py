@@ -33,6 +33,13 @@ from app.schemas.diet import (
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
 from app.schemas.hyperate import HyperateCurrentResponse
 from app.schemas.health_metric import HealthMetricCreate, HealthMetricResponse, HealthMetricUpdate
+from app.schemas.long_term_memory_point import (
+    LongTermMemoryPointCreate,
+    LongTermMemoryPointExtractionResult,
+    LongTermMemoryPointExtracted,
+    LongTermMemoryPointResponse,
+    LongTermMemoryPointUpdate,
+)
 from app.schemas.skill import SkillBindingUpdate, SkillCreate, SkillResponse, SkillUpdate
 from app.schemas.training_plan import (
     TrainingPlanCreate,
@@ -89,6 +96,11 @@ __all__ = [
     "HeartRateSummaryResponse",
     "HyperateCurrentResponse",
     "OnboardingStatus",
+    "LongTermMemoryPointCreate",
+    "LongTermMemoryPointExtractionResult",
+    "LongTermMemoryPointExtracted",
+    "LongTermMemoryPointResponse",
+    "LongTermMemoryPointUpdate",
     "RagasExportResponse",
     "RagasSample",
     "SkillBindingUpdate",

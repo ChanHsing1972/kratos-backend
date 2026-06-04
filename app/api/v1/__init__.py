@@ -15,6 +15,7 @@ def create_api_router() -> APIRouter:
     from app.api.v1.endpoints.diet import router as diet_router
     from app.api.v1.endpoints.health_metric import router as health_metric_router
     from app.api.v1.endpoints.integrations import router as integrations_router
+    from app.api.v1.endpoints.long_term_memory_point import router as long_term_memory_point_router
     from app.api.v1.endpoints.profile import router as profile_router
     from app.api.v1.endpoints.skill import router as skill_router
     from app.api.v1.endpoints.training_plan import router as training_plan_router
@@ -34,6 +35,7 @@ def create_api_router() -> APIRouter:
     api_router.include_router(diet_router, prefix="/diet", tags=["diet"])
     api_router.include_router(health_metric_router, prefix="/health-metrics", tags=["health-metrics"])
     api_router.include_router(integrations_router, prefix="/integrations", tags=["integrations"])
+    api_router.include_router(long_term_memory_point_router, prefix="/memory-points", tags=["memory-points"])
     api_router.include_router(profile_router, prefix="/profile", tags=["profile"])
     api_router.include_router(skill_router, prefix="/skills", tags=["skills"])
     api_router.include_router(training_plan_router, prefix="/plans", tags=["plans"])

@@ -29,6 +29,7 @@ from app.services.fitness_context import (
     hydrate_agent_memory,
     load_fitness_context,
 )
+from app.services.long_term_memory_point import hydrate_state_long_term_memory_points
 from app.services.skill import (
     allowed_tool_names,
     get_enabled_skills_for_user,
@@ -125,6 +126,9 @@ def prepare_agent_state(
             hydrate_state_from_conversation_session(db, user_id, session_id, state)
 
         user = db.query(User).filter(User.id == user_id).first()
+        state.memory.replace_long_term_memory_points(
+            hydrate_state_long_term_memory_points(db, user_id)
+        )
         if user is not None:
             context = load_fitness_context(db, user)
             hydrate_agent_memory(state, context)

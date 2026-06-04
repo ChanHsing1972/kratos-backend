@@ -1,3 +1,4 @@
+from app.models.long_term_memory_point import LongTermMemoryPoint
 from app.models.agent_tool import AgentToolConfig
 from app.models.agent_checkin import AgentCheckin
 from app.models.agent_run import AgentRun, AgentTraceStep
@@ -22,6 +23,7 @@ __all__ = [
     "AgentTraceStep",
     "AppleHealthSync",
     "BodyMetric",
+    "LongTermMemoryPoint",
     "ConversationSession",
     "DietRecord",
     "ExerciseLibraryItem",

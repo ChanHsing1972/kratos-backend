@@ -6,8 +6,10 @@ EndNode 负责把本轮消息压缩为会话历史、整理 turn memory、清空
 
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.conversation import AskAns
+from app.agent.state.long_term_memory_point import LongTermMemoryPoint
 from app.agent.state.memory import TurnMemory
 from app.agent.state.session_state import SessionState
+from app.schemas.long_term_memory_point import LongTermMemoryPointExtractionResult
 
 
 class EndNode(BaseNode):
@@ -25,6 +27,7 @@ class EndNode(BaseNode):
             ask_ans = AskAns(user_ask=human_message, ai_ans=ai_message)
             state.conversation.conversations.append(ask_ans)
             self._summarize_turn(state, human_message, ai_message)
+            self._extract_long_term_memory_points(state, human_message, ai_message)
 
         max_conversations = state.conversation.max_conversations
         if len(state.conversation.conversations) > max_conversations:
@@ -209,3 +212,94 @@ class EndNode(BaseNode):
             "training_feedbacks",
         }
         return {key: value for key, value in updates.items() if key in allowed_keys}
+
+    def _extract_long_term_memory_points(self, state: SessionState, user_message: str, ai_message: str) -> None:
+        if not user_message and not ai_message:
+            return
+
+        known_points = state.memory.recent_long_term_memory_point_texts(limit=30)
+        conversation_summaries = state.conversation.summaries[-5:]
+        turn_summaries = [
+            item.summary
+            for item in state.memory.turn_summaries[-5:]
+            if item.summary
+        ]
+        long_term_snapshot = state.memory.long_term_memory.model_dump(mode="json")
+
+        if self.llm is None:
+            return
+
+        prompt = f"""
+        你是健身 Agent 的跨对话长期记忆提取器。
+        请结合本轮对话、对话摘要、已有长期记忆点以及当前长期画像，判断本轮是否产生了值得跨对话长期保留的新记忆点。
+
+        规则：
+        - 长期记忆点用于跨会话复用，应只保留稳定偏好、长期目标、持续性限制、稳定身份信息、长期习惯、长期风险提醒。
+        - 不要把一次性的寒暄、短期计划、当前一次训练安排、临时情绪、可从结构化 profile 直接冗余恢复的普通字段机械重复写成长期记忆点。
+        - 若信息只是已有长期记忆点的同义改写或重复表达，不要重复产出。
+        - content 用中文短句表达，便于后端直接存储和展示。
+        - memory_type 可选，如 profile / preference / goal / constraint / risk / habit。
+        - 如果没有新的长期记忆点，返回空数组。
+
+        已有长期画像(JSON):
+        {long_term_snapshot}
+
+        已有长期记忆点:
+        {known_points}
+
+        近期会话摘要:
+        {conversation_summaries}
+
+        近期轮次摘要:
+        {turn_summaries}
+
+        本轮用户消息:
+        {user_message}
+
+        本轮 AI 回复:
+        {ai_message}
+
+        严格输出一个 JSON 对象，不要 Markdown：
+        {{
+            "has_new_memory": true,
+            "memory_points": [
+                {{
+                    "memory_time": null,
+                    "content": "用户长期目标是减脂，同时需要保护膝盖。",
+                    "memory_type": "goal",
+                    "source_turn_id": {state.turn_id},
+                    "confidence": 0.92,
+                    "evidence": "用户多次提到减脂和膝盖不适"
+                }}
+            ]
+        }}
+        """
+
+        data = self.invoke_json(prompt)
+        result = LongTermMemoryPointExtractionResult.model_validate(data)
+        if not result.memory_points:
+            return
+
+        existing = {item.content.strip().lower() for item in state.memory.long_term_memory_points if item.content.strip()}
+        new_points: list[LongTermMemoryPoint] = []
+        for item in result.memory_points:
+            content = item.content.strip()
+            normalized = content.lower()
+            if not content or normalized in existing:
+                continue
+            new_points.append(
+                LongTermMemoryPoint(
+                    memory_time=item.memory_time or state.created_at,
+                    content=content,
+                    memory_type=item.memory_type,
+                    source_turn_id=item.source_turn_id or state.turn_id,
+                    metadata={
+                        "confidence": item.confidence,
+                        "evidence": item.evidence,
+                    },
+                )
+            )
+            existing.add(normalized)
+
+        if new_points:
+            state.memory.append_long_term_memory_points(new_points)

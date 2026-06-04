@@ -86,6 +86,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    long_term_memory_points: Mapped[list["LongTermMemoryPoint"]] = relationship(
+        "LongTermMemoryPoint",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     agent_tool_configs: Mapped[list["AgentToolConfig"]] = relationship(
         "AgentToolConfig",
         back_populates="user",

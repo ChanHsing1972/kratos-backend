@@ -259,6 +259,10 @@ class GenerateNode(BaseNode):
         memory_context = json.dumps(
             {
                 "long_term": state.memory.long_term_memory.model_dump(),
+                "long_term_memory_points": [
+                    item.model_dump(mode="json")
+                    for item in state.memory.long_term_memory_points
+                ],
                 "mid_term": state.memory.mid_term_memory.model_dump(),
                 "database_context": state.memory.database_context,
             },

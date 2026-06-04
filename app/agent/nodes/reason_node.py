@@ -376,6 +376,10 @@ class ReasonNode(BaseNode):
             "physical_profile": long_term.physical_profile.model_dump(),
             "lifestyle_profile": long_term.lifestyle_profile.model_dump(),
             "dietary_profile": long_term.dietary_profile.model_dump(),
+            "long_term_memory_points": [
+                item.model_dump(mode="json")
+                for item in state.memory.long_term_memory_points
+            ],
             "daily_diet": state.memory.mid_term_memory.daily_diet,
             "training_feedbacks": state.memory.mid_term_memory.training_feedbacks,
             "database_context": state.memory.database_context,

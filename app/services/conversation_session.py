@@ -16,6 +16,8 @@ from app.core.config import settings
 from app.models.agent_run import AgentRun
 from app.models.conversation_session import ConversationSession
 from app.schemas.conversation_session import ConversationSessionResponse
+from app.schemas.long_term_memory_point import LongTermMemoryPointExtracted
+from app.services.long_term_memory_point import create_long_term_memory_points_from_extracted
 
 DEFAULT_SESSION_TITLE = "新会话"
 SESSION_SUMMARY_LIMIT = 1200
@@ -326,6 +328,26 @@ def persist_session_turn_artifacts(
     db.add(session)
     db.commit()
     db.refresh(session)
+
+    extracted_memory_points = []
+    for item in state.memory.long_term_memory_points:
+        metadata = item.metadata or {}
+        extracted_memory_points.append(
+            LongTermMemoryPointExtracted(
+                memory_time=item.memory_time,
+                content=item.content,
+                memory_type=item.memory_type,
+                source_turn_id=item.source_turn_id,
+                confidence=metadata.get("confidence"),
+                evidence=metadata.get("evidence"),
+            )
+        )
+    create_long_term_memory_points_from_extracted(
+        db,
+        user_id=user_id,
+        session_id=session_id,
+        memory_points=extracted_memory_points,
+    )
     return session
 
 
