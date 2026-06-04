@@ -278,6 +278,10 @@ class GenerateNode(BaseNode):
             default=str,
             indent=2,
         )
+        external_knowledge_context = state.memory.database_context.get(
+            "knowledge_base_text",
+            "未检索到外部知识库上下文。",
+        )
 
         return f"""
         你是 Kratos 智能健身 Agent。
@@ -311,6 +315,9 @@ class GenerateNode(BaseNode):
         - 如果年龄未知，不要输出高龄、老年、60岁等表述；如果只知道训练时长为 60 分钟，只能写“每次60分钟”。
         - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
         - 如果某些工具失败或信息不足，明确说明不确定性。
+        - 如果使用“外部知识库检索结果”中的事实、数字或安全边界，必须在对应句子后标注来源，引用格式为 [知识库:标题#编号]。
+        - 面向用户展示出处时，优先给出知识来源的文章/网页标题或机构指南名；若上下文提供网页 URL，也要在“参考来源”或对应句子中展示该网页 URL。
+        - 不得编造外部知识库来源；只能使用已给出的 [知识库:标题#编号] 标记、文章/网页标题和网页 URL。
         - 如果启用了 Skill，最终回复必须遵守 Skill 的系统提示片段、输出格式和禁忌规则。
         - 用户请求每周、长期、周期或多周训练计划时，回复应提供至少一周的多个训练日安排，明确周几、动作、组次和恢复日。
         - 生成训练计划或动作安排时，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
@@ -334,6 +341,9 @@ class GenerateNode(BaseNode):
 
         当前可用工具(JSON):
         {available_tools}
+
+        外部知识库检索结果:
+        {external_knowledge_context}
 
         用户问题:
         {user_message}

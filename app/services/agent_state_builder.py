@@ -29,6 +29,7 @@ from app.services.fitness_context import (
     hydrate_agent_memory,
     load_fitness_context,
 )
+from app.services.knowledge_base import format_knowledge_contexts, retrieve_knowledge_contexts
 from app.services.long_term_memory_point import hydrate_state_long_term_memory_points
 from app.services.short_term_memory_point import hydrate_state_short_term_memory_points
 from app.services.skill import (
@@ -141,6 +142,7 @@ def prepare_agent_state(
             context = load_fitness_context(db, user)
             hydrate_agent_memory(state, context)
             context_snapshot = context_for_prompt(context)
+        attach_knowledge_contexts(state, db, message)
 
     pending_updates = extract_body_data_from_message(message, context_snapshot=context_snapshot)
     state.memory.pending_confirmation_updates = pending_updates or {}
@@ -159,6 +161,21 @@ def prepare_agent_state(
         context_snapshot=context_snapshot,
         skill_snapshot=skill_snapshot,
     )
+
+
+def attach_knowledge_contexts(
+    state: SessionState,
+    db: Session,
+    message: str,
+    limit: int = 4,
+) -> None:
+    """检索与本轮用户消息相关的知识库上下文，并注入 Agent memory。"""
+
+    contexts = retrieve_knowledge_contexts(db, message, limit=limit)
+    if not contexts:
+        return
+    state.memory.database_context["knowledge_base"] = contexts
+    state.memory.database_context["knowledge_base_text"] = format_knowledge_contexts(contexts)
 
 
 def message_for_storage(

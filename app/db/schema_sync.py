@@ -99,6 +99,11 @@ USER_COLUMN_DDL = {
     "avatar_url": "TEXT",
 }
 
+KNOWLEDGE_BASE_ENTRY_COLUMN_DDL = {
+    "source_title": "VARCHAR(300)",
+    "source_url": "TEXT",
+}
+
 
 def ensure_runtime_schema(engine: Engine) -> None:
     """Add nullable columns introduced after the course prototype shipped.
@@ -229,6 +234,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
         missing_columns.extend(
             ("users", name, ddl)
             for name, ddl in USER_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "knowledge_base_entries" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("knowledge_base_entries")
+        }
+        missing_columns.extend(
+            ("knowledge_base_entries", name, ddl)
+            for name, ddl in KNOWLEDGE_BASE_ENTRY_COLUMN_DDL.items()
             if name not in existing_columns
         )
 

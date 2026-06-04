@@ -12,6 +12,7 @@ from app.models.exercise_library import ExerciseLibraryItem
 from app.models.exercise_media import ExerciseMediaCache
 from app.models.exercise_video import ExerciseVideoLink
 from app.models.health_metric import HealthMetric
+from app.models.knowledge_base import KnowledgeBaseEntry
 from app.models.skill import Skill, UserSkill
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
@@ -34,6 +35,7 @@ __all__ = [
     "ExerciseMediaCache",
     "ExerciseVideoLink",
     "HealthMetric",
+    "KnowledgeBaseEntry",
     "Skill",
     "TrainingPlan",
     "User",
