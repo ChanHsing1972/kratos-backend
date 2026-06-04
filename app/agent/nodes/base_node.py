@@ -183,16 +183,24 @@ class BaseNode:
     def describe_tools(tools: dict[str, Any]) -> list[dict[str, Any]]:
         """把 LangChain 工具转换为 LLM 可读的名称、描述和参数 schema。"""
 
+        from app.agent.tool_registry import TOOL_REGISTRY
+
         descriptions: list[dict[str, Any]] = []
         for name, tool in sorted(tools.items()):
             schema = getattr(tool, "args", None)
             if schema is None and getattr(tool, "args_schema", None):
                 schema = tool.args_schema.model_json_schema()
+            metadata = TOOL_REGISTRY.get(name)
             descriptions.append(
                 {
                     "name": name,
                     "description": getattr(tool, "description", ""),
                     "args_schema": schema or {},
+                    "category": metadata.category if metadata else None,
+                    "use_cases": list(metadata.use_cases) if metadata else [],
+                    "required_context": list(metadata.required_context) if metadata else [],
+                    "argument_notes": list(metadata.argument_notes) if metadata else [],
+                    "failure_fallback": metadata.failure_fallback if metadata else "",
                 }
             )
         return descriptions

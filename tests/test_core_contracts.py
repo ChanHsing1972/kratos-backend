@@ -1,8 +1,11 @@
 from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
 from app.agent.nodes.act_node import ActNode
+from app.agent.nodes.base_node import BaseNode
+from app.agent.nodes.generate_node import GenerateNode
 from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
@@ -10,14 +13,15 @@ from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
 from app.agent.state.session_state import SessionState
+from app.agent.state.tools import ToolCall, ToolStatus
 from app.api.v1.endpoints.agent_chat import LiveAgentStream, _agent_stream_error_message
+from app.agent.tools import load_tools
 from app.agent.tools.fitness_calculator_tool import (
     get_calculate_workout_volume_tool,
     get_pain_safety_gate_tool,
 )
 from app.agent.tool_registry import ToolMetadata
 from app.agent.tool_planner import repair_tool_args
-from app.agent.nodes.generate_node import GenerateNode
 from app.services.agent_chat import enrich_workout_plan_media, stream_agent_chat
 from app.services.agent_trace import build_trace
 from app.services.exercise_library import _match_score
@@ -35,6 +39,102 @@ from app.services.conversation_session import (
     list_shared_conversation_knowledge,
 )
 from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
+
+
+def test_tool_descriptions_include_usage_and_fallback_metadata():
+    tools = load_tools(enabled_tool_names={"calculate_bmr", "pain_safety_gate"})
+
+    descriptions = BaseNode.describe_tools(tools)
+    bmr = next(item for item in descriptions if item["name"] == "calculate_bmr")
+    safety = next(item for item in descriptions if item["name"] == "pain_safety_gate")
+
+    assert bmr["use_cases"]
+    assert "年龄" in " ".join(bmr["argument_notes"])
+    assert "缺少" in bmr["failure_fallback"]
+    assert "疼痛" in " ".join(safety["use_cases"])
+
+
+def test_exercise_substitution_tool_suggests_safer_knee_alternatives():
+    tool = load_tools(enabled_tool_names={"exercise_substitution_advisor"})[
+        "exercise_substitution_advisor"
+    ]
+
+    result = tool.invoke(
+        {
+            "exercise_name": "深蹲",
+            "pain_area": "膝盖",
+            "available_equipment": "自重",
+            "goal": "下肢训练",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["tool"] == "exercise_substitution_advisor"
+    assert result["risk_level"] in {"moderate", "high"}
+    assert any("臀桥" in item["name"] for item in result["alternatives"])
+
+
+def test_act_node_rejects_invalid_tool_args_before_invocation():
+    class ExplodingTool:
+        name = "calculate_bmr"
+        args_schema = type(
+            "BmrArgs",
+            (BaseModel,),
+            {
+                "__annotations__": {
+                    "age": int,
+                    "weight_kg": float,
+                },
+                "age": Field(gt=0),
+                "weight_kg": Field(gt=0),
+            },
+        )
+
+        def invoke(self, args):
+            raise AssertionError("tool should not be invoked when args are invalid")
+
+    state = SessionState(session_id="s1", user_id="1")
+    state.tools.available_tools = {"calculate_bmr": ExplodingTool()}
+    task = Task(
+        task_id=1,
+        name="计算 BMR",
+        tool_calls=[ToolCall(name="calculate_bmr", args={"weight_kg": -70})],
+    )
+    state.reasoning.tasks = [task]
+
+    ActNode()(state)
+
+    call = task.tool_calls[0]
+    assert call.status == ToolStatus.failed
+    assert "参数校验失败" in (call.error or "")
+    assert call.result["fallback"] is True
+    assert task.tool_results[0]["validation_failed"] is True
+
+
+def test_act_node_records_fallback_result_when_tool_raises():
+    class FailingWeatherTool:
+        name = "weather_fitness_advisor"
+        description = "weather"
+        args_schema = None
+
+        def invoke(self, args):
+            raise RuntimeError("network down")
+
+    state = SessionState(session_id="s1", user_id="1")
+    state.tools.available_tools = {"weather_fitness_advisor": FailingWeatherTool()}
+    task = Task(
+        task_id=1,
+        name="天气运动建议",
+        tool_calls=[ToolCall(name="weather_fitness_advisor", args={"city": "南京"})],
+    )
+    state.reasoning.tasks = [task]
+
+    ActNode()(state)
+
+    result = task.tool_results[0]
+    assert result["ok"] is False
+    assert result["fallback"] is True
+    assert "室内" in " ".join(result["suggestions"])
 
 
 def test_knowledge_retrieval_returns_active_ranked_contexts():

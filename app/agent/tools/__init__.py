@@ -23,6 +23,7 @@ from .fitness_calculator_tool import (
     get_estimate_1rm_tool,
     get_pain_safety_gate_tool,
 )
+from .exercise_substitution_tool import get_exercise_substitution_tool
 from .heweather_geo_tool import get_heweather_geo_lookup_tool
 from .heweather_tool import get_heweather_tool
 from .musclewiki_tool import get_musclewiki_tool
@@ -61,6 +62,7 @@ def load_tools(enabled_tool_names: set[str] | list[str] | tuple[str, ...] | None
         get_calculate_calories_burned_tool(),
         get_calculate_workout_volume_tool(),
         get_pain_safety_gate_tool(),
+        get_exercise_substitution_tool(),
         get_musclewiki_tool(),
         get_rapidapi_bodyparts_tool(),
         get_spoonacular_recipe_search_tool(),

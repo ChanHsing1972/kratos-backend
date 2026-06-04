@@ -105,6 +105,7 @@ class ReasonNode(BaseNode):
         - 如果用户要求根据身体状态、训练强度、可用时间、饮食限制制定饮食计划，优先调用 diet_plan_generator。
         - 如果当前长期/中期记忆中的 database_context.knowledge_base 存在相关外部知识，子任务结果需要保留对应 citation，例如 [知识库:膝痛训练安全#1]。
         - 如果用户提到急性疼痛、膝盖/腰/肩不适、极度疲劳，必须优先调用 pain_safety_gate，再决定是否替代训练或休息。
+        - 如果用户要求替换某个动作，或安全分流结果显示需要 modify_plan/rest_or_recovery，优先调用 exercise_substitution_advisor 给出更安全替代动作。
         - 如果用户要求按训练时长安排组数/动作数量，优先调用 calculate_workout_volume。
         - 如果用户要求计算基础代谢或每日消耗，优先调用 calculate_bmr。
         - 如果用户要求估算 1RM 或训练重量，优先调用 estimate_1rm。
@@ -117,6 +118,8 @@ class ReasonNode(BaseNode):
         - 如果需要工具：
           - tool_name 必须严格等于可用工具名之一，不允许添加任何前缀或后缀。
           - args 必须严格满足该工具的参数 schema。
+          - 工具会在执行前进行参数校验；缺少必填字段或数值越界时，本轮会得到 validation_failed 降级结果，所以你应尽量从用户问题和记忆中补齐必要参数。
+          - 如果工具返回 fallback=true，必须把它视为保守降级结果，不要当作精确外部 API 结果；最终回答要说明不确定性。
           - tavily_search 的 args 必须包含 query。
           - diet_plan_generator 的 args 应优先传 user_profile，并尽量从当前记忆中补齐 height_cm、weight_kg、body_condition、goal、exercise_intensity、available_cooking_time_minutes、diet、intolerances、preferred_ingredients、disliked_ingredients、preferred_cuisines、daily_diet。
           - result 必须为 null。

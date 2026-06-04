@@ -4,6 +4,8 @@ from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolStatus
+from app.agent.tool_fallback import build_error_fallback, build_validation_fallback
+from app.agent.tool_validation import validate_tool_args
 
 
 class ActNode(BaseNode):
@@ -43,6 +45,22 @@ class ActNode(BaseNode):
                 state.tools.history.append(tool_call.model_copy(deep=True))
                 continue
 
+            is_valid, validated_args, validation_error = validate_tool_args(tool, tool_call.args)
+            if not is_valid:
+                fallback_result = build_validation_fallback(
+                    tool_call.name,
+                    tool_call.args,
+                    validation_error or "unknown validation error",
+                )
+                tool_call.status = ToolStatus.failed
+                tool_call.error = fallback_result["reason"]
+                tool_call.result = fallback_result
+                task.tool_results.append(fallback_result)
+                state.reasoning.errors.append(f"{task.name}: {tool_call.error}")
+                state.tools.history.append(tool_call.model_copy(deep=True))
+                continue
+
+            tool_call.args = validated_args
             max_attempts = self.max_retries + 1
             for attempt in range(max_attempts):
                 try:
@@ -58,6 +76,9 @@ class ActNode(BaseNode):
                     tool_call.status = ToolStatus.failed
                     tool_call.error = str(e)
                     if attempt + 1 >= max_attempts:
+                        fallback_result = build_error_fallback(tool_call.name, tool_call.args, tool_call.error)
+                        tool_call.result = fallback_result
+                        task.tool_results.append(fallback_result)
                         state.reasoning.errors.append(
                             f"{task.name}: tool {tool_call.name} failed: {tool_call.error}"
                         )
