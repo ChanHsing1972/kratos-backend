@@ -1,3 +1,5 @@
+"""Agent 聊天 HTTP 与 SSE 接口。"""
+
 import json
 from queue import Queue
 from threading import Lock
@@ -21,6 +23,13 @@ router = APIRouter()
 
 
 class LiveAgentStream:
+    """单个正在运行的流式 Agent 请求。
+
+    同一 `client_turn_id` 可能被前端重连或重复订阅。该对象保存已发布事件，
+    新订阅者会先收到 replay，再继续接收 worker 线程发布的新事件。`finish`
+    会向所有订阅者发送 None 作为结束信号。
+    """
+
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
         self.subscribers: list[Queue[dict[str, Any] | None]] = []
@@ -28,6 +37,8 @@ class LiveAgentStream:
         self.lock = Lock()
 
     def publish(self, event: dict[str, Any]) -> None:
+        """发布一个事件并广播给当前所有订阅者。"""
+
         with self.lock:
             if self.done:
                 return
@@ -37,6 +48,8 @@ class LiveAgentStream:
             queue.put(event)
 
     def finish(self) -> None:
+        """标记流结束，并通知所有订阅者退出。"""
+
         with self.lock:
             if self.done:
                 return
@@ -47,6 +60,8 @@ class LiveAgentStream:
             queue.put(None)
 
     def subscribe(self) -> Queue[dict[str, Any] | None]:
+        """创建订阅队列，并回放已经发布的事件。"""
+
         queue: Queue[dict[str, Any] | None] = Queue()
         with self.lock:
             replay = list(self.events)
@@ -60,6 +75,8 @@ class LiveAgentStream:
         return queue
 
     def unsubscribe(self, queue: Queue[dict[str, Any] | None]) -> None:
+        """移除订阅队列，通常在客户端断开 SSE 连接时调用。"""
+
         with self.lock:
             if queue in self.subscribers:
                 self.subscribers.remove(queue)

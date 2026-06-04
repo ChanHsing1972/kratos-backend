@@ -1,3 +1,9 @@
+"""LangGraph 兼容图构造。
+
+生产服务当前使用 `AgentRunner` 保证流式/非流式同一套编排；本模块保留给需要
+LangGraph graph 对象的实验或兼容场景，节点顺序应与 runner 保持一致。
+"""
+
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
@@ -7,6 +13,8 @@ from app.agent.state.session_state import SessionState
 
 
 def build_graph(llm):
+    """构建与 AgentRunner 等价的 LangGraph 状态图。"""
+
     builder = StateGraph(SessionState)
     nodes = build_agent_nodes(llm)
 

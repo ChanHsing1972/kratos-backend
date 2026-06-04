@@ -1,3 +1,11 @@
+"""Agent 工具加载入口。
+
+服务层通过 `load_tools` 获取当前可用工具集合，再按用户配置和 Skill 范围过滤。
+个别可选依赖（如 Tavily）不可用时只跳过对应工具，不影响核心健身能力。
+"""
+
+import logging
+
 from .amap_location_tool import get_amap_geocode_tool, get_amap_place_search_around_tool
 from .amap_route_tool import (
     get_amap_bicycling_route_tool,
@@ -24,7 +32,19 @@ from .spoonacular_tool import get_spoonacular_recipe_search_tool
 from .weather_fitness_tool import get_weather_fitness_advisor_tool
 
 
+logger = logging.getLogger(__name__)
+
+
 def load_tools(enabled_tool_names: set[str] | list[str] | tuple[str, ...] | None = None):
+    """加载工具实例，并按可选白名单过滤。
+
+    参数：
+        enabled_tool_names: 非空时只返回白名单内的工具名。
+
+    返回：
+        `{tool_name: tool}` 映射，供 ReasonNode 描述和 ActNode 执行。
+    """
+
     enabled_names = set(enabled_tool_names) if enabled_tool_names is not None else None
     tools = [
         get_amap_ip_location_tool(),
@@ -54,8 +74,8 @@ def load_tools(enabled_tool_names: set[str] | list[str] | tuple[str, ...] | None
         from .tavily_tool import get_tavily_tool
 
         tools.insert(0, get_tavily_tool())
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Tavily tool is unavailable and will be skipped: %s", exc)
 
     return {
         tool.name: tool

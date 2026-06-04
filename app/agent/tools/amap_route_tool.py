@@ -1,3 +1,5 @@
+"""高德距离和路线规划工具。"""
+
 import json
 from typing import Any, Literal
 from urllib import error, parse, request
@@ -144,7 +146,11 @@ class _AMapBaseTool:
                     "status_code": response.status,
                     "headers": dict(response.headers.items()),
                     "data": data,
-                    "message": None if _AMapBaseTool._is_success(data) else _AMapBaseTool._extract_error_message(data, "AMap request failed."),
+                    "message": (
+                        None
+                        if _AMapBaseTool._is_success(data)
+                        else _AMapBaseTool._extract_error_message(data, "AMap request failed.")
+                    ),
                 }
         except error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="ignore")

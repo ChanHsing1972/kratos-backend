@@ -1,3 +1,9 @@
+"""Agent 最终回答的确定性质量门。
+
+LLM 反思适合发现语义问题，但对项目中已知的硬规则必须用确定性校验兜底，
+例如不能把“60 分钟”写成“60 岁”、疼痛场景必须有安全边界、工具失败要说明。
+"""
+
 from __future__ import annotations
 
 from app.agent.state.session_state import SessionState
@@ -10,6 +16,15 @@ SAFETY_TERMS = ["停止", "避免", "休息", "恢复", "疼痛", "不适", "医
 
 
 def validate_agent_result(state: SessionState) -> list[str]:
+    """返回最终回答中违反硬规则的中文建议列表。
+
+    参数：
+        state: 已生成最终回答的 Agent 状态。
+
+    返回：
+        去重后的质量问题；空列表表示确定性规则未发现问题。
+    """
+
     response = str(state.result.response or "").strip()
     suggestions: list[str] = []
 

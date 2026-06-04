@@ -1,62 +1,47 @@
+"""Agent 聊天服务入口。
+
+本模块负责一次 Agent 请求的生命周期编排：准备状态、处理幂等运行记录、执行
+Agent、补齐动作媒体、持久化运行结果和会话产物。状态构造和 trace 格式化已拆到
+独立模块，避免服务层继续膨胀。
+"""
+
 from functools import lru_cache
 from typing import Any, Iterator
-from uuid import uuid4
 
-from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
+from app.agent.llm import get_agent_llm
 from app.agent.runner import AgentRunner, build_agent_nodes
-from app.agent.state.memory import MemoryState
 from app.agent.state.result import ExerciseMedia
-from app.agent.state.session_state import ActiveSkill, SessionState
-from app.agent.state.tools import ToolCall, ToolsState
-from app.agent.tools import load_tools
-from app.core.config import settings
-from app.models.user import User
+from app.agent.state.session_state import SessionState
 from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import (
     create_agent_run,
     fail_reserved_agent_run,
-    get_latest_agent_memory_payload,
     reserve_agent_run,
 )
-from app.services.agent_tool import enabled_tool_names_for_user, record_tool_failures_from_state
-from app.services.body_data_ingest import extract_body_data_from_message
+from app.services.agent_state_builder import prepare_agent_state
+from app.services.agent_tool import record_tool_failures_from_state
+from app.services.agent_trace import (
+    append_persistable_event,
+    build_trace,
+    emit_new_trace,
+    format_context_snapshot,
+    format_persisted_body_data,
+    format_skill_snapshot,
+    prepend_context_trace,
+    trace_key,
+)
 from app.services.conversation_session import (
-    ensure_conversation_session,
-    hydrate_state_from_conversation_session,
     persist_session_turn_artifacts,
 )
 from app.services.exercise_media import get_exercise_media
-from app.services.fitness_context import (
-    context_for_prompt,
-    hydrate_agent_memory,
-    load_fitness_context,
-)
-from app.services.skill import (
-    allowed_tool_names,
-    get_enabled_skills_for_user,
-    normalize_tool_names,
-    skill_to_prompt_payload,
-)
-from app.services.upload import build_agent_attachment_parts
-
-
-@lru_cache(maxsize=1)
-def get_agent_llm():
-    return ChatOpenAI(
-        api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
-        base_url=settings.AGENT_LLM_BASE_URL,
-        model=settings.AGENT_LLM_MODEL,
-        temperature=settings.AGENT_LLM_TEMPERATURE,
-        timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,
-        max_retries=settings.AGENT_LLM_MAX_RETRIES,
-    )
 
 
 @lru_cache(maxsize=1)
 def get_agent_runner():
+    """返回进程内复用的 AgentRunner。"""
+
     return AgentRunner(build_agent_nodes(get_agent_llm()))
 
 
@@ -68,18 +53,32 @@ def run_agent_chat(
     client_turn_id: str | None = None,
     db: Session | None = None,
 ) -> tuple[SessionState, list[AgentTraceStep]]:
-    stored_message = _message_for_storage(message, attachments)
-    state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
+    """同步运行一次 Agent 聊天。
+
+    参数：
+        user_id: 当前用户 ID。
+        message: 用户文本。
+        attachments: 附件元数据。
+        session_id: 可选会话 ID，用于恢复历史。
+        client_turn_id: 客户端幂等 ID；重复请求会复用既有结果。
+        db: 数据库会话；为空时只做内存运行。
+
+    返回：
+        最终状态和完整 trace。
+    """
+
+    prepared = prepare_agent_state(
         user_id=user_id,
         message=message,
         attachments=attachments,
         session_id=session_id,
         db=db,
     )
+    state = prepared.state
     reserved_run = None
     if db is not None:
         reserved_run, should_run = reserve_agent_run(
-            db, user_id, state.session_id, stored_message, client_turn_id
+            db, user_id, state.session_id, prepared.stored_message, client_turn_id
         )
         if not should_run and reserved_run is not None:
             state.result.response = reserved_run.answer
@@ -96,20 +95,27 @@ def run_agent_chat(
         raise
     enrich_workout_plan_media(final_state, db)
     trace = build_trace(final_state)
-    _prepend_context_trace(trace, persisted_updates, context_snapshot, skill_snapshot)
+    prepend_context_trace(
+        trace,
+        prepared.pending_health_updates,
+        prepared.context_snapshot,
+        prepared.skill_snapshot,
+    )
 
     if db is not None:
         record_tool_failures_from_state(db, user_id, final_state)
         create_agent_run(
             db,
             user_id,
-            stored_message,
+            prepared.stored_message,
             final_state,
             trace,
             client_turn_id=client_turn_id,
             reserved_run_id=reserved_run.id if reserved_run else None,
         )
-        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, stored_message)
+        persist_session_turn_artifacts(
+            db, user_id, final_state.session_id, final_state, prepared.stored_message
+        )
 
     return final_state, trace
 
@@ -122,19 +128,25 @@ def stream_agent_chat(
     client_turn_id: str | None = None,
     db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
+    """流式运行一次 Agent 聊天并产出 SSE 事件字典。
+
+    事件流会先发送上下文/Skill/待确认健康数据，再发送节点 trace、answer_delta、
+    final 和 done。数据库持久化只保存稳定 trace，不保存瞬时 answer_delta。
+    """
+
     persisted_trace: list[AgentTraceStep] = []
-    stored_message = _message_for_storage(message, attachments)
-    state, persisted_updates, context_snapshot, skill_snapshot = _prepare_agent_state(
+    prepared = prepare_agent_state(
         user_id=user_id,
         message=message,
         attachments=attachments,
         session_id=session_id,
         db=db,
     )
+    state = prepared.state
     reserved_run = None
     if db is not None:
         reserved_run, should_run = reserve_agent_run(
-            db, user_id, state.session_id, stored_message, client_turn_id
+            db, user_id, state.session_id, prepared.stored_message, client_turn_id
         )
         if not should_run and reserved_run is not None:
             if reserved_run.status == "completed":
@@ -162,40 +174,43 @@ def stream_agent_chat(
         "content": "Agent 已读取数据库上下文，开始处理请求",
         "session_id": state.session_id,
     }
-    _append_persistable_event(persisted_trace, event)
+    append_persistable_event(persisted_trace, event)
     yield event
-    if context_snapshot:
+    if prepared.context_snapshot:
         event = {
             "type": "observation",
-            "content": f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
+            "content": f"已读取用户上下文：{format_context_snapshot(prepared.context_snapshot)}",
             "session_id": state.session_id,
         }
-        _append_persistable_event(persisted_trace, event)
+        append_persistable_event(persisted_trace, event)
         yield event
-    if skill_snapshot:
+    if prepared.skill_snapshot:
         event = {
             "type": "observation",
-            "content": f"已启用 Skill：{_format_skill_snapshot(skill_snapshot)}",
+            "content": f"已启用 Skill：{format_skill_snapshot(prepared.skill_snapshot)}",
             "session_id": state.session_id,
         }
-        _append_persistable_event(persisted_trace, event)
+        append_persistable_event(persisted_trace, event)
         yield event
-    if persisted_updates:
+    if prepared.pending_health_updates:
         event = {
             "type": "observation",
-            "content": f"检测到可记录的健康数据，请确认后保存：{_format_persisted_body_data(persisted_updates)}",
-            "raw": {"pending_health_data": persisted_updates},
+            "content": (
+                "检测到可记录的健康数据，请确认后保存："
+                f"{format_persisted_body_data(prepared.pending_health_updates)}"
+            ),
+            "raw": {"pending_health_data": prepared.pending_health_updates},
             "session_id": state.session_id,
         }
-        _append_persistable_event(persisted_trace, event)
+        append_persistable_event(persisted_trace, event)
         yield event
 
     emitted_keys: set[tuple[str, str]] = set()
     final_state = state
 
     try:
-        for event in _run_streaming_agent(final_state, emitted_keys, db=db):
-            _append_persistable_event(persisted_trace, event)
+        for event in _run_streaming_agent(final_state, emitted_keys):
+            append_persistable_event(persisted_trace, event)
             yield event
     except GeneratorExit:
         if db is not None:
@@ -214,13 +229,15 @@ def stream_agent_chat(
         create_agent_run(
             db,
             user_id,
-            stored_message,
+            prepared.stored_message,
             final_state,
             trace,
             client_turn_id=client_turn_id,
             reserved_run_id=reserved_run.id if reserved_run else None,
         )
-        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, stored_message)
+        persist_session_turn_artifacts(
+            db, user_id, final_state.session_id, final_state, prepared.stored_message
+        )
 
     yield {
         "type": "done",
@@ -232,10 +249,11 @@ def stream_agent_chat(
 def _run_streaming_agent(
     state: SessionState,
     emitted_keys: set[tuple[str, str]],
-    db: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
+    """运行 AgentRunner 的流式接口，并把 final_state 转为 final 事件。"""
+
     def emit_trace(_node_name: str, current_state: SessionState) -> Iterator[dict[str, Any]]:
-        yield from _emit_new_trace(current_state, emitted_keys, include_final=False)
+        yield from emit_new_trace(current_state, emitted_keys, include_final=False)
 
     for raw_event in get_agent_runner().iter_events(
         state,
@@ -250,7 +268,7 @@ def _run_streaming_agent(
                 content=str(event.get("content") or ""),
                 raw=event.get("raw"),
             )
-            key = _trace_key(final_step)
+            key = trace_key(final_step)
             if key not in emitted_keys:
                 emitted_keys.add(key)
                 final_event = final_step.model_dump(mode="json")
@@ -261,6 +279,12 @@ def _run_streaming_agent(
 
 
 def enrich_workout_plan_media(state: SessionState, db: Session | None = None) -> None:
+    """为结构化训练计划中的动作补齐图片/视频资源。
+
+    副作用：
+        原地修改 `state.result.workout_plan.sessions[*].exercises[*].media`。
+    """
+
     workout_plan = state.result.workout_plan
     if workout_plan is None:
         return
@@ -273,397 +297,3 @@ def enrich_workout_plan_media(state: SessionState, db: Session | None = None) ->
             if media.get("source") == "skipped":
                 continue
             exercise.media = ExerciseMedia(**media)
-
-
-def _emit_new_trace(
-    state: SessionState,
-    emitted_keys: set[tuple[str, str]],
-    include_final: bool,
-) -> Iterator[dict[str, Any]]:
-    for step in build_trace(state, include_final=include_final):
-        key = _trace_key(step)
-        if key in emitted_keys:
-            continue
-        emitted_keys.add(key)
-
-        event = step.model_dump(mode="json")
-        event["session_id"] = state.session_id
-        yield event
-
-
-def _append_persistable_event(
-    trace: list[AgentTraceStep],
-    event: dict[str, Any],
-) -> None:
-    event_type = str(event.get("type") or "status")
-    if event_type in {"answer_delta", "done"}:
-        return
-    if event_type not in {"status", "thought", "action", "observation", "reflection", "final", "error"}:
-        event_type = "status"
-
-    content = event.get("content")
-    if content is None and event_type == "final":
-        content = event.get("answer")
-    if content is None:
-        return
-
-    trace.append(
-        AgentTraceStep(
-            type=event_type,  # type: ignore[arg-type]
-            content=str(content),
-            raw=event.get("raw"),
-        )
-    )
-
-
-def _prepare_agent_state(
-    user_id: int,
-    message: str,
-    attachments: list[dict[str, Any]] | None,
-    session_id: str | None,
-    db: Session | None,
-) -> tuple[SessionState, dict[str, Any] | None, dict[str, Any] | None, list[dict[str, Any]]]:
-    enabled_tool_names = enabled_tool_names_for_user(db, user_id) if db is not None else None
-    tools = load_tools(enabled_tool_names=enabled_tool_names)
-    active_skill_models = []
-    skill_snapshot: list[dict[str, Any]] = []
-    if db is not None:
-        active_skill_models = get_enabled_skills_for_user(db, user_id)
-        allowed_tools = allowed_tool_names(active_skill_models)
-        if active_skill_models:
-            tools = {
-                name: tool
-                for name, tool in tools.items()
-                if name in allowed_tools
-            }
-        skill_snapshot = [
-            {
-                "id": skill.id,
-                "name": skill.name,
-                "available_tools": normalize_tool_names(skill.available_tools),
-            }
-            for skill in active_skill_models
-        ]
-
-    state = SessionState(
-        session_id=session_id or str(uuid4()),
-        user_id=str(user_id),
-        tools=ToolsState(available_tools=tools),
-        active_skills=[
-            ActiveSkill(**skill_to_prompt_payload(skill))
-            for skill in active_skill_models
-        ],
-    )
-    state.result.user_attachments = _attachments_for_history(attachments or [])
-
-    context_snapshot = None
-    if db is not None:
-        ensure_conversation_session(db, user_id, state.session_id)
-        if session_id:
-            memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
-            if memory_payload:
-                state.memory = MemoryState.model_validate(memory_payload)
-            hydrate_state_from_conversation_session(db, user_id, session_id, state)
-
-        user = db.query(User).filter(User.id == user_id).first()
-        if user is not None:
-            context = load_fitness_context(db, user)
-            hydrate_agent_memory(state, context)
-            context_snapshot = context_for_prompt(context)
-
-    persisted_updates = extract_body_data_from_message(message, context_snapshot=context_snapshot)
-    state.memory.pending_confirmation_updates = persisted_updates or {}
-    content = build_agent_attachment_parts(
-        user_id=user_id,
-        message=message,
-        attachments=attachments or [],
-    )
-    state.conversation.messages.append(HumanMessage(content=content))
-    return state, persisted_updates, context_snapshot, skill_snapshot
-
-
-def _prepend_context_trace(
-    trace: list[AgentTraceStep],
-    persisted_updates: dict[str, Any] | None,
-    context_snapshot: dict[str, Any] | None,
-    skill_snapshot: list[dict[str, Any]],
-) -> None:
-    leading_steps: list[AgentTraceStep] = []
-    if context_snapshot:
-        leading_steps.append(
-            AgentTraceStep(
-                type="observation",
-                content=f"已读取用户上下文：{_format_context_snapshot(context_snapshot)}",
-                raw=context_snapshot,
-            ),
-        )
-    if skill_snapshot:
-        leading_steps.append(
-            AgentTraceStep(
-                type="observation",
-                content=f"已启用 Skill：{_format_skill_snapshot(skill_snapshot)}",
-                raw=skill_snapshot,
-            )
-        )
-    if persisted_updates:
-        leading_steps.append(
-            AgentTraceStep(
-                type="observation",
-                content=f"检测到可记录的健康数据，请确认后保存：{_format_persisted_body_data(persisted_updates)}",
-                raw={"pending_health_data": persisted_updates},
-            ),
-        )
-    trace[0:0] = leading_steps
-
-
-def _message_for_storage(
-    message: str,
-    attachments: list[dict[str, Any]] | None,
-) -> str:
-    text = message.strip()
-    if not attachments:
-        return text
-
-    attachment_lines = [
-        f"- {item.get('filename') or '附件'} ({item.get('content_type') or 'unknown'})"
-        for item in attachments
-    ]
-    parts = [text] if text else []
-    parts.append("附件：\n" + "\n".join(attachment_lines))
-    return "\n\n".join(parts)
-
-
-def _attachments_for_history(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "content_type": str(item.get("content_type") or "application/octet-stream"),
-            "filename": str(item.get("filename") or "附件"),
-            "size": int(item.get("size") or 0),
-            "url": str(item.get("url") or ""),
-        }
-        for item in attachments
-        if item.get("url")
-    ]
-
-
-def _coerce_session_state(value: Any) -> SessionState:
-    if isinstance(value, SessionState):
-        return value
-    return SessionState(**value)
-
-
-def build_trace(
-    state: SessionState,
-    include_final: bool = True,
-) -> list[AgentTraceStep]:
-    trace: list[AgentTraceStep] = []
-
-    for task in state.reasoning.tasks:
-        trace.append(
-            AgentTraceStep(
-                type="thought",
-                content=_task_thought(task.name, task.description),
-                raw=task.model_dump(mode="json"),
-            )
-        )
-
-        for tool_call in task.tool_calls:
-            trace.append(
-                AgentTraceStep(
-                    type="action",
-                    content=f"调用工具 {_format_tool_call(tool_call)}",
-                    timestamp=tool_call.timestamp,
-                    raw=tool_call.model_dump(mode="json"),
-                )
-            )
-
-            if tool_call.error:
-                trace.append(
-                    AgentTraceStep(
-                        type="observation",
-                        content=f"工具调用失败：{tool_call.error}",
-                        timestamp=tool_call.timestamp,
-                        raw=tool_call.model_dump(mode="json"),
-                    )
-                )
-            elif tool_call.result is not None:
-                trace.append(
-                    AgentTraceStep(
-                        type="observation",
-                        content=_summarize_value(tool_call.result),
-                        timestamp=tool_call.timestamp,
-                        raw=tool_call.result,
-                    )
-                )
-
-        if task.result is not None and not task.tool_calls:
-            trace.append(
-                AgentTraceStep(
-                    type="observation",
-                    content=_summarize_value(task.result),
-                    raw=task.model_dump(mode="json"),
-                )
-            )
-
-    reflection = state.reasoning.reflection
-    if reflection:
-        reflection_text = _format_reflection(reflection)
-        if reflection_text:
-            trace.append(
-                AgentTraceStep(
-                    type="reflection",
-                    content=reflection_text,
-                    raw=reflection,
-                )
-            )
-
-    if include_final:
-        answer = str(state.result.response or "")
-        trace.append(
-            AgentTraceStep(
-                type="final",
-                content=answer,
-                raw=state.result.model_dump(mode="json"),
-            )
-        )
-
-    return trace
-
-
-def _task_thought(name: str, description: str | None) -> str:
-    if description and description != name:
-        return description
-    return name
-
-
-def _format_tool_call(tool_call: ToolCall) -> str:
-    args = ", ".join(
-        f"{key}={value!r}" for key, value in sorted(tool_call.args.items())
-    )
-    return f"{tool_call.name}({args})"
-
-
-def _format_reflection(reflection: dict[str, Any]) -> str:
-    suggestions = reflection.get("suggestions") or []
-    if isinstance(suggestions, list) and suggestions:
-        return "；".join(str(item) for item in suggestions)
-    if reflection.get("is_pass") is False:
-        return "反思未通过，但未返回具体建议。"
-    return ""
-
-
-def _trace_key(step: AgentTraceStep) -> tuple[str, str]:
-    return step.type, step.content
-
-
-def _summarize_value(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return f"返回 {len(value)} 条结果"
-    if isinstance(value, dict):
-        if "answer" in value:
-            return str(value["answer"])
-        if "result" in value:
-            return str(value["result"])
-        if "results" in value and isinstance(value["results"], list):
-            return f"返回 {len(value['results'])} 条结果"
-    return str(value)
-
-
-def _format_persisted_body_data(data: dict[str, Any]) -> str:
-    labels = {
-        "activity_level": "活动水平",
-        "age": "年龄",
-        "bmi": "BMI",
-        "body_fat_percentage": "体脂率",
-        "chest_cm": "胸围",
-        "dietary_habits": "饮食习惯",
-        "dietary_restrictions": "饮食限制",
-        "equipment_access": "可用器械",
-        "energy_level": "精力",
-        "experience_level": "训练经验",
-        "fitness_goal": "健身目标",
-        "fitness_summary": "训练状态",
-        "gender": "性别",
-        "height_cm": "身高",
-        "hip_cm": "臀围",
-        "injury_history": "伤病史",
-        "location": "地区",
-        "medical_conditions": "医疗情况",
-        "preferred_workout_types": "偏好训练",
-        "skeletal_muscle_mass_kg": "骨骼肌",
-        "sleep_hours": "睡眠时长",
-        "sleep_quality": "睡眠质量",
-        "soreness_level": "酸痛",
-        "target_weight_kg": "目标体重",
-        "available_days_per_week": "每周可练",
-        "workout_minutes_per_session": "单次时长",
-        "waist_cm": "腰围",
-        "weight_kg": "体重",
-    }
-    units = {
-        "body_fat_percentage": "%",
-        "chest_cm": "cm",
-        "height_cm": "cm",
-        "hip_cm": "cm",
-        "skeletal_muscle_mass_kg": "kg",
-        "sleep_hours": "h",
-        "target_weight_kg": "kg",
-        "waist_cm": "cm",
-        "weight_kg": "kg",
-    }
-    section_labels = {
-        "profile": "个人信息",
-        "body_metric": "身体数据",
-        "checkin": "状态打卡",
-    }
-    sections: list[str] = []
-    for section_key, values in data.items():
-        if not isinstance(values, dict):
-            sections.append(f"{labels.get(section_key, section_key)} {values}")
-            continue
-        formatted = "，".join(
-            f"{labels.get(key, key)} {value}{units.get(key, '')}"
-            for key, value in values.items()
-        )
-        if formatted:
-            sections.append(f"{section_labels.get(section_key, section_key)}：{formatted}")
-    return "；".join(sections)
-
-
-def _format_context_snapshot(snapshot: dict[str, Any]) -> str:
-    profile = snapshot.get("profile") or {}
-    metric = snapshot.get("latest_body_metric") or {}
-    onboarding = snapshot.get("onboarding") or {}
-    parts = [
-        f"目标 {profile.get('fitness_goal') or '未设置'}",
-        f"经验 {profile.get('experience_level') or '未设置'}",
-        f"体重 {metric.get('weight_kg') or '未记录'}kg",
-        f"身高 {metric.get('height_cm') or '未记录'}cm",
-    ]
-    if onboarding.get("ready_for_agent") is False:
-        next_steps = onboarding.get("next_steps") or []
-        if next_steps:
-            parts.append(f"待完善 {'；'.join(str(item) for item in next_steps[:2])}")
-    return "，".join(parts)
-
-
-def _format_skill_snapshot(snapshot: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for item in snapshot:
-        tools = item.get("available_tools") or []
-        suffix = f"（工具：{', '.join(tools)}）" if tools else ""
-        parts.append(f"{item.get('name')}{suffix}")
-    return "；".join(parts)
-
-
-def _iter_answer_chunks(answer: str) -> Iterator[str]:
-    buffer = ""
-    for char in answer:
-        buffer += char
-        if char in "，。；！？\n" or len(buffer) >= 4:
-            yield buffer
-            buffer = ""
-    if buffer:
-        yield buffer

@@ -1,3 +1,9 @@
+"""个性化饮食计划工具。
+
+工具会把 Agent 记忆中的用户画像归一化，生成每餐检索参数，并调用 Spoonacular
+食谱搜索工具返回候选食谱与营养目标。
+"""
+
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -32,6 +38,8 @@ class DietPlanRequest(BaseModel):
 
 
 class DietPlanTool:
+    """根据用户画像和目标生成结构化饮食计划。"""
+
     name = "diet_plan_generator"
     description = (
         "Generate a personalized diet plan using user state such as height, weight, body condition, exercise intensity, "
@@ -55,7 +63,6 @@ class DietPlanTool:
 
         meal_types = self._select_meal_types(meal_count)
         meals: list[dict[str, Any]] = []
-        api_errors: list[dict[str, Any]] = []
 
         for meal_type in meal_types:
             query_params = self._build_recipe_query_params(

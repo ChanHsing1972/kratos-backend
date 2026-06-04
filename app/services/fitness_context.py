@@ -1,3 +1,9 @@
+"""健身领域数据库上下文加载与 Agent 记忆水合。
+
+Agent 不应直接到处查询用户档案、身体数据和训练记录。本模块提供一个统一入口，
+把数据库中的健身上下文加载为 schema，并映射到 Agent 的长期/中期记忆。
+"""
+
 from decimal import Decimal
 from typing import Any
 
@@ -39,6 +45,17 @@ BODY_LABELS = {
 
 
 def load_fitness_context(db: Session, user: User, limit: int = 12) -> FitnessContextResponse:
+    """读取 Agent 生成建议所需的用户健身上下文。
+
+    参数：
+        db: 数据库会话。
+        user: 当前用户 ORM 对象。
+        limit: 最近身体数据、训练日志和打卡记录的最大条数。
+
+    返回：
+        包含用户档案、最新身体数据、近期训练、打卡、当前激活计划和 onboarding 状态。
+    """
+
     profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
     recent_body_metrics = (
         db.query(BodyMetric)
@@ -87,6 +104,8 @@ def build_onboarding_status(
     profile: UserProfile | None,
     latest_body_metric: BodyMetric | None,
 ) -> OnboardingStatus:
+    """根据资料完整度生成 Agent 可读的 onboarding 状态。"""
+
     missing_profile_fields = [
         field
         for field in PROFILE_REQUIRED_FIELDS
@@ -122,6 +141,12 @@ def build_onboarding_status(
 
 
 def hydrate_agent_memory(state: SessionState, context: FitnessContextResponse) -> None:
+    """把数据库上下文写入 Agent 记忆。
+
+    副作用：
+        原地更新 `state.memory.database_context`、长期 profile 和近期训练计划/反馈。
+    """
+
     state.memory.database_context = context_for_prompt(context)
     long_term = state.memory.long_term_memory
     physical = long_term.physical_profile
@@ -187,6 +212,8 @@ def hydrate_agent_memory(state: SessionState, context: FitnessContextResponse) -
 
 
 def context_for_prompt(context: FitnessContextResponse) -> dict[str, Any]:
+    """把上下文 schema 转成 prompt/trace 友好的 JSON 字典。"""
+
     return context.model_dump(mode="json")
 
 

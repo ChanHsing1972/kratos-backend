@@ -1,3 +1,5 @@
+"""高德地理编码和周边 POI 搜索工具。"""
+
 from typing import Any
 
 from pydantic import BaseModel, Field

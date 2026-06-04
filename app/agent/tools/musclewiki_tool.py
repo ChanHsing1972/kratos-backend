@@ -1,3 +1,5 @@
+"""MuscleWiki 健身知识 API 工具。"""
+
 import json
 from typing import Any, Literal
 from urllib import error, parse, request

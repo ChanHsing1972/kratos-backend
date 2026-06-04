@@ -1,3 +1,9 @@
+"""Agent 单轮结束节点。
+
+EndNode 负责把本轮消息压缩为会话历史、整理 turn memory、清空临时运行态并
+推进 turn_id。它是本轮状态生命周期的出口，不生成用户可见回答。
+"""
+
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.conversation import AskAns
 from app.agent.state.memory import TurnMemory
@@ -5,11 +11,14 @@ from app.agent.state.session_state import SessionState
 
 
 class EndNode(BaseNode):
+    """完成一轮 Agent 后的会话与记忆收尾。"""
 
     def __init__(self, llm=None):
         super().__init__(llm)
 
     def __call__(self, state: SessionState):
+        """归档当前轮问答、裁剪会话窗口并清理临时状态。"""
+
         if state.conversation.messages:
             human_message = self.latest_user_text(state)
             ai_message = self.message_text(state.conversation.messages[-1])
@@ -37,6 +46,13 @@ class EndNode(BaseNode):
         return state
 
     def _summarize_turn(self, state: SessionState, user_message: str, ai_message: str) -> None:
+        """生成单轮摘要并合并允许自动写入的记忆更新。
+
+        设计约束：
+            健康/训练档案类字段需要用户确认后由数据库写入，因此这里的长期更新
+            只保留姓名、职业等低风险稳定信息。
+        """
+
         if not user_message and not ai_message:
             return
 
@@ -169,6 +185,8 @@ class EndNode(BaseNode):
 
     @staticmethod
     def _filter_long_term_updates(updates: dict) -> dict:
+        """过滤长期记忆自动写入字段，避免绕过健康数据确认流程。"""
+
         if not isinstance(updates, dict):
             return {}
         return {
@@ -178,6 +196,8 @@ class EndNode(BaseNode):
 
     @staticmethod
     def _filter_mid_term_updates(updates: dict) -> dict:
+        """只保留近期上下文允许写入的字段。"""
+
         if not isinstance(updates, dict):
             return {}
         allowed_keys = {

@@ -1,3 +1,9 @@
+"""AgentRun 持久化、幂等预留与评估样本导出。
+
+AgentRun 是一次 Agent 对话的审计记录：保存用户消息、最终回答、意图、任务结果、
+工具结果、记忆快照、结构化结果和 trace。流式与非流式请求都通过这里落库。
+"""
+
 from typing import Any
 import json
 from datetime import datetime, timezone
@@ -22,6 +28,16 @@ def create_agent_run(
     client_turn_id: str | None = None,
     reserved_run_id: int | None = None,
 ) -> AgentRun:
+    """创建或完成一个 AgentRun，并写入 ordered trace。
+
+    参数：
+        reserved_run_id: 非空时表示此前已通过 `reserve_agent_run` 创建 running 记录，
+            本函数会在同一记录上填充结果并清空旧 trace。
+
+    返回：
+        带 trace_steps 预加载的 AgentRun；若刷新失败则返回当前 ORM 实例。
+    """
+
     run = db.query(AgentRun).filter(AgentRun.id == reserved_run_id).first() if reserved_run_id else None
     values = {
         "answer": str(state.result.response or ""),
@@ -71,6 +87,13 @@ def reserve_agent_run(
     message: str,
     client_turn_id: str | None,
 ) -> tuple[AgentRun | None, bool]:
+    """按客户端 turn id 预留运行记录，实现请求幂等。
+
+    返回：
+        `(run, should_run)`。`should_run=False` 表示已有同一 client_turn_id 的记录，
+        调用方应复用记录或提示处理中。
+    """
+
     if not client_turn_id:
         return None, True
     existing = get_agent_run_by_client_turn_id(db, user_id, client_turn_id)
@@ -95,6 +118,8 @@ def reserve_agent_run(
 
 
 def fail_reserved_agent_run(db: Session, run_id: int | None, status: str = "failed") -> None:
+    """把仍处于 running 的预留记录标记为失败或取消。"""
+
     if run_id is None:
         return
     run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
@@ -109,6 +134,8 @@ def get_agent_run_by_id(
     run_id: int,
     user_id: int,
 ) -> AgentRun | None:
+    """按用户和 run id 查询单次 AgentRun，并预加载 trace。"""
+
     return (
         db.query(AgentRun)
         .options(selectinload(AgentRun.trace_steps))
@@ -122,6 +149,8 @@ def get_agent_run_by_client_turn_id(
     user_id: int,
     client_turn_id: str,
 ) -> AgentRun | None:
+    """按客户端幂等 ID 查询 AgentRun。"""
+
     return (
         db.query(AgentRun)
         .options(selectinload(AgentRun.trace_steps))
@@ -136,6 +165,8 @@ def get_agent_runs_by_user_id(
     session_id: str | None = None,
     limit: int = 50,
 ) -> list[AgentRun]:
+    """列出用户最近的 AgentRun，可按会话过滤。"""
+
     query = (
         db.query(AgentRun)
         .options(selectinload(AgentRun.trace_steps))
@@ -151,6 +182,8 @@ def get_latest_agent_memory_payload(
     user_id: int,
     session_id: str,
 ) -> dict[str, Any] | None:
+    """返回指定会话最近一次 AgentRun 的记忆快照。"""
+
     run = (
         db.query(AgentRun)
         .filter(
@@ -167,6 +200,12 @@ def get_latest_agent_memory_payload(
 
 
 def build_ragas_samples(runs: list[AgentRun]) -> list[dict[str, Any]]:
+    """把 AgentRun 转换为 RAGAS 评估样本。
+
+    contexts 只取 observation/action/reflection，因为这些步骤代表 Agent 真实依据；
+    thought 和 final 不作为外部上下文，避免把答案本身泄漏进评估上下文。
+    """
+
     samples: list[dict[str, Any]] = []
     for run in runs:
         contexts = [
@@ -201,6 +240,15 @@ def export_single_run_to_local_ragas_json(
     export_dir: str | None = None,
     file_name: str | None = None,
 ) -> dict[str, Any]:
+    """导出单个 AgentRun 为本地 RAGAS JSON 文件。
+
+    异常：
+        ValueError: run 不存在或不属于当前用户。
+
+    副作用：
+        在 `export_dir` 或项目 `exports/` 目录创建 JSON 文件。
+    """
+
     run = get_agent_run_by_id(db, run_id, user_id)
     if run is None:
         raise ValueError("Agent run not found")

@@ -1,3 +1,5 @@
+"""Agent 节点基类与通用 prompt 辅助函数。"""
+
 import logging
 from typing import Any
 
@@ -8,14 +10,32 @@ from app.agent.state.session_state import SessionState
 
 
 class BaseNode:
+    """所有 Agent 节点的基类。
+
+    基类只放跨节点真正共享的能力：调用 LLM 并解析 JSON、从消息中取用户文本、
+    附件 prompt 拼装、工具/Skill 描述。具体业务状态变更应留在各节点内部。
+    """
+
     def __init__(self, llm=None):
         self.llm = llm
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def __call__(self, state: SessionState) -> SessionState:
+        """处理并返回会话状态；子类必须实现。"""
+
         raise NotImplementedError("Subclasses must implement this method")
 
     def invoke_json(self, prompt: str, state: SessionState | None = None) -> dict[str, Any]:
+        """调用 LLM 并把响应解析为 JSON 对象。
+
+        参数：
+            prompt: 文本 prompt。
+            state: 可选状态；存在附件时会把最近用户附件带入多模态消息。
+
+        异常：
+            LLM 调用异常或 JSON 解析异常会向上传递，由节点决定兜底策略。
+        """
+
         response = self.llm.invoke(self.prompt_input(prompt, state))
         content = getattr(response, "content", response)
         if not isinstance(content, str):
@@ -23,6 +43,8 @@ class BaseNode:
         return parse_json_object(content)
 
     def prompt_input(self, prompt: str, state: SessionState | None = None):
+        """根据最近用户附件决定返回纯文本 prompt 或多模态 HumanMessage。"""
+
         attachment_parts = self.latest_attachment_parts(state) if state else []
         if not attachment_parts:
             return prompt
@@ -30,6 +52,8 @@ class BaseNode:
 
     @staticmethod
     def latest_user_text(state: SessionState) -> str:
+        """返回最近一条 human 消息的可读文本表示。"""
+
         for message in reversed(state.conversation.messages):
             if getattr(message, "type", None) == "human":
                 return BaseNode.message_text(message)
@@ -39,6 +63,8 @@ class BaseNode:
 
     @staticmethod
     def message_text(message: BaseMessage | Any) -> str:
+        """把 LangChain 消息或多模态 content 转为可放入 prompt/历史的文本。"""
+
         content = getattr(message, "content", message)
         if isinstance(content, list):
             parts: list[str] = []
@@ -64,6 +90,8 @@ class BaseNode:
 
     @staticmethod
     def latest_attachment_parts(state: SessionState | None) -> list[dict[str, Any]]:
+        """返回最近一条用户消息中的图片/文件附件片段。"""
+
         if state is None:
             return []
         for message in reversed(state.conversation.messages):
@@ -81,6 +109,8 @@ class BaseNode:
 
     @staticmethod
     def describe_tools(tools: dict[str, Any]) -> list[dict[str, Any]]:
+        """把 LangChain 工具转换为 LLM 可读的名称、描述和参数 schema。"""
+
         descriptions: list[dict[str, Any]] = []
         for name, tool in sorted(tools.items()):
             schema = getattr(tool, "args", None)
@@ -97,6 +127,8 @@ class BaseNode:
 
     @staticmethod
     def describe_active_skills(state: SessionState) -> str:
+        """把启用 Skill 摘要渲染为 prompt 片段。"""
+
         if not state.active_skills:
             return "未启用 Skill。"
 

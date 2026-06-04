@@ -1,10 +1,19 @@
+"""最终回答质量检查节点。"""
+
 from app.agent.nodes.base_node import BaseNode
 from app.agent.quality import validate_agent_result
 
 
 class ReflectNode(BaseNode):
+    """结合确定性规则和 LLM 反思判断最终回答是否可交付。
+
+    确定性规则优先，因为它们覆盖项目已知硬约束；只有硬规则通过后才调用 LLM
+    做更宽泛的质量判断。
+    """
 
     def __call__(self, state):
+        """更新反思结果、最终回答可交付标记和是否需要重规划。"""
+
         response = state.result.response
         user_message = self.latest_user_text(state)
         task_results = [

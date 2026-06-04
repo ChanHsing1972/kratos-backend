@@ -1,3 +1,9 @@
+"""健身计算类本地工具。
+
+这些工具不访问外部 API，只做可解释的公式计算或保守安全分流。调用方必须提供
+真实已知字段；缺失健康档案时不应由工具 planner 填充假默认值。
+"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -12,6 +18,8 @@ class BmrInput(BaseModel):
 
 
 class BmrTool:
+    """使用 Mifflin-St Jeor 公式估算 BMR 和 TDEE。"""
+
     name = "calculate_bmr"
     description = "Calculate BMR and estimated daily energy expenditure using Mifflin-St Jeor."
     args_schema = BmrInput
@@ -51,6 +59,8 @@ class OneRmInput(BaseModel):
 
 
 class OneRmTool:
+    """使用 Epley 公式估算 1RM 和常用训练负荷。"""
+
     name = "estimate_1rm"
     description = "Estimate one-repetition maximum from lifted weight and repetitions using Epley formula."
     args_schema = OneRmInput
@@ -80,6 +90,8 @@ class CaloriesBurnedInput(BaseModel):
 
 
 class CaloriesBurnedTool:
+    """基于 MET 估算运动消耗或达到目标热量所需时长。"""
+
     name = "calculate_calories_burned"
     description = "Estimate exercise calories or required duration using MET values."
     args_schema = CaloriesBurnedInput
@@ -112,6 +124,8 @@ class WorkoutVolumeInput(BaseModel):
 
 
 class WorkoutVolumeTool:
+    """根据可用时间估算每个动作可安排的组数。"""
+
     name = "calculate_workout_volume"
     description = "Calculate feasible sets per exercise from available time, exercise count, rest, and warmup."
     args_schema = WorkoutVolumeInput
@@ -148,6 +162,8 @@ class SafetyGateInput(BaseModel):
 
 
 class SafetyGateTool:
+    """根据疼痛、疲劳和计划活动给出保守训练安全分流。"""
+
     name = "pain_safety_gate"
     description = "Apply conservative fitness safety rules for pain, acute injury, and severe fatigue."
     args_schema = SafetyGateInput

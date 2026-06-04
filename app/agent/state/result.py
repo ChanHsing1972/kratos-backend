@@ -1,3 +1,9 @@
+"""Agent 输出结果模型。
+
+除 Markdown 最终回答外，本模块还承载可被前端保存/展示的结构化训练计划、
+饮食计划、动作媒体和工具/任务结果快照。
+"""
+
 from datetime import datetime
 from typing import Any
 
@@ -5,12 +11,16 @@ from pydantic import BaseModel, Field
 
 
 class ResultSource(BaseModel):
+    """结构化结果的来源信息，用于追溯由哪些任务和工具生成。"""
+
     task_ids: list[int] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
     summary: str | None = None
 
 
 class ExerciseMedia(BaseModel):
+    """动作媒体资源摘要，通常在最终计划生成后按动作名补齐。"""
+
     action_name: str | None = None
     query: str | None = None
     exercise_id: str | None = None
@@ -23,6 +33,8 @@ class ExerciseMedia(BaseModel):
 
 
 class DietPlanRecipe(BaseModel):
+    """饮食计划中的一道候选食谱。"""
+
     id: int | None = None
     title: str | None = None
     image: str | None = None
@@ -33,6 +45,8 @@ class DietPlanRecipe(BaseModel):
 
 
 class DietPlanMeal(BaseModel):
+    """饮食计划中的一餐，包含检索参数和候选食谱。"""
+
     meal_type: str
     status: str | None = None
     message: str | None = None
@@ -41,12 +55,16 @@ class DietPlanMeal(BaseModel):
 
 
 class DietNutritionTargets(BaseModel):
+    """饮食建议中的粗粒度营养目标。"""
+
     protein_target_g: float | None = None
     calories_per_meal: int | None = None
     hydration_liters: float | None = None
 
 
 class DietPlanProfileSummary(BaseModel):
+    """生成饮食计划时使用的用户画像摘要。"""
+
     gender: str | None = None
     age: int | None = None
     height_cm: float | None = None
@@ -65,6 +83,8 @@ class DietPlanProfileSummary(BaseModel):
 
 
 class DietPlanResult(BaseModel):
+    """可供前端展示或保存的结构化饮食计划。"""
+
     kind: str = "diet_plan"
     profile_summary: DietPlanProfileSummary = Field(default_factory=DietPlanProfileSummary)
     nutrition_targets: DietNutritionTargets = Field(default_factory=DietNutritionTargets)
@@ -75,6 +95,8 @@ class DietPlanResult(BaseModel):
 
 
 class WorkoutExercise(BaseModel):
+    """训练计划中的一个动作安排。"""
+
     name: str
     sets: int | None = None
     reps: str | None = None
@@ -84,6 +106,8 @@ class WorkoutExercise(BaseModel):
 
 
 class WorkoutSession(BaseModel):
+    """一次训练课或一日训练安排。"""
+
     title: str
     weekday: str | None = None
     focus: str | None = None
@@ -92,6 +116,8 @@ class WorkoutSession(BaseModel):
 
 
 class WorkoutPlanResult(BaseModel):
+    """可供前端保存为训练计划草稿的结构化训练结果。"""
+
     kind: str = "workout_plan"
     title: str | None = None
     goal: str | None = None
@@ -105,6 +131,12 @@ class WorkoutPlanResult(BaseModel):
 
 
 class ResultState(BaseModel):
+    """Agent 最终输出和中间结果快照。
+
+    `response` 是用户可见 Markdown；`workout_plan` 和 `diet_plan` 是从工具结果
+    或最终回答抽取出的结构化卡片；`final_answer_ready` 由 ReflectNode 质量门设置。
+    """
+
     workout_plan: WorkoutPlanResult | None = None
     diet_plan: DietPlanResult | None = None
 
@@ -119,13 +151,19 @@ class ResultState(BaseModel):
     last_updated_at: datetime = Field(default_factory=datetime.now)
 
     def touch(self) -> None:
+        """刷新结果更新时间。"""
+
         self.last_updated_at = datetime.now()
 
     def reset_runtime_for_new_turn(self) -> None:
+        """清理跨轮不应继承的运行态字段，保留可持久化结构化结果。"""
+
         self.first_response = None
         self.touch()
 
     def reset_all(self) -> None:
+        """重置所有结果字段，用于彻底开始新的 Agent 结果上下文。"""
+
         self.workout_plan = None
         self.diet_plan = None
         self.first_response = None

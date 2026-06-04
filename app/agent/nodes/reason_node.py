@@ -1,14 +1,24 @@
+"""任务推理与工具决策节点。
+
+ReasonNode 面向当前子任务判断是否需要工具：可直接回答则写入任务结果；
+需要工具则产出 `ToolCall` 并进入等待工具状态；已有工具结果时负责汇总观察结果。
+工具参数修复和模型输出 fallback 放在 `app.agent.tool_planner`，避免节点本身膨胀。
+"""
+
 import json
-import re
 
 from app.agent.json_utils import LLMJsonParseError
 from app.agent.nodes.base_node import BaseNode
-from app.agent.state.reasoning import Task, TaskStatus
-from app.agent.state.tools import ToolCall
+from app.agent.state.reasoning import TaskStatus
+from app.agent.tool_planner import build_fallback_reason_data, parse_tool_calls
 
 
 class ReasonNode(BaseNode):
+    """执行当前子任务的一步推理。"""
+
     def __call__(self, state):
+        """推进当前任务状态，可能生成工具调用、任务结果或失败原因。"""
+
         task = state.reasoning.current_task()
         if task is None:
             return state
@@ -143,8 +153,8 @@ class ReasonNode(BaseNode):
             try:
                 data = self.invoke_json(prompt_reason, state)
             except LLMJsonParseError as exc:
-                data = self._fallback_reason_data(state, task, str(exc))
-            task.tool_calls = self._parse_tool_calls(
+                data = build_fallback_reason_data(state, task, user_message, str(exc))
+            task.tool_calls = parse_tool_calls(
                 data.get("tool_calls"), available_tools, user_message, task, state
             )
             task.result = data.get("result")
@@ -182,6 +192,8 @@ class ReasonNode(BaseNode):
 
     @staticmethod
     def _memory_context(state) -> dict:
+        """整理 ReasonNode prompt 所需的长期/中期记忆和数据库上下文。"""
+
         long_term = state.memory.long_term_memory
         return {
             "name": long_term.name,
@@ -198,452 +210,9 @@ class ReasonNode(BaseNode):
         }
 
     @staticmethod
-    def _fallback_reason_data(state, task: Task, error_message: str) -> dict:
-        user_message = str(ReasonNode.latest_user_text(state))
-        available_tools = set(state.tools.available_tools.keys())
-        is_diet_plan_request = any(
-            keyword in user_message
-            for keyword in ["饮食", "吃", "食谱", "增肌期间", "减脂期间", "控制饮食"]
-        )
-        is_running_route_request = any(
-            keyword in user_message
-            for keyword in ["跑步路线", "跑步", "晨跑", "夜跑", "路线规划", "公里路线", "适合跑步"]
-        )
-        is_bodyparts_request = any(
-            keyword in user_message
-            for keyword in ["训练部位", "身体部位", "锻炼部位", "部位列表", "有哪些部位", "可练部位"]
-        )
-        is_safety_request = any(
-            keyword in user_message
-            for keyword in ["疼", "疼痛", "不舒服", "受伤", "疲劳", "极度疲劳", "膝盖", "腰", "肩"]
-        )
-        is_volume_request = any(
-            keyword in user_message
-            for keyword in ["多少组", "几组", "训练量", "分钟", "时间只有", "多久"]
-        )
-        is_calorie_request = any(
-            keyword in user_message
-            for keyword in ["热量", "卡路里", "消耗", "kcal", "千卡"]
-        )
-
-        if is_safety_request and "pain_safety_gate" in available_tools:
-            return {
-                "tool_calls": [
-                    {
-                        "tool_name": "pain_safety_gate",
-                        "args": ReasonNode._repair_tool_args(
-                            "pain_safety_gate",
-                            {},
-                            user_message,
-                            task,
-                            state,
-                        ),
-                        "id": "fallback-safety-gate",
-                    }
-                ],
-                "result": None,
-                "fallback_reason": error_message,
-            }
-
-        if is_volume_request and "calculate_workout_volume" in available_tools:
-            return {
-                "tool_calls": [
-                    {
-                        "tool_name": "calculate_workout_volume",
-                        "args": ReasonNode._repair_tool_args(
-                            "calculate_workout_volume",
-                            {},
-                            user_message,
-                            task,
-                            state,
-                        ),
-                        "id": "fallback-workout-volume",
-                    }
-                ],
-                "result": None,
-                "fallback_reason": error_message,
-            }
-
-        if is_calorie_request and "calculate_calories_burned" in available_tools:
-            return {
-                "tool_calls": [
-                    {
-                        "tool_name": "calculate_calories_burned",
-                        "args": ReasonNode._repair_tool_args(
-                            "calculate_calories_burned",
-                            {},
-                            user_message,
-                            task,
-                            state,
-                        ),
-                        "id": "fallback-calories",
-                    }
-                ],
-                "result": None,
-                "fallback_reason": error_message,
-            }
-
-        if is_bodyparts_request and "rapidapi_bodyparts" in available_tools:
-            return {
-                "tool_calls": [
-                    {
-                        "tool_name": "rapidapi_bodyparts",
-                        "args": ReasonNode._repair_tool_args(
-                            "rapidapi_bodyparts",
-                            {},
-                            user_message,
-                            task,
-                            state,
-                        ),
-                        "id": "fallback-bodyparts",
-                    }
-                ],
-                "result": None,
-                "fallback_reason": error_message,
-            }
-
-        if is_running_route_request and "running_route_advisor" in available_tools:
-            return {
-                "tool_calls": [
-                    {
-                        "tool_name": "running_route_advisor",
-                        "args": ReasonNode._repair_tool_args(
-                            "running_route_advisor",
-                            {},
-                            user_message,
-                            task,
-                            state,
-                        ),
-                        "id": "fallback-running-route",
-                    }
-                ],
-                "result": None,
-                "fallback_reason": error_message,
-            }
-
-        if is_diet_plan_request and "diet_plan_generator" in available_tools:
-            long_term = state.memory.long_term_memory
-            extracted_profile = state.reasoning.extracted_info.get("profile", {}) or {}
-            current_daily_diet = ReasonNode._ensure_unique_text(
-                [
-                    *state.memory.mid_term_memory.daily_diet,
-                    *(state.reasoning.extracted_info.get("daily_diet") or []),
-                ]
-            )
-            user_profile = {
-                "name": long_term.name,
-                "gender": extracted_profile.get("gender") or long_term.gender,
-                "job": long_term.job,
-                "height_cm": extracted_profile.get("height_cm") or long_term.physical_profile.height_cm,
-                "weight_kg": extracted_profile.get("weight_kg") or long_term.physical_profile.weight_kg,
-                "age": extracted_profile.get("age") or long_term.physical_profile.age,
-                "body_fat_rate": long_term.physical_profile.body_fat_rate,
-                "body_condition": extracted_profile.get("body_condition") or long_term.physical_profile.body_condition,
-                "goal": extracted_profile.get("goal")
-                or long_term.lifestyle_profile.goal,
-                "activity_level": extracted_profile.get("activity_level") or long_term.lifestyle_profile.activity_level,
-                "exercise_intensity": extracted_profile.get("exercise_intensity") or long_term.lifestyle_profile.exercise_intensity,
-                "available_cooking_time_minutes": (
-                    extracted_profile.get("available_time_minutes")
-                    or long_term.lifestyle_profile.available_cooking_time_minutes
-                ),
-                "diet": extracted_profile.get("diet") or long_term.dietary_profile.diet,
-                "dietary_restrictions": long_term.dietary_profile.restrictions_text,
-                "intolerances": ReasonNode._ensure_unique_text(
-                    [
-                        *long_term.dietary_profile.intolerances,
-                        *(extracted_profile.get("intolerances") or []),
-                    ]
-                ),
-                "preferred_cuisines": ReasonNode._ensure_unique_text(
-                    [
-                        *long_term.dietary_profile.preferred_cuisines,
-                        *(extracted_profile.get("preferred_cuisines") or []),
-                    ]
-                ),
-                "preferred_ingredients": ReasonNode._ensure_unique_text(
-                    [
-                        *long_term.dietary_profile.preferred_ingredients,
-                        *(extracted_profile.get("preferred_ingredients") or []),
-                    ]
-                ),
-                "disliked_ingredients": ReasonNode._ensure_unique_text(
-                    [
-                        *long_term.dietary_profile.disliked_ingredients,
-                        *(extracted_profile.get("disliked_ingredients") or []),
-                    ]
-                ),
-                "daily_diet": current_daily_diet,
-            }
-            tool_args = {
-                "user_profile": user_profile,
-                "meal_count": 3,
-                "number_per_meal": 2,
-            }
-            if user_profile["goal"]:
-                tool_args["goal"] = user_profile["goal"]
-            return {
-                "tool_calls": [
-                    {
-                        "tool_name": "diet_plan_generator",
-                        "args": tool_args,
-                        "id": "fallback-diet-plan",
-                    }
-                ],
-                "result": None,
-                "fallback_reason": error_message,
-            }
-
-        return {
-            "tool_calls": [],
-            "result": "我已读取你的历史信息，但当前模型输出格式异常。请你稍后再试，或补充目标、时间和饮食偏好后我再给出更具体建议。",
-            "fallback_reason": error_message,
-        }
-
-    @staticmethod
-    def _parse_tool_calls(
-        raw_calls,
-        available_tools: list[str],
-        user_message: str,
-        task: Task,
-        state=None,
-    ) -> list[ToolCall]:
-        if not isinstance(raw_calls, list):
-            return []
-
-        parsed: list[ToolCall] = []
-        available = set(available_tools)
-        for raw_call in raw_calls:
-            if not isinstance(raw_call, dict):
-                continue
-            name = str(raw_call.get("tool_name") or raw_call.get("name") or "").strip()
-            if name.startswith("functions."):
-                name = name.removeprefix("functions.")
-            if not name or name not in available:
-                continue
-            args = raw_call.get("args") or {}
-            if not isinstance(args, dict):
-                args = {}
-            args = ReasonNode._repair_tool_args(name, args, user_message, task, state)
-            parsed.append(
-                ToolCall(
-                    id=raw_call.get("id"),
-                    name=name,
-                    args=args,
-                )
-            )
-
-        return parsed
-
-    @staticmethod
-    def _repair_tool_args(
-        tool_name: str,
-        args: dict,
-        user_message: str,
-        task: Task,
-        state=None,
-    ) -> dict:
-        if tool_name == "tavily_search" and not args.get("query"):
-            query_parts = [user_message, task.name, task.description]
-            args["query"] = " ".join(str(part) for part in query_parts if part)
-
-        if tool_name == "rapidapi_bodyparts" and not args.get("query_params"):
-            args["query_params"] = {}
-
-        if tool_name == "weather_fitness_advisor":
-            if not args.get("city"):
-                city_match = re.search(r"([\u4e00-\u9fff]{2,12}?)(?:今天|明天|天气)", user_message)
-                if city_match:
-                    args["city"] = city_match.group(1)
-            if not args.get("when"):
-                args["when"] = "tomorrow" if "明天" in user_message else "today"
-
-        if tool_name == "running_route_advisor":
-            normalized_message = user_message.replace("，", " ").replace("。", " ").strip()
-
-            if not args.get("start_location"):
-                location_match = re.search(r"(?:我在|在)(.+?)(?:附近|周边|帮我|请|想|需要|，|。|$)", normalized_message)
-                if location_match:
-                    args["start_location"] = location_match.group(1).strip()
-                else:
-                    cleaned = re.sub(r"帮我|请|规划|推荐|设计|安排|一条|一个|合适的|适合的|附近的", "", normalized_message)
-                    cleaned = re.sub(r"(晨跑|夜跑|跑步)路线", "", cleaned)
-                    cleaned = re.sub(r"(晨跑|夜跑|跑步)", "", cleaned)
-                    cleaned = re.sub(r"\d+(?:\.\d+)?\s*公里", "", cleaned)
-                    cleaned = cleaned.strip(" ，。,.？?在")
-                    args["start_location"] = cleaned or user_message
-
-            if not args.get("city"):
-                city_match = re.search(r"([\u4e00-\u9fff]{2,12}?(?:市|区|县))", normalized_message)
-                if city_match:
-                    args["city"] = city_match.group(1)
-                else:
-                    start_location = str(args.get("start_location") or "")
-                    fallback_city_match = re.search(r"([\u4e00-\u9fff]{2,12}?(?:市|区|县))", start_location)
-                    if fallback_city_match:
-                        args["city"] = fallback_city_match.group(1)
-
-            if not args.get("target_distance_km"):
-                distance_match = re.search(r"(\d+(?:\.\d+)?)\s*公里", user_message)
-                if distance_match:
-                    args["target_distance_km"] = float(distance_match.group(1))
-                else:
-                    args["target_distance_km"] = 5.0
-
-            if not args.get("route_preference"):
-                if "绿道" in user_message or "江边" in user_message or "湖边" in user_message:
-                    args["route_preference"] = "greenway"
-                elif "操场" in user_message or "田径场" in user_message:
-                    args["route_preference"] = "track"
-                elif "公园" in user_message or "环线" in user_message or "湖" in user_message:
-                    args["route_preference"] = "park_loop"
-                else:
-                    args["route_preference"] = "general"
-
-        if tool_name == "pain_safety_gate":
-            if not args.get("user_context"):
-                args["user_context"] = user_message
-            if not args.get("pain_area"):
-                for area in ["膝盖", "膝", "腰", "肩", "手腕", "脚踝", "背", "臀", "腿"]:
-                    if area in user_message:
-                        args["pain_area"] = area
-                        break
-            if args.get("pain_level") is None:
-                level_match = re.search(r"(\d+)\s*(?:分|/10)", user_message)
-                if level_match:
-                    args["pain_level"] = int(level_match.group(1))
-                elif any(word in user_message for word in ["剧痛", "很疼", "特别疼", "急性"]):
-                    args["pain_level"] = 7
-                elif "疼" in user_message or "不舒服" in user_message:
-                    args["pain_level"] = 4
-            if args.get("fatigue_level") is None:
-                if any(word in user_message for word in ["极度疲劳", "非常累", "累炸", "睡眠不足"]):
-                    args["fatigue_level"] = 8
-                elif "疲劳" in user_message or "累" in user_message:
-                    args["fatigue_level"] = 5
-            if not args.get("planned_activity"):
-                args["planned_activity"] = task.description or task.name
-
-        if tool_name == "calculate_workout_volume":
-            if not args.get("time_min"):
-                minute_match = re.search(r"(\d+)\s*分钟", user_message)
-                args["time_min"] = int(minute_match.group(1)) if minute_match else 30
-            if not args.get("exercise_count"):
-                count_match = re.search(r"(\d+)\s*个动作", user_message)
-                args["exercise_count"] = int(count_match.group(1)) if count_match else 3
-
-        if tool_name == "calculate_calories_burned":
-            if not args.get("activity"):
-                if "hiit" in user_message.lower() or "高强度" in user_message:
-                    args["activity"] = "HIIT"
-                elif "划船" in user_message:
-                    args["activity"] = "划船机"
-                elif "椭圆" in user_message:
-                    args["activity"] = "椭圆机"
-                elif "跑" in user_message:
-                    args["activity"] = "跑步"
-                else:
-                    args["activity"] = "中等强度训练"
-            if not args.get("weight_kg"):
-                weight_match = re.search(r"体重(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
-                known_weight = ReasonNode._known_profile_value(state, "weight_kg")
-                if weight_match:
-                    args["weight_kg"] = float(weight_match.group(1))
-                elif known_weight is not None:
-                    args["weight_kg"] = known_weight
-            if not args.get("target_kcal"):
-                kcal_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kcal|千卡|卡路里|大卡)", user_message, re.IGNORECASE)
-                if kcal_match:
-                    args["target_kcal"] = float(kcal_match.group(1))
-            if not args.get("duration_minutes"):
-                duration_match = re.search(r"(\d+)\s*分钟", user_message)
-                if duration_match:
-                    args["duration_minutes"] = float(duration_match.group(1))
-
-        if tool_name == "calculate_bmr":
-            if not args.get("gender"):
-                known_gender = ReasonNode._known_profile_value(state, "gender")
-                if "男" in user_message:
-                    args["gender"] = "男"
-                elif "女" in user_message:
-                    args["gender"] = "女"
-                elif known_gender is not None:
-                    args["gender"] = known_gender
-            if not args.get("weight_kg"):
-                weight_match = re.search(r"体重(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
-                known_weight = ReasonNode._known_profile_value(state, "weight_kg")
-                if weight_match:
-                    args["weight_kg"] = float(weight_match.group(1))
-                elif known_weight is not None:
-                    args["weight_kg"] = known_weight
-            if not args.get("height_cm"):
-                height_match = re.search(r"身高(?:是|为)?\s*(\d+(?:\.\d+)?)\s*(?:厘米|cm|CM)", user_message)
-                height_m_match = re.search(r"身高(?:是|为)?\s*(\d+(?:\.\d+)?)\s*米", user_message)
-                known_height = ReasonNode._known_profile_value(state, "height_cm")
-                if height_match:
-                    args["height_cm"] = float(height_match.group(1))
-                elif height_m_match:
-                    args["height_cm"] = round(float(height_m_match.group(1)) * 100, 1)
-                elif known_height is not None:
-                    args["height_cm"] = known_height
-            if not args.get("age"):
-                age_match = re.search(r"(\d+)\s*岁", user_message)
-                known_age = ReasonNode._known_profile_value(state, "age")
-                if age_match:
-                    args["age"] = int(age_match.group(1))
-                elif known_age is not None:
-                    args["age"] = known_age
-
-        if tool_name == "estimate_1rm":
-            if not args.get("weight_kg"):
-                weight_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kg|KG|公斤|千克)", user_message)
-                if weight_match:
-                    args["weight_kg"] = float(weight_match.group(1))
-            if not args.get("reps"):
-                reps_match = re.search(r"(\d+)\s*(?:次|rep|reps)", user_message, re.IGNORECASE)
-                if reps_match:
-                    args["reps"] = int(reps_match.group(1))
-
-        return args
-
-    @staticmethod
-    def _known_profile_value(state, field: str):
-        if state is None:
-            return None
-        extracted_profile = getattr(getattr(state, "reasoning", None), "extracted_info", {}) or {}
-        extracted_profile = extracted_profile.get("profile", {}) if isinstance(extracted_profile, dict) else {}
-        value = extracted_profile.get(field) if isinstance(extracted_profile, dict) else None
-        if value is not None:
-            return value
-
-        memory = getattr(state, "memory", None)
-        if memory is None:
-            return None
-        long_term = memory.long_term_memory
-        if field == "gender":
-            return long_term.gender
-        physical = long_term.physical_profile
-        lifestyle = long_term.lifestyle_profile
-        if hasattr(physical, field):
-            return getattr(physical, field)
-        if hasattr(lifestyle, field):
-            return getattr(lifestyle, field)
-        return None
-
-    @staticmethod
-    def _ensure_unique_text(values) -> list[str]:
-        result: list[str] = []
-        seen: set[str] = set()
-        for value in values or []:
-            text = str(value).strip()
-            key = text.lower()
-            if text and key not in seen:
-                seen.add(key)
-                result.append(text)
-        return result
-
-    @staticmethod
     def _answer_from_memory(state) -> str | None:
+        """对纯记忆查询进行短路回答，避免无意义工具调用。"""
+
         user_message = str(ReasonNode.latest_user_text(state)).strip().lower()
         if any(intent in state.reasoning.intent for intent in ["健身计划", "饮食计划", "调整计划"]):
             return None

@@ -1,8 +1,16 @@
+"""Agent 工具元数据注册表。
+
+这里保存工具的展示信息、分类、API Key 依赖和默认启用状态。数据库里的用户工具
+配置以这里为权威来源初始化，避免服务层硬编码工具清单。
+"""
+
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class ToolMetadata:
+    """一个 Agent 工具的静态元数据。"""
+
     name: str
     description: str
     category: str
@@ -44,4 +52,6 @@ TOOL_REGISTRY: dict[str, ToolMetadata] = {
 
 
 def all_tool_names() -> set[str]:
+    """返回注册表中的全部工具名。"""
+
     return set(TOOL_REGISTRY.keys())

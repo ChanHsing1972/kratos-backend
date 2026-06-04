@@ -1,3 +1,10 @@
+"""意图识别节点。
+
+本节点只负责识别本轮用户目标并抽取“本轮可用信息”。抽取出的健康数据不会
+直接写入长期记忆，而是放入 `reasoning.extracted_info` 和 `memory.ephemeral_turn_info`。
+需要入库的数据由服务层生成 `pending_confirmation_updates`，等待用户确认。
+"""
+
 import re
 from typing import Any
 
@@ -18,7 +25,11 @@ INTENT_MAP = {
 
 
 class IntentNode(BaseNode):
+    """识别用户意图并抽取本轮 profile、饮食和训练反馈信息。"""
+
     def __call__(self, state: SessionState) -> SessionState:
+        """更新 `state.reasoning.intent` 与 `state.reasoning.extracted_info`。"""
+
         user_message = self.latest_user_text(state)
         skill_context = self.describe_active_skills(state)
         prompt = f"""

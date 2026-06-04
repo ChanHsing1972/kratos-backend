@@ -1,3 +1,11 @@
+"""Agent 记忆模型。
+
+记忆分为三层：
+    - 长期记忆：稳定用户资料，只写入无需二次确认的低风险字段。
+    - 中期记忆：近期计划、饮食、反馈和训练完成情况。
+    - 本轮临时信息：LLM 从用户消息中抽取但尚未确认的数据，不能直接入库。
+"""
+
 from typing import Any
 from datetime import datetime
 
@@ -5,6 +13,8 @@ from pydantic import BaseModel, Field
 
 
 class PhysicalProfile(BaseModel):
+    """用户身体指标与状态摘要，来源应为数据库或用户确认后的健康数据。"""
+
     height_cm: float | None = None
     weight_kg: float | None = None
     target_weight_kg: float | None = None
@@ -18,6 +28,8 @@ class PhysicalProfile(BaseModel):
 
 
 class LifestyleProfile(BaseModel):
+    """用户训练目标、经验、可用时间和风险边界等生活方式信息。"""
+
     activity_level: str | None = None
     exercise_intensity: str | None = None
     available_cooking_time_minutes: int | None = None
@@ -31,6 +43,8 @@ class LifestyleProfile(BaseModel):
 
 
 class DietaryProfile(BaseModel):
+    """用户饮食方式、忌口、偏好食材和菜系信息。"""
+
     diet: str | None = None
     restrictions_text: str | None = None
     intolerances: list[str] = Field(default_factory=list)
@@ -40,7 +54,12 @@ class DietaryProfile(BaseModel):
 
 
 class LongTermMemory(BaseModel):
-    # 用户基本信息
+    """跨会话保留的稳定用户信息。
+
+    设计约束：
+        健康相关字段必须来自数据库上下文或已确认更新，不应由单轮意图抽取直接写入。
+    """
+
     name: str | None = None
     gender: str | None = None
     job: str | None = None
@@ -50,7 +69,8 @@ class LongTermMemory(BaseModel):
 
 
 class MidTermMemory(BaseModel):
-    # 后期这四个应该会打包成一个类
+    """近期上下文，帮助 Agent 理解最近计划、饮食和训练反馈。"""
+
     train_id: int | None = None
     # 计划
     plans: list[dict[str, Any]] = Field(default_factory=list)
@@ -65,6 +85,8 @@ class MidTermMemory(BaseModel):
 
 
 class TurnMemory(BaseModel):
+    """单轮对话摘要，用于在长会话中保留低成本上下文。"""
+
     turn_id: int
     user_message: str
     ai_message: str
@@ -74,6 +96,12 @@ class TurnMemory(BaseModel):
 
 
 class MemoryState(BaseModel):
+    """Agent 当前会话持有的完整记忆状态。
+
+    `pending_confirmation_updates` 保存等待用户确认后再写入数据库的健康数据；
+    `ephemeral_turn_info` 保存本轮抽取信息，只服务当前推理，不代表已确认记忆。
+    """
+
     long_term_memory: LongTermMemory = Field(default_factory=LongTermMemory)
     mid_term_memory: MidTermMemory = Field(default_factory=MidTermMemory)
     database_context: dict[str, Any] = Field(default_factory=dict)
@@ -83,11 +111,22 @@ class MemoryState(BaseModel):
     max_turn_summaries: int = 12
 
     def add_turn_summary(self, turn_memory: TurnMemory) -> None:
+        """追加单轮摘要，并按 `max_turn_summaries` 裁剪旧摘要。"""
+
         self.turn_summaries.append(turn_memory)
         if len(self.turn_summaries) > self.max_turn_summaries:
             self.turn_summaries = self.turn_summaries[-self.max_turn_summaries:]
 
     def merge_long_term_updates(self, updates: dict[str, Any]) -> None:
+        """合并长期记忆更新。
+
+        参数：
+            updates: LLM 或服务层生成的结构化更新。空值会被忽略，列表字段会去重合并。
+
+        副作用：
+            修改 `long_term_memory`。调用方必须先确保这些更新符合确认策略。
+        """
+
         if not updates:
             return
         long_term = self.long_term_memory
@@ -128,7 +167,11 @@ class MemoryState(BaseModel):
             self._assign_if_present(lifestyle, "equipment_access", self._clean_text(lifestyle_updates.get("equipment_access")))
             self._assign_if_present(lifestyle, "injury_history", self._clean_text(lifestyle_updates.get("injury_history")))
             self._assign_if_present(lifestyle, "medical_conditions", self._clean_text(lifestyle_updates.get("medical_conditions")))
-            self._assign_if_present(lifestyle, "preferred_workout_types", self._clean_text(lifestyle_updates.get("preferred_workout_types")))
+            self._assign_if_present(
+                lifestyle,
+                "preferred_workout_types",
+                self._clean_text(lifestyle_updates.get("preferred_workout_types")),
+            )
             self._assign_if_present(lifestyle, "goal", self._clean_text(lifestyle_updates.get("goal")))
 
         dietary_updates = updates.get("dietary_profile") or {}
@@ -157,6 +200,8 @@ class MemoryState(BaseModel):
             )
 
     def merge_mid_term_updates(self, updates: dict[str, Any]) -> None:
+        """合并近期计划、完成度、饮食和训练反馈等中期记忆。"""
+
         if not updates:
             return
         mid_term = self.mid_term_memory

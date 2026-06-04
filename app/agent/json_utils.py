@@ -1,14 +1,31 @@
+"""LLM JSON 输出解析工具。
+
+很多节点要求模型严格返回 JSON，但真实模型可能包一层 Markdown 或在 JSON 外输出
+少量说明。本模块提供一个容错解析器：先尝试完整 JSON，再提取首个 JSON 对象。
+"""
+
 import json
 import re
 from typing import Any
 
 
 class LLMJsonParseError(ValueError):
-    """Raised when an LLM response cannot be parsed as a JSON object."""
+    """LLM 响应无法解析成 JSON 对象时抛出。"""
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
-    """Parse an LLM response that is expected to contain one JSON object."""
+    """解析期望包含单个 JSON 对象的 LLM 响应。
+
+    参数：
+        text: 模型原始文本。
+
+    返回：
+        JSON 对象字典。
+
+    异常：
+        LLMJsonParseError: 找不到 JSON 对象、JSON 未闭合或顶层不是对象。
+    """
+
     cleaned = _strip_markdown_fence(text.strip())
 
     try:

@@ -1,3 +1,9 @@
+"""天气运动建议工具。
+
+该工具先把自然语言城市名解析为 QWeather location id，再获取天气预报并生成
+适合健身/跑步场景的建议。
+"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -21,6 +27,8 @@ class WeatherFitnessAdvisorInput(BaseModel):
 
 
 class WeatherFitnessAdvisorTool:
+    """查询城市天气并生成运动适宜性建议。"""
+
     name = "weather_fitness_advisor"
     description = (
         "Resolve a natural-language city name, fetch weather forecast automatically, summarize today's or tomorrow's weather, "

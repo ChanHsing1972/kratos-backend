@@ -1,3 +1,5 @@
+"""训练计划持久化与 AI 生成计划解析服务。"""
+
 import json
 import re
 from datetime import date
@@ -5,8 +7,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.agent.llm import get_agent_llm
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
-from app.services.agent_chat import get_agent_llm
 from app.services.exercise_media import list_supported_exercise_names
 from app.models.training_plan import TrainingPlan
 from app.models.user import User

@@ -1,7 +1,12 @@
-from langchain_openai import ChatOpenAI
+"""本地命令行调试入口。
+
+生产 API 使用 `app.services.agent_chat`；本文件只用于开发时在终端里快速跑通
+Agent 节点链路和工具注册。
+"""
+
 from langchain_core.messages import HumanMessage
 
-from app.core.config import settings
+from app.agent.llm import get_agent_llm
 from app.agent.runner import AgentRunner, build_agent_nodes
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolsState
@@ -9,12 +14,7 @@ from app.agent.tools import load_tools
 
 
 def main():
-    llm = ChatOpenAI(
-        api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
-        base_url=settings.AGENT_LLM_BASE_URL,
-        model=settings.AGENT_LLM_MODEL,
-        temperature=settings.AGENT_LLM_TEMPERATURE,
-    )
+    """启动一个简单的交互式 Agent 会话。"""
 
     available_tools = load_tools()
 
@@ -24,7 +24,7 @@ def main():
         tools=ToolsState(available_tools=available_tools),
     )
 
-    runner = AgentRunner(build_agent_nodes(llm))
+    runner = AgentRunner(build_agent_nodes(get_agent_llm()))
 
     while True:
         # 输入问题

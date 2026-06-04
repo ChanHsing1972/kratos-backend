@@ -1,3 +1,5 @@
+"""QWeather 实时天气和天气预报工具。"""
+
 import gzip
 import json
 from typing import Any, Literal

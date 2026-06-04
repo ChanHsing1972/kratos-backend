@@ -1,3 +1,5 @@
+"""外部 HTTP 工具的通用辅助函数。"""
+
 from urllib import parse
 
 
@@ -12,6 +14,8 @@ SENSITIVE_QUERY_KEYS = {
 
 
 def redact_url(url: str | None) -> str | None:
+    """脱敏 URL 查询参数中的 API Key、token 等敏感字段。"""
+
     if not url:
         return url
 

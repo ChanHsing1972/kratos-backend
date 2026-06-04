@@ -1,9 +1,19 @@
+"""任务规划节点。
+
+PlanNode 把意图、用户消息、数据库上下文和反思建议拆成 1-5 个可执行子任务。
+它不调用工具，只产出任务队列；工具选择由 ReasonNode 负责。
+"""
+
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import Task
 
 
 class PlanNode(BaseNode):
+    """根据当前意图生成或重生成任务队列。"""
+
     def __call__(self, state):
+        """更新 `state.reasoning.tasks` 并把当前任务指针归零。"""
+
         intent = state.reasoning.intent
         user_msg = self.latest_user_text(state)
         first_ai_message = state.conversation.first_ai_message or state.result.first_response or ""
@@ -81,10 +91,18 @@ class PlanNode(BaseNode):
 
     @staticmethod
     def _sanitize_task_description(description: str, extracted_info: dict) -> str:
-        if extracted_info.get("age") is not None:
+        """移除模型把训练时长误写成年龄的高风险描述。"""
+
+        profile = extracted_info.get("profile") if isinstance(extracted_info, dict) else {}
+        if isinstance(profile, dict) and profile.get("age") is not None:
             return description
 
-        return description.replace("60岁、", "").replace("60岁", "年龄未提供").replace("高龄", "").replace("老年", "")
+        return (
+            description.replace("60岁、", "")
+            .replace("60岁", "年龄未提供")
+            .replace("高龄", "")
+            .replace("老年", "")
+        )
 
     @staticmethod
     def _ensure_actionable_fitness_plan_task(
@@ -92,11 +110,16 @@ class PlanNode(BaseNode):
         intent: list[str],
         user_message: str,
     ) -> list[Task]:
+        """计划类请求必须至少包含一个真正生成训练内容的任务。"""
+
         if "健身计划" not in intent:
             return tasks
 
+        plan_keywords = ["制定", "生成", "安排", "训练内容", "主训练"]
         has_plan_task = any(
-            any(keyword in f"{task.name} {task.description}" for keyword in ["制定", "生成", "安排", "训练内容", "主训练"]) and "收集" not in task.name for task in tasks
+            any(keyword in f"{task.name} {task.description}" for keyword in plan_keywords)
+            and "收集" not in task.name
+            for task in tasks
         )
         if has_plan_task:
             return tasks
@@ -105,7 +128,9 @@ class PlanNode(BaseNode):
             task_id=len(tasks),
             name="生成今日训练计划",
             description=(
-                "基于已读取的数据库上下文和用户当前请求，生成今日可执行训练计划。" "如果档案信息不完整，先采用保守默认强度并在结果中说明缺口；" "不要只要求用户补充信息。"
+                "基于已读取的数据库上下文和用户当前请求，生成今日可执行训练计划。"
+                "如果档案信息不完整，先采用保守默认强度并在结果中说明缺口；"
+                "不要只要求用户补充信息。"
             ),
         )
         return [*tasks, actionable_task] if tasks else [actionable_task]

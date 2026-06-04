@@ -1,3 +1,5 @@
+"""高德 IP 定位工具。"""
+
 import json
 from typing import Any
 from urllib import error, parse, request
@@ -72,7 +74,8 @@ class AMapIpLocationTool:
                 note = None
                 if ok and inferred_from_request_ip:
                     note = (
-                        "No explicit IP was provided. This result reflects the outbound IP location of the current runtime/request environment, "
+                        "No explicit IP was provided. This result reflects the outbound IP "
+                        "location of the current runtime/request environment, "
                         "which may not be the actual end-user location."
                     )
                 return {

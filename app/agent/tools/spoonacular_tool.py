@@ -1,3 +1,5 @@
+"""Spoonacular 食谱搜索工具。"""
+
 import json
 from typing import Any
 from urllib import error, parse, request

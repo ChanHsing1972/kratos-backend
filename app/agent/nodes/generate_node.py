@@ -1,3 +1,10 @@
+"""最终回答生成与结构化产物抽取节点。
+
+GenerateNode 负责把任务结果组织成用户可见 Markdown，并从工具结果或可见文本中
+抽取训练计划、饮食计划等结构化卡片。文件偏大是当前遗留问题，但主入口保持
+单一：生成回答、写入 ResultState、补齐可保存结构化结果。
+"""
+
 import json
 import re
 from typing import Any
@@ -21,8 +28,11 @@ from app.services.exercise_media import display_exercise_name, list_supported_ex
 
 
 class GenerateNode(BaseNode):
+    """生成最终回答并更新 `state.result`。"""
 
     def __call__(self, state: SessionState):
+        """非流式生成最终回答，并同步更新结构化结果。"""
+
         prompt = self.build_prompt(state)
         response = self.llm.invoke(self.prompt_input(prompt, state))
         response_text = self.message_text(response)
@@ -30,11 +40,15 @@ class GenerateNode(BaseNode):
         return state
 
     def stream_response(self, state: SessionState):
+        """只产出回答文本 delta 的兼容接口。"""
+
         for event in self.stream_response_events(state):
             if event.get("type") == "answer_delta":
                 yield str(event.get("delta") or "")
 
     def stream_response_events(self, state: SessionState):
+        """流式生成回答事件，并在结束后落回同一套 `apply_response` 逻辑。"""
+
         prompt = self.build_prompt(state)
         response_text = ""
 
@@ -67,6 +81,12 @@ class GenerateNode(BaseNode):
         self.apply_response(state, AIMessage(content=response_text), response_text)
 
     def build_prompt(self, state: SessionState) -> str:
+        """构造最终回答 prompt。
+
+        Prompt 会显式传入任务结果、数据库上下文、Skill 约束和可展示动作库，
+        防止模型脱离已确认资料或生成前端无法匹配的动作名称。
+        """
+
         user_message = self.latest_user_text(state)
         tasks = state.reasoning.tasks
         intents = state.reasoning.intent
@@ -141,6 +161,12 @@ class GenerateNode(BaseNode):
         response: Any,
         response_text: str,
     ) -> None:
+        """把模型回答写入结果状态并派生结构化产物。
+
+        副作用：
+            更新 `state.result`、追加 AI 消息到 `state.conversation.messages`。
+        """
+
         tasks = state.reasoning.tasks
         state.result.response = response_text
         state.result.task_results = [
@@ -172,9 +198,9 @@ class GenerateNode(BaseNode):
         state.result.touch()
         state.conversation.messages.append(response)
 
-        return state
-
     def _update_structured_artifacts(self, state: SessionState, response_text: str) -> None:
+        """根据工具结果和最终文本刷新训练/饮食结构化卡片。"""
+
         structured_workout_plan = self._build_workout_plan_from_task_results(state)
         if structured_workout_plan is not None:
             state.result.workout_plan = structured_workout_plan
@@ -206,6 +232,8 @@ class GenerateNode(BaseNode):
                     state.result.workout_plan = parsed_workout
 
     def _build_workout_plan_from_task_results(self, state: SessionState) -> WorkoutPlanResult | None:
+        """优先从工具结果中构建训练计划，减少从自然语言反解析的误差。"""
+
         for task in state.reasoning.tasks:
             if not isinstance(task.result, dict):
                 continue
@@ -224,6 +252,8 @@ class GenerateNode(BaseNode):
         state: SessionState,
         response_text: str,
     ) -> WorkoutPlanResult | None:
+        """从严格结构化工具返回值构建训练计划。"""
+
         if not self._should_emit_workout_plan(state, response_text):
             return None
 
@@ -332,6 +362,8 @@ class GenerateNode(BaseNode):
         return parsed
 
     def _should_emit_workout_plan(self, state: SessionState, response_text: str) -> bool:
+        """判断流式回答结束后是否还需要提示前端等待结构化训练草稿。"""
+
         intent_text = " ".join(state.reasoning.intent)
         user_message = self.latest_user_text(state)
         combined = f"{intent_text}\n{user_message}\n{response_text}"

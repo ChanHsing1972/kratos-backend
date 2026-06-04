@@ -1,3 +1,9 @@
+"""跑步路线推荐工具。
+
+该工具组合高德地理编码、附近 POI 搜索、距离估算和步行路线规划，返回适合
+Agent 汇总的路线候选。内部用请求预算限制外部 API 调用次数。
+"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -19,6 +25,8 @@ class RunningRouteAdvisorInput(BaseModel):
 
 
 class RunningRouteAdvisorTool:
+    """根据起点、城市、距离和路线偏好推荐附近跑步路线。"""
+
     name = "running_route_advisor"
     description = (
         "Recommend nearby running routes by geocoding the user's start location, searching nearby suitable running places, "

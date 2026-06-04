@@ -1,3 +1,5 @@
+"""QWeather 城市/地点搜索工具。"""
+
 import gzip
 import json
 from typing import Any

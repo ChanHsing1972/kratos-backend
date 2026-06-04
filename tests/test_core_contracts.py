@@ -4,10 +4,10 @@ from langchain_core.messages import HumanMessage
 
 from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.reflect_node import ReflectNode
-from app.agent.nodes.reason_node import ReasonNode
 from app.agent.state.reasoning import Task
 from app.agent.state.session_state import SessionState
 from app.agent.tool_registry import ToolMetadata
+from app.agent.tool_planner import repair_tool_args
 from app.agent.nodes.generate_node import GenerateNode
 from app.services.exercise_library import _match_score
 from app.services.exercise_media import _pick_best_exercise
@@ -68,7 +68,7 @@ def test_tool_arg_repair_uses_known_profile_without_unsafe_defaults():
     task = Task(task_id=0, name="计算基础代谢")
     empty_state = SessionState(session_id="s1", user_id="u1")
 
-    args = ReasonNode._repair_tool_args(
+    args = repair_tool_args(
         "calculate_bmr",
         {},
         "帮我算一下基础代谢",
@@ -87,7 +87,7 @@ def test_tool_arg_repair_uses_known_profile_without_unsafe_defaults():
         }
     }
 
-    repaired = ReasonNode._repair_tool_args(
+    repaired = repair_tool_args(
         "calculate_bmr",
         {},
         "帮我算一下基础代谢",

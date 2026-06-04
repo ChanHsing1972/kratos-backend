@@ -1,3 +1,5 @@
+"""RapidAPI 身体部位列表工具。"""
+
 import json
 from typing import Any
 from urllib import error, parse, request
