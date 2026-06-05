@@ -28,6 +28,7 @@ from app.services.training_plan import (
 )
 from app.services.workout_log import get_workout_log_by_id, get_workout_logs_by_user_id
 from app.services.agent_checkin import get_agent_checkins_by_user_id
+from app.services.heart_rate import build_heart_rate_summary
 from app.services.exercise_media import (
     get_exercise_media,
     list_known_exercise_aliases,
@@ -167,6 +168,18 @@ def preview_plan_adjustment(
             f"完成={workout_log.completed}；RPE={workout_log.perceived_exertion or '未填写'}；"
             f"动作={exercise_summary or '未标记'}。"
         )
+        heart_rate_summary = build_heart_rate_summary(db, current_user.id, workout_log)
+        if heart_rate_summary["sample_count"]:
+            estimated_kcal = heart_rate_summary["estimated_kcal"]
+            feedback += (
+                "\n心率统计："
+                f"平均={heart_rate_summary['avg_bpm'] or '未提供'} bpm；"
+                f"最高={heart_rate_summary['max_bpm'] or '未提供'} bpm；"
+                f"最低={heart_rate_summary['min_bpm'] or '未提供'} bpm；"
+                f"主要区间={heart_rate_summary['dominant_zone_label'] or '未提供'}；"
+                f"估算热量={estimated_kcal['value'] or '未提供'} kcal"
+                f"（{estimated_kcal['method']}）。"
+            )
         if workout_log.perceived_exertion is not None and workout_log.perceived_exertion >= 9:
             feedback += "\n本次 RPE 较高，视为恢复压力信号，后续训练应优先维持或降量。"
     latest_checkins = get_agent_checkins_by_user_id(db, current_user.id, training_plan_id=plan.id)

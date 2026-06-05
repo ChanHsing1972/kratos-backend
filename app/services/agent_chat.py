@@ -77,14 +77,10 @@ def run_agent_chat(
     state = prepared.state
     reserved_run = None
     if db is not None:
-        reserved_run, should_run = reserve_agent_run(
-            db, user_id, state.session_id, prepared.stored_message, client_turn_id
-        )
+        reserved_run, should_run = reserve_agent_run(db, user_id, state.session_id, prepared.stored_message, client_turn_id)
         if not should_run and reserved_run is not None:
             state.result.response = reserved_run.answer
-            trace = [
-                AgentTraceStep(type="final", content=reserved_run.answer, raw=reserved_run.result_payload)
-            ]
+            trace = [AgentTraceStep(type="final", content=reserved_run.answer, raw=reserved_run.result_payload)]
             return state, trace
 
     try:
@@ -113,9 +109,7 @@ def run_agent_chat(
             client_turn_id=client_turn_id,
             reserved_run_id=reserved_run.id if reserved_run else None,
         )
-        persist_session_turn_artifacts(
-            db, user_id, final_state.session_id, final_state, prepared.stored_message
-        )
+        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, prepared.stored_message)
 
     return final_state, trace
 
@@ -134,20 +128,18 @@ def stream_agent_chat(
     final 和 done。数据库持久化只保存稳定 trace，不保存瞬时 answer_delta。
     """
 
-    persisted_trace: list[AgentTraceStep] = []
-    prepared = prepare_agent_state(
+    persisted_trace: list[AgentTraceStep] = []  # 持久化的 trace 事件列表，最终会保存到数据库中；在生成事件时会同时追加到这个列表中，以确保持久化和 SSE 输出的一致性
+    prepared = prepare_agent_state(  # 准备 Agent 状态，包括构造 SessionState、处理附件、查询上下文和 Skill 等；返回一个包含准备好的状态和相关信息的对象
         user_id=user_id,
         message=message,
         attachments=attachments,
         session_id=session_id,
         db=db,
     )
-    state = prepared.state
-    reserved_run = None
+    state = prepared.state  # 从准备好的对象中获取 SessionState，作为后续 Agent 运行的输入状态
+    reserved_run = None  # 预留的 Agent 运行记录，用于幂等控制；如果数据库中已经存在相同消息的未完成或已完成记录，则复用该记录的结果；如果没有，则在后续创建新的运行记录
     if db is not None:
-        reserved_run, should_run = reserve_agent_run(
-            db, user_id, state.session_id, prepared.stored_message, client_turn_id
-        )
+        reserved_run, should_run = reserve_agent_run(db, user_id, state.session_id, prepared.stored_message, client_turn_id)
         if not should_run and reserved_run is not None:
             if reserved_run.status == "completed":
                 yield {
@@ -195,18 +187,16 @@ def stream_agent_chat(
     if prepared.pending_health_updates:
         event = {
             "type": "observation",
-            "content": (
-                "检测到可记录的健康数据，请确认后保存："
-                f"{format_persisted_body_data(prepared.pending_health_updates)}"
-            ),
+            "content": ("检测到可记录的健康数据，请确认后保存：" f"{format_persisted_body_data(prepared.pending_health_updates)}"),
             "raw": {"pending_health_data": prepared.pending_health_updates},
             "session_id": state.session_id,
         }
         append_persistable_event(persisted_trace, event)
         yield event
 
-    emitted_keys: set[tuple[str, str]] = set()
-    final_state = state
+    emitted_keys: set[tuple[str, str]] = set()  # 已发送事件的键集合，用于去重；
+    # 每个事件根据 type 和 content 生成一个键，如果这个键已经在集合中出现过，则说明这个事件已经发送过了，可以跳过；如果没有出现过，则添加到集合中并发送这个事件
+    final_state = state  # 最终状态，初始为准备好的状态；在运行 Agent 的过程中会不断更新这个状态，直到得到最终的结果状态
 
     try:
         for event in _run_streaming_agent(final_state, emitted_keys):
@@ -235,9 +225,7 @@ def stream_agent_chat(
             client_turn_id=client_turn_id,
             reserved_run_id=reserved_run.id if reserved_run else None,
         )
-        persist_session_turn_artifacts(
-            db, user_id, final_state.session_id, final_state, prepared.stored_message
-        )
+        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, prepared.stored_message)
 
     yield {
         "type": "done",

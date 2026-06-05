@@ -20,6 +20,7 @@ class UserProfileBase(BaseModel):
     preferred_workout_types: str | None = None
     dietary_habits: str | None = None
     dietary_restrictions: str | None = None
+    hyperate_id: str | None = Field(default=None, max_length=64)
 
 
 class UserProfileCreate(UserProfileBase):
@@ -42,6 +43,7 @@ class UserProfileUpdate(BaseModel):
     preferred_workout_types: str | None = None
     dietary_habits: str | None = None
     dietary_restrictions: str | None = None
+    hyperate_id: str | None = Field(default=None, max_length=64)
 
     model_config = ConfigDict(extra="forbid")
 

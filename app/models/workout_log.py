@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -41,6 +41,12 @@ class WorkoutLog(Base):
         back_populates="workout_log",
         cascade="all, delete-orphan",
         order_by="WorkoutExerciseLog.position",
+    )
+    heart_rate_samples: Mapped[list["HeartRateSample"]] = relationship(
+        "HeartRateSample",
+        back_populates="workout_log",
+        cascade="all, delete-orphan",
+        order_by="HeartRateSample.recorded_at",
     )
 
 
@@ -87,4 +93,33 @@ class WorkoutSetLog(Base):
     exercise_log: Mapped["WorkoutExerciseLog"] = relationship(
         "WorkoutExerciseLog",
         back_populates="sets",
+    )
+
+
+class HeartRateSample(Base):
+    __tablename__ = "heart_rate_samples"
+    __table_args__ = (
+        CheckConstraint("bpm >= 30 AND bpm <= 230", name="ck_heart_rate_samples_bpm_range"),
+        Index("ix_heart_rate_samples_user_session_time", "user_id", "workout_session_id", "recorded_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workout_session_id: Mapped[int] = mapped_column(
+        ForeignKey("workout_logs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    bpm: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), default="hyperate", nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user: Mapped["User"] = relationship("User", back_populates="heart_rate_samples")
+    workout_log: Mapped["WorkoutLog"] = relationship(
+        "WorkoutLog",
+        back_populates="heart_rate_samples",
     )

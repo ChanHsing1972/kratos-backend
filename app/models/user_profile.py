@@ -31,6 +31,7 @@ class UserProfile(Base):
     preferred_workout_types: Mapped[str | None] = mapped_column(Text, nullable=True)
     dietary_habits: Mapped[str | None] = mapped_column(Text, nullable=True)
     dietary_restrictions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hyperate_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

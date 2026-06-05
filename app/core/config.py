@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     BILIBILI_SEARCH_TIMEOUT_SECONDS: int = 10
     BILIBILI_TEACHING_VIDEO_LIMIT: int = 3
 
+    HYPERATE_REST_BASE_URL: str = "https://rest.hyperate.io"
+    HYPERATE_TIMEOUT_SECONDS: int = 4
+
     ALIYUN_OSS_ACCESS_KEY_ID: str | None = None
     ALIYUN_OSS_ACCESS_KEY_SECRET: str | None = None
     ALIYUN_OSS_BUCKET: str = "chanhsing"

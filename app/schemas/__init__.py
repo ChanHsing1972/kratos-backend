@@ -22,6 +22,7 @@ from app.schemas.conversation_session import (
     ConversationSessionUpdateRequest,
 )
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
+from app.schemas.hyperate import HyperateCurrentResponse
 from app.schemas.skill import SkillBindingUpdate, SkillCreate, SkillResponse, SkillUpdate
 from app.schemas.training_plan import (
     TrainingPlanCreate,
@@ -34,7 +35,14 @@ from app.schemas.user_profile import (
     UserProfileResponse,
     UserProfileUpdate,
 )
-from app.schemas.workout_log import WorkoutLogCreate, WorkoutLogResponse, WorkoutLogUpdate
+from app.schemas.workout_log import (
+    HeartRateSampleCreate,
+    HeartRateSampleResponse,
+    HeartRateSummaryResponse,
+    WorkoutLogCreate,
+    WorkoutLogResponse,
+    WorkoutLogUpdate,
+)
 
 __all__ = [
     "AgentToolBulkUpdate",
@@ -59,6 +67,10 @@ __all__ = [
     "ConversationSessionResponse",
     "ConversationSessionUpdateRequest",
     "FitnessContextResponse",
+    "HeartRateSampleCreate",
+    "HeartRateSampleResponse",
+    "HeartRateSummaryResponse",
+    "HyperateCurrentResponse",
     "OnboardingStatus",
     "RagasExportResponse",
     "RagasSample",

@@ -91,11 +91,61 @@ class WorkoutLogConversationExportResponse(BaseModel):
     session_id: str | None = None
 
 
+class HeartRateSampleCreate(BaseModel):
+    bpm: int = Field(ge=30, le=230)
+    source: str = Field(default="hyperate", max_length=30)
+    recorded_at: datetime | None = None
+
+
+class HeartRateSampleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    workout_session_id: int
+    bpm: int
+    source: str
+    recorded_at: datetime
+
+
+class HeartRateZoneDistribution(BaseModel):
+    zone: int
+    label: str
+    min_percent: int
+    max_percent: int
+    count: int
+    percentage: float
+
+
+class EstimatedKcalResponse(BaseModel):
+    value: int | None = None
+    method: Literal["heart_rate", "met", "unavailable"]
+    reason: str | None = None
+
+
+class HeartRateSummaryResponse(BaseModel):
+    avg_bpm: float | None = None
+    max_bpm: int | None = None
+    min_bpm: int | None = None
+    sample_count: int
+    duration_minutes: float
+    zone_distribution: list[HeartRateZoneDistribution] = Field(default_factory=list)
+    dominant_zone: int | None = None
+    dominant_zone_label: str | None = None
+    estimated_kcal: EstimatedKcalResponse
+
+
 class WorkoutShareCardResponse(BaseModel):
     workout_title: str
     workout_date: date
     completed: bool
     calories_burned: int | None = None
+    avg_bpm: float | None = None
+    max_bpm: int | None = None
+    min_bpm: int | None = None
+    heart_rate_sample_count: int = 0
+    heart_rate_zone_label: str | None = None
+    estimated_kcal_method: Literal["heart_rate", "met", "unavailable"] | None = None
     completion_rate: int
     duration_seconds: int
     week_completed_count: int

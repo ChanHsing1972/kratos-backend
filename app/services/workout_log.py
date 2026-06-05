@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.workout_log import WorkoutExerciseLog, WorkoutLog, WorkoutSetLog
 from app.schemas.workout_log import WorkoutLogCreate, WorkoutLogUpdate
+from app.services.heart_rate import build_heart_rate_summary
 
 
 def get_workout_logs_by_user_id(
@@ -108,12 +109,19 @@ def build_workout_share_card_summary(
         if total_actions
         else (100 if log.completed else 0)
     )
+    heart_rate_summary = build_heart_rate_summary(db, user_id, log)
+    estimated_kcal = heart_rate_summary["estimated_kcal"]
+    calories_burned = estimated_kcal["value"] if estimated_kcal["value"] is not None else log.calories_burned
     highlights = [
         f"本次 {format_duration_text(duration_seconds)}",
         f"完成度 {completion_rate}%",
         f"本周完成 {len(week_logs)} 次训练",
         f"连续训练 {streak_days} 天",
     ]
+    if heart_rate_summary["avg_bpm"] is not None:
+        highlights.append(f"平均心率 {heart_rate_summary['avg_bpm']} bpm")
+    if heart_rate_summary["dominant_zone_label"]:
+        highlights.append(f"主要心率区间：{heart_rate_summary['dominant_zone_label']}")
     if completed_actions:
         highlights.append(f"完成动作：{'、'.join(completed_actions[:3])}")
 
@@ -121,7 +129,13 @@ def build_workout_share_card_summary(
         "workout_title": log.title or "未命名训练",
         "workout_date": log.workout_date,
         "completed": log.completed,
-        "calories_burned": log.calories_burned,
+        "calories_burned": calories_burned,
+        "avg_bpm": heart_rate_summary["avg_bpm"],
+        "max_bpm": heart_rate_summary["max_bpm"],
+        "min_bpm": heart_rate_summary["min_bpm"],
+        "heart_rate_sample_count": heart_rate_summary["sample_count"],
+        "heart_rate_zone_label": heart_rate_summary["dominant_zone_label"],
+        "estimated_kcal_method": estimated_kcal["method"],
         "completion_rate": completion_rate,
         "duration_seconds": duration_seconds,
         "week_completed_count": len(week_logs),

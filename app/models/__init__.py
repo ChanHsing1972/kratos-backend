@@ -10,7 +10,7 @@ from app.models.skill import Skill, UserSkill
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
 from app.models.user_profile import UserProfile
-from app.models.workout_log import WorkoutExerciseLog, WorkoutLog, WorkoutSetLog
+from app.models.workout_log import HeartRateSample, WorkoutExerciseLog, WorkoutLog, WorkoutSetLog
 
 __all__ = [
     "AgentToolConfig",
@@ -27,6 +27,7 @@ __all__ = [
     "User",
     "UserSkill",
     "UserProfile",
+    "HeartRateSample",
     "WorkoutLog",
     "WorkoutExerciseLog",
     "WorkoutSetLog",

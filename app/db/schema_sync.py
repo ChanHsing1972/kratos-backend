@@ -23,6 +23,10 @@ WORKOUT_LOG_COLUMN_DDL = {
     "duration_seconds": "INTEGER",
 }
 
+USER_PROFILE_COLUMN_DDL = {
+    "hyperate_id": "VARCHAR(64)",
+}
+
 AGENT_RUN_COLUMN_DDL = {
     "memory_payload": "JSON",
     "result_payload": "JSON",
@@ -92,6 +96,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
         missing_columns.extend(
             ("workout_logs", name, ddl)
             for name, ddl in WORKOUT_LOG_COLUMN_DDL.items()
+            if name not in existing_columns
+        )
+
+    if "user_profiles" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("user_profiles")
+        }
+        missing_columns.extend(
+            ("user_profiles", name, ddl)
+            for name, ddl in USER_PROFILE_COLUMN_DDL.items()
             if name not in existing_columns
         )
 
@@ -165,6 +180,38 @@ def ensure_runtime_schema(engine: Engine) -> None:
         with engine.begin() as connection:
             for table_name, name, ddl in missing_columns:
                 connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+
+    if "heart_rate_samples" not in table_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS heart_rate_samples (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        workout_session_id INTEGER NOT NULL REFERENCES workout_logs(id) ON DELETE CASCADE,
+                        bpm INTEGER NOT NULL,
+                        source VARCHAR(30) DEFAULT 'hyperate' NOT NULL,
+                        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                        CONSTRAINT ck_heart_rate_samples_bpm_range CHECK (bpm >= 30 AND bpm <= 230)
+                    )
+                    """
+                )
+            )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_heart_rate_samples_user_session_time "
+                "ON heart_rate_samples (user_id, workout_session_id, recorded_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_heart_rate_samples_workout_session_id "
+                "ON heart_rate_samples (workout_session_id)"
+            )
+        )
 
     if "agent_runs" in table_names:
         with engine.begin() as connection:
