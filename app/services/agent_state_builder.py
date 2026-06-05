@@ -30,12 +30,14 @@ from app.services.fitness_context import (
     load_fitness_context,
 )
 from app.services.long_term_memory_point import hydrate_state_long_term_memory_points
+from app.services.short_term_memory_point import hydrate_state_short_term_memory_points
 from app.services.skill import (
     allowed_tool_names,
     get_enabled_skills_for_user,
     normalize_tool_names,
     skill_to_prompt_payload,
 )
+from app.services.working_memory_point import hydrate_state_working_memory_points
 from app.services.upload import build_agent_attachment_parts
 
 
@@ -128,6 +130,12 @@ def prepare_agent_state(
         user = db.query(User).filter(User.id == user_id).first()
         state.memory.replace_long_term_memory_points(
             hydrate_state_long_term_memory_points(db, user_id)
+        )
+        state.memory.replace_short_term_memory_points(
+            hydrate_state_short_term_memory_points(db, user_id)
+        )
+        state.memory.replace_working_memory_points(
+            hydrate_state_working_memory_points(db, user_id)
         )
         if user is not None:
             context = load_fitness_context(db, user)

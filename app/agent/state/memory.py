@@ -10,6 +10,8 @@ from typing import Any
 from datetime import datetime
 
 from app.agent.state.long_term_memory_point import LongTermMemoryPoint
+from app.agent.state.short_term_memory_point import ShortTermMemoryPoint
+from app.agent.state.working_memory_point import WorkingMemoryPoint
 from pydantic import BaseModel, Field
 
 
@@ -119,6 +121,8 @@ class MemoryState(BaseModel):
 
     long_term_memory: LongTermMemory = Field(default_factory=LongTermMemory)
     long_term_memory_points: list[LongTermMemoryPoint] = Field(default_factory=list)
+    short_term_memory_points: list[ShortTermMemoryPoint] = Field(default_factory=list)
+    working_memory_points: list[WorkingMemoryPoint] = Field(default_factory=list)
     mid_term_memory: MidTermMemory = Field(default_factory=MidTermMemory)
     database_context: dict[str, Any] = Field(default_factory=dict)
     pending_confirmation_updates: dict[str, Any] = Field(default_factory=dict)
@@ -136,13 +140,39 @@ class MemoryState(BaseModel):
     def replace_long_term_memory_points(self, memory_points: list[LongTermMemoryPoint]) -> None:
         self.long_term_memory_points = list(memory_points)
 
+    def replace_short_term_memory_points(self, memory_points: list[ShortTermMemoryPoint]) -> None:
+        self.short_term_memory_points = list(memory_points)
+
+    def replace_working_memory_points(self, memory_points: list[WorkingMemoryPoint]) -> None:
+        self.working_memory_points = list(memory_points)
+
     def append_long_term_memory_points(self, memory_points: list[LongTermMemoryPoint]) -> None:
         self.long_term_memory_points.extend(memory_points)
+
+    def append_short_term_memory_points(self, memory_points: list[ShortTermMemoryPoint]) -> None:
+        self.short_term_memory_points.extend(memory_points)
+
+    def append_working_memory_points(self, memory_points: list[WorkingMemoryPoint]) -> None:
+        self.working_memory_points.extend(memory_points)
 
     def recent_long_term_memory_point_texts(self, limit: int = 20) -> list[str]:
         return [
             item.content.strip()
             for item in self.long_term_memory_points[-limit:]
+            if item.content.strip()
+        ]
+
+    def recent_short_term_memory_point_texts(self, limit: int = 20) -> list[str]:
+        return [
+            item.content.strip()
+            for item in self.short_term_memory_points[-limit:]
+            if item.content.strip()
+        ]
+
+    def recent_working_memory_point_texts(self, limit: int = 20) -> list[str]:
+        return [
+            item.content.strip()
+            for item in self.working_memory_points[-limit:]
             if item.content.strip()
         ]
 

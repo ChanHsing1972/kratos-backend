@@ -91,6 +91,16 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    short_term_memory_points: Mapped[list["ShortTermMemoryPoint"]] = relationship(
+        "ShortTermMemoryPoint",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    working_memory_points: Mapped[list["WorkingMemoryPoint"]] = relationship(
+        "WorkingMemoryPoint",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     agent_tool_configs: Mapped[list["AgentToolConfig"]] = relationship(
         "AgentToolConfig",
         back_populates="user",

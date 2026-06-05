@@ -40,11 +40,25 @@ from app.schemas.long_term_memory_point import (
     LongTermMemoryPointResponse,
     LongTermMemoryPointUpdate,
 )
+from app.schemas.short_term_memory_point import (
+    ShortTermMemoryPointCreate,
+    ShortTermMemoryPointExtractionResult,
+    ShortTermMemoryPointExtracted,
+    ShortTermMemoryPointResponse,
+    ShortTermMemoryPointUpdate,
+)
 from app.schemas.skill import SkillBindingUpdate, SkillCreate, SkillResponse, SkillUpdate
 from app.schemas.training_plan import (
     TrainingPlanCreate,
     TrainingPlanResponse,
     TrainingPlanUpdate,
+)
+from app.schemas.working_memory_point import (
+    WorkingMemoryPointCreate,
+    WorkingMemoryPointExtractionResult,
+    WorkingMemoryPointExtracted,
+    WorkingMemoryPointResponse,
+    WorkingMemoryPointUpdate,
 )
 from app.schemas.user import Token, UserCreate, UserLogin, UserResponse, UserUpdate
 from app.schemas.user_profile import (
@@ -101,6 +115,11 @@ __all__ = [
     "LongTermMemoryPointExtracted",
     "LongTermMemoryPointResponse",
     "LongTermMemoryPointUpdate",
+    "ShortTermMemoryPointCreate",
+    "ShortTermMemoryPointExtractionResult",
+    "ShortTermMemoryPointExtracted",
+    "ShortTermMemoryPointResponse",
+    "ShortTermMemoryPointUpdate",
     "RagasExportResponse",
     "RagasSample",
     "SkillBindingUpdate",
@@ -111,6 +130,11 @@ __all__ = [
     "TrainingPlanCreate",
     "TrainingPlanResponse",
     "TrainingPlanUpdate",
+    "WorkingMemoryPointCreate",
+    "WorkingMemoryPointExtractionResult",
+    "WorkingMemoryPointExtracted",
+    "WorkingMemoryPointResponse",
+    "WorkingMemoryPointUpdate",
     "UserCreate",
     "UserLogin",
     "UserProfileCreate",

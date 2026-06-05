@@ -263,6 +263,14 @@ class GenerateNode(BaseNode):
                     item.model_dump(mode="json")
                     for item in state.memory.long_term_memory_points
                 ],
+                "short_term_memory_points": [
+                    item.model_dump(mode="json")
+                    for item in state.memory.short_term_memory_points
+                ],
+                "working_memory_points": [
+                    item.model_dump(mode="json")
+                    for item in state.memory.working_memory_points
+                ],
                 "mid_term": state.memory.mid_term_memory.model_dump(),
                 "database_context": state.memory.database_context,
             },
@@ -295,6 +303,9 @@ class GenerateNode(BaseNode):
         - 具体、可执行，避免空泛建议。
         - 回答前必须利用已读取的数据库上下文；如果上下文缺关键数据，先指出缺口并给出下一步引导。
         - 如果用户在消息中提到新的个人信息或身体数据，说明需由用户确认后才会保存，不得声称已经记录。
+        - 记忆使用优先级必须遵守：工作记忆 > 短期记忆 > 长期记忆。
+        - 工作记忆主要约束当前任务范围、时长、当前资源和本轮输出要求；短期记忆主要反映近期位置、近期需求和阶段性限制；长期记忆主要反映稳定目标、偏好和长期限制。
+        - 若多层记忆冲突，先遵守工作记忆，再遵守短期记忆，最后参考长期记忆；但若数据库结构化上下文已确认且与记忆点冲突，应优先以数据库为准，并说明临时变化。
         - 严禁编造用户资料；年龄、身高、体重、目标、训练经验等只能来自用户问题或已读取数据库上下文。
         - 如果子任务结果与数据库上下文冲突，以数据库上下文为准；例如“60分钟”是训练时长，不是“60岁”。
         - 如果年龄未知，不要输出高龄、老年、60岁等表述；如果只知道训练时长为 60 分钟，只能写“每次60分钟”。

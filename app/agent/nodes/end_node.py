@@ -9,7 +9,11 @@ from app.agent.state.conversation import AskAns
 from app.agent.state.long_term_memory_point import LongTermMemoryPoint
 from app.agent.state.memory import TurnMemory
 from app.agent.state.session_state import SessionState
+from app.agent.state.short_term_memory_point import ShortTermMemoryPoint
+from app.agent.state.working_memory_point import WorkingMemoryPoint
 from app.schemas.long_term_memory_point import LongTermMemoryPointExtractionResult
+from app.schemas.short_term_memory_point import ShortTermMemoryPointExtractionResult
+from app.schemas.working_memory_point import WorkingMemoryPointExtractionResult
 
 
 class EndNode(BaseNode):
@@ -28,6 +32,8 @@ class EndNode(BaseNode):
             state.conversation.conversations.append(ask_ans)
             self._summarize_turn(state, human_message, ai_message)
             self._extract_long_term_memory_points(state, human_message, ai_message)
+            self._extract_short_term_memory_points(state, human_message, ai_message)
+            self._extract_working_memory_points(state, human_message, ai_message)
 
         max_conversations = state.conversation.max_conversations
         if len(state.conversation.conversations) > max_conversations:
@@ -303,3 +309,136 @@ class EndNode(BaseNode):
 
         if new_points:
             state.memory.append_long_term_memory_points(new_points)
+
+    def _extract_short_term_memory_points(self, state: SessionState, user_message: str, ai_message: str) -> None:
+        if not user_message and not ai_message:
+            return
+        if self.llm is None:
+            return
+
+        known_points = state.memory.recent_short_term_memory_point_texts(limit=30)
+        prompt = f"""
+        你是健身 Agent 的短期记忆提取器。
+        请从本轮对话中提取适合保留一段时间但不属于长期稳定画像的信息，例如：用户最近在哪里、最近几天/这一阶段的需求、近期安排、近期限制、当前阶段关注点。
+
+        规则：
+        - 短期记忆用于未来几轮或近期对话参考，价值低于长期记忆，但高于一次性工作记忆。
+        - 不要提取长期稳定偏好、长期目标、永久限制，这些应归入长期记忆。
+        - 不要提取纯一次性执行步骤、模型内部计划，这些应归入工作记忆或忽略。
+        - content 用简洁中文短句。
+        - memory_type 可选，如 recent_context / recent_need / recent_location / temporary_constraint / current_phase。
+        - 若与已有短期记忆点重复，不要重复产出。
+
+        已有短期记忆点:
+        {known_points}
+
+        本轮用户消息:
+        {user_message}
+
+        本轮 AI 回复:
+        {ai_message}
+
+        严格输出一个 JSON 对象，不要 Markdown：
+        {{
+            "has_new_memory": true,
+            "memory_points": [
+                {{
+                    "memory_time": null,
+                    "content": "用户最近在上海出差，近期更适合安排酒店内可完成的训练。",
+                    "memory_type": "recent_location",
+                    "source_turn_id": {state.turn_id},
+                    "confidence": 0.88,
+                    "evidence": "用户提到最近在上海出差"
+                }}
+            ]
+        }}
+        """
+        data = self.invoke_json(prompt)
+        result = ShortTermMemoryPointExtractionResult.model_validate(data)
+        if not result.memory_points:
+            return
+        existing = {item.content.strip().lower() for item in state.memory.short_term_memory_points if item.content.strip()}
+        new_points: list[ShortTermMemoryPoint] = []
+        for item in result.memory_points:
+            content = item.content.strip()
+            normalized = content.lower()
+            if not content or normalized in existing:
+                continue
+            new_points.append(
+                ShortTermMemoryPoint(
+                    memory_time=item.memory_time or state.created_at,
+                    content=content,
+                    memory_type=item.memory_type,
+                    source_turn_id=item.source_turn_id or state.turn_id,
+                    metadata={"confidence": item.confidence, "evidence": item.evidence},
+                )
+            )
+            existing.add(normalized)
+        if new_points:
+            state.memory.append_short_term_memory_points(new_points)
+
+    def _extract_working_memory_points(self, state: SessionState, user_message: str, ai_message: str) -> None:
+        if not user_message and not ai_message:
+            return
+        if self.llm is None:
+            return
+
+        known_points = state.memory.recent_working_memory_point_texts(limit=30)
+        prompt = f"""
+        你是健身 Agent 的工作记忆提取器。
+        请从本轮对话中提取当前任务执行仍然需要立即参考的上下文，例如：本次训练只想练 20 分钟、本次只关注早餐、本轮想先做护膝恢复、当前器械条件、当前输出格式要求等。
+
+        规则：
+        - 工作记忆只服务于当前或接下来很少几轮，时效性最强。
+        - 比短期记忆更临时，比长期记忆更不稳定。
+        - content 用简洁中文短句。
+        - memory_type 可选，如 current_task / current_constraint / current_format / current_scope / current_resource。
+        - 与已有工作记忆点重复时不要重复产出。
+
+        已有工作记忆点:
+        {known_points}
+
+        本轮用户消息:
+        {user_message}
+
+        本轮 AI 回复:
+        {ai_message}
+
+        严格输出一个 JSON 对象，不要 Markdown：
+        {{
+            "has_new_memory": true,
+            "memory_points": [
+                {{
+                    "memory_time": null,
+                    "content": "用户本次训练只希望控制在 20 分钟内。",
+                    "memory_type": "current_constraint",
+                    "source_turn_id": {state.turn_id},
+                    "confidence": 0.9,
+                    "evidence": "用户要求本次训练 20 分钟内完成"
+                }}
+            ]
+        }}
+        """
+        data = self.invoke_json(prompt)
+        result = WorkingMemoryPointExtractionResult.model_validate(data)
+        if not result.memory_points:
+            return
+        existing = {item.content.strip().lower() for item in state.memory.working_memory_points if item.content.strip()}
+        new_points: list[WorkingMemoryPoint] = []
+        for item in result.memory_points:
+            content = item.content.strip()
+            normalized = content.lower()
+            if not content or normalized in existing:
+                continue
+            new_points.append(
+                WorkingMemoryPoint(
+                    memory_time=item.memory_time or state.created_at,
+                    content=content,
+                    memory_type=item.memory_type,
+                    source_turn_id=item.source_turn_id or state.turn_id,
+                    metadata={"confidence": item.confidence, "evidence": item.evidence},
+                )
+            )
+            existing.add(normalized)
+        if new_points:
+            state.memory.append_working_memory_points(new_points)

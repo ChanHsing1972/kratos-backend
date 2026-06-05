@@ -17,9 +17,11 @@ def create_api_router() -> APIRouter:
     from app.api.v1.endpoints.integrations import router as integrations_router
     from app.api.v1.endpoints.long_term_memory_point import router as long_term_memory_point_router
     from app.api.v1.endpoints.profile import router as profile_router
+    from app.api.v1.endpoints.short_term_memory_point import router as short_term_memory_point_router
     from app.api.v1.endpoints.skill import router as skill_router
     from app.api.v1.endpoints.training_plan import router as training_plan_router
     from app.api.v1.endpoints.upload import router as upload_router
+    from app.api.v1.endpoints.working_memory_point import router as working_memory_point_router
     from app.api.v1.endpoints.workout_log import router as workout_log_router
     from app.api.v1.endpoints.workout_session import router as workout_session_router
 
@@ -37,9 +39,11 @@ def create_api_router() -> APIRouter:
     api_router.include_router(integrations_router, prefix="/integrations", tags=["integrations"])
     api_router.include_router(long_term_memory_point_router, prefix="/memory-points", tags=["memory-points"])
     api_router.include_router(profile_router, prefix="/profile", tags=["profile"])
+    api_router.include_router(short_term_memory_point_router, prefix="/short-memory-points", tags=["short-memory-points"])
     api_router.include_router(skill_router, prefix="/skills", tags=["skills"])
     api_router.include_router(training_plan_router, prefix="/plans", tags=["plans"])
     api_router.include_router(upload_router, prefix="/uploads", tags=["uploads"])
+    api_router.include_router(working_memory_point_router, prefix="/working-memory-points", tags=["working-memory-points"])
     api_router.include_router(workout_session_router, prefix="/workout-sessions", tags=["workout-sessions"])
     api_router.include_router(workout_log_router, prefix="/workout-logs", tags=["workout-logs"])
     return api_router

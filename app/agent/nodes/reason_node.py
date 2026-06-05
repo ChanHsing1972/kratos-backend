@@ -82,6 +82,13 @@ class ReasonNode(BaseNode):
         当前长期/中期记忆(JSON)，可用于直接回答用户关于个人资料、近期饮食和训练反馈的问题：
         {memory_context_json}
 
+        记忆优先级规则：
+        - 工作记忆优先级最高，只要仍与当前任务相关，应优先约束本轮回答。
+        - 短期记忆次之，适合解释用户最近位置、近期需求、近期阶段安排。
+        - 长期记忆再次之，适合提供稳定目标、偏好、长期限制与长期风险背景。
+        - 若三层记忆冲突：工作记忆 > 短期记忆 > 长期记忆。
+        - 若数据库结构化上下文与记忆点冲突，以数据库已确认上下文优先；但可在回答中说明用户近期表达的临时变化。
+
         可用工具及参数 schema(JSON):
         {tool_descriptions_json}
 
@@ -379,6 +386,14 @@ class ReasonNode(BaseNode):
             "long_term_memory_points": [
                 item.model_dump(mode="json")
                 for item in state.memory.long_term_memory_points
+            ],
+            "short_term_memory_points": [
+                item.model_dump(mode="json")
+                for item in state.memory.short_term_memory_points
+            ],
+            "working_memory_points": [
+                item.model_dump(mode="json")
+                for item in state.memory.working_memory_points
             ],
             "daily_diet": state.memory.mid_term_memory.daily_diet,
             "training_feedbacks": state.memory.mid_term_memory.training_feedbacks,
