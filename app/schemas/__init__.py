@@ -21,6 +21,15 @@ from app.schemas.conversation_session import (
     ConversationSessionResponse,
     ConversationSessionUpdateRequest,
 )
+from app.schemas.diet import (
+    DietRecordBulkCreate,
+    DietRecordItemCreate,
+    DietRecordResponse,
+    FoodEstimateItem,
+    FoodEstimateTotal,
+    FoodImageEstimateResponse,
+    FoodImageEstimateResult,
+)
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
 from app.schemas.hyperate import HyperateCurrentResponse
 from app.schemas.skill import SkillBindingUpdate, SkillCreate, SkillResponse, SkillUpdate
@@ -66,6 +75,13 @@ __all__ = [
     "ConversationSessionRenameRequest",
     "ConversationSessionResponse",
     "ConversationSessionUpdateRequest",
+    "DietRecordBulkCreate",
+    "DietRecordItemCreate",
+    "DietRecordResponse",
+    "FoodEstimateItem",
+    "FoodEstimateTotal",
+    "FoodImageEstimateResponse",
+    "FoodImageEstimateResult",
     "FitnessContextResponse",
     "HeartRateSampleCreate",
     "HeartRateSampleResponse",

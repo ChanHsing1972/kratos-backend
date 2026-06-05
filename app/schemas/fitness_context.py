@@ -2,6 +2,7 @@ from pydantic import BaseModel
 
 from app.schemas.agent_checkin import AgentCheckinResponse
 from app.schemas.body_metric import BodyMetricResponse
+from app.schemas.diet import DietRecordResponse
 from app.schemas.training_plan import TrainingPlanResponse
 from app.schemas.user import UserResponse
 from app.schemas.user_profile import UserProfileResponse
@@ -23,6 +24,7 @@ class FitnessContextResponse(BaseModel):
     latest_body_metric: BodyMetricResponse | None = None
     recent_body_metrics: list[BodyMetricResponse]
     recent_workout_logs: list[WorkoutLogResponse]
+    recent_diet_records: list[DietRecordResponse]
     recent_checkins: list[AgentCheckinResponse]
     active_plan: TrainingPlanResponse | None = None
     onboarding: OnboardingStatus

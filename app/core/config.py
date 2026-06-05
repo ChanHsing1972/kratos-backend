@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     AGENT_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
     TAVILY_API_KEY: str | None = None
 
+    OPENAI_API_KEY: str | None = None
+    OPENAI_BASE_URL: str | None = None
+    FOOD_VISION_MODEL: str = "gpt-4.1"
+    FOOD_VISION_TIMEOUT_SECONDS: int = 60
+
     MUSCLEWIKI_API_BASE_URL: str = "https://api.musclewiki.com"
     MUSCLEWIKI_API_KEY: str | None = None
     MUSCLEWIKI_TIMEOUT_SECONDS: int = 30

@@ -46,6 +46,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    diet_records: Mapped[list["DietRecord"]] = relationship(
+        "DietRecord",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     agent_checkins: Mapped[list["AgentCheckin"]] = relationship(
         "AgentCheckin",
         back_populates="user",

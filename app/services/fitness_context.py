@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.agent.state.session_state import SessionState
 from app.models.agent_checkin import AgentCheckin
 from app.models.body_metric import BodyMetric
+from app.models.diet import DietRecord
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
 from app.models.user_profile import UserProfile
@@ -72,6 +73,13 @@ def load_fitness_context(db: Session, user: User, limit: int = 12) -> FitnessCon
         .limit(limit)
         .all()
     )
+    recent_diet_records = (
+        db.query(DietRecord)
+        .filter(DietRecord.user_id == user.id)
+        .order_by(DietRecord.meal_date.desc(), DietRecord.created_at.desc(), DietRecord.id.desc())
+        .limit(50)
+        .all()
+    )
     recent_checkins = (
         db.query(AgentCheckin)
         .filter(AgentCheckin.user_id == user.id)
@@ -94,6 +102,7 @@ def load_fitness_context(db: Session, user: User, limit: int = 12) -> FitnessCon
         latest_body_metric=latest_body_metric,
         recent_body_metrics=recent_body_metrics,
         recent_workout_logs=recent_workout_logs,
+        recent_diet_records=recent_diet_records,
         recent_checkins=recent_checkins,
         active_plan=active_plan,
         onboarding=onboarding,

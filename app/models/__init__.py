@@ -3,6 +3,7 @@ from app.models.agent_checkin import AgentCheckin
 from app.models.agent_run import AgentRun, AgentTraceStep
 from app.models.body_metric import BodyMetric
 from app.models.conversation_session import ConversationSession
+from app.models.diet import DietRecord
 from app.models.exercise_library import ExerciseLibraryItem
 from app.models.exercise_media import ExerciseMediaCache
 from app.models.exercise_video import ExerciseVideoLink
@@ -19,6 +20,7 @@ __all__ = [
     "AgentTraceStep",
     "BodyMetric",
     "ConversationSession",
+    "DietRecord",
     "ExerciseLibraryItem",
     "ExerciseMediaCache",
     "ExerciseVideoLink",
