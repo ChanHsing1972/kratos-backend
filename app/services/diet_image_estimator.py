@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
+from io import BytesIO
 from typing import Any
 
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
@@ -67,13 +68,17 @@ def estimate_food_from_image(
 ) -> FoodImageEstimateResult:
     """Estimate food and nutrition from an image without persisting it."""
 
-    image_base64 = base64.b64encode(image_bytes).decode("ascii")
-    data_url = f"data:{mime_type};base64,{image_base64}"
+    model_image_bytes, model_mime_type = _prepare_image_for_model(
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+    )
+    image_base64 = base64.b64encode(model_image_bytes).decode("ascii")
+    data_url = f"data:{model_mime_type};base64,{image_base64}"
 
     if client is not None:
-        content = _estimate_with_responses_client(client, data_url=data_url)
-    elif settings.OPENAI_API_KEY:
-        content = _estimate_with_responses_client(
+        content = _estimate_with_vision_client(client, data_url=data_url)
+    elif settings.FOOD_VISION_EFFECTIVE_API_KEY:
+        content = _estimate_with_vision_client(
             get_food_vision_client(),
             data_url=data_url,
         )
@@ -90,8 +95,9 @@ def estimate_food_from_image(
 
 @lru_cache(maxsize=1)
 def get_food_vision_client() -> Any:
-    if not settings.OPENAI_API_KEY:
-        raise DietImageEstimatorError("OPENAI_API_KEY is not configured")
+    api_key = settings.FOOD_VISION_EFFECTIVE_API_KEY
+    if not api_key:
+        raise DietImageEstimatorError("food vision API key is not configured")
 
     try:
         from openai import OpenAI
@@ -99,19 +105,50 @@ def get_food_vision_client() -> Any:
         raise DietImageEstimatorError("openai package is not installed") from exc
 
     kwargs: dict[str, Any] = {
-        "api_key": settings.OPENAI_API_KEY,
+        "api_key": api_key,
+        "max_retries": settings.FOOD_VISION_MAX_RETRIES,
         "timeout": settings.FOOD_VISION_TIMEOUT_SECONDS,
     }
-    if settings.OPENAI_BASE_URL:
-        kwargs["base_url"] = settings.OPENAI_BASE_URL
+    if settings.FOOD_VISION_EFFECTIVE_BASE_URL:
+        kwargs["base_url"] = settings.FOOD_VISION_EFFECTIVE_BASE_URL
 
     return OpenAI(**kwargs)
+
+
+def _estimate_with_vision_client(client: Any, *, data_url: str) -> str:
+    if getattr(getattr(client, "chat", None), "completions", None) is not None:
+        return _estimate_with_chat_client(client, data_url=data_url)
+    if getattr(client, "responses", None) is not None:
+        return _estimate_with_responses_client(client, data_url=data_url)
+    raise DietImageEstimatorError("food vision client does not support multimodal calls")
+
+
+def _estimate_with_chat_client(client: Any, *, data_url: str) -> str:
+    try:
+        response = client.chat.completions.create(
+            model=settings.FOOD_VISION_EFFECTIVE_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": FOOD_IMAGE_ESTIMATE_PROMPT},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            max_tokens=settings.FOOD_VISION_MAX_OUTPUT_TOKENS,
+            temperature=0,
+        )
+    except Exception as exc:
+        raise DietImageEstimatorError("food vision chat model call failed") from exc
+
+    return _extract_response_text(response)
 
 
 def _estimate_with_responses_client(client: Any, *, data_url: str) -> str:
     try:
         response = client.responses.create(
-            model=settings.FOOD_VISION_MODEL or "gpt-4.1",
+            model=settings.FOOD_VISION_EFFECTIVE_MODEL,
             input=[
                 {
                     "role": "user",
@@ -132,9 +169,7 @@ def _estimate_with_agent_llm(*, data_url: str) -> str:
     try:
         from langchain_core.messages import HumanMessage
 
-        from app.agent.llm import get_agent_llm
-
-        response = get_agent_llm().invoke(
+        response = get_food_agent_llm().invoke(
             [
                 HumanMessage(
                     content=[
@@ -148,6 +183,44 @@ def _estimate_with_agent_llm(*, data_url: str) -> str:
         raise DietImageEstimatorError("agent vision model call failed") from exc
 
     return _extract_response_text(response)
+
+
+@lru_cache(maxsize=1)
+def get_food_agent_llm() -> Any:
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:
+        raise DietImageEstimatorError("langchain_openai package is not installed") from exc
+
+    return ChatOpenAI(
+        api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
+        base_url=settings.AGENT_LLM_BASE_URL,
+        max_retries=settings.FOOD_VISION_MAX_RETRIES,
+        model=settings.FOOD_VISION_EFFECTIVE_MODEL,
+        temperature=0,
+        timeout=settings.FOOD_VISION_TIMEOUT_SECONDS,
+    )
+
+
+def _prepare_image_for_model(*, image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return image_bytes, mime_type
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+            elif image.mode == "L":
+                image = image.convert("RGB")
+            image.thumbnail((1024, 1024))
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=82, optimize=True)
+            return output.getvalue(), "image/jpeg"
+    except Exception:
+        return image_bytes, mime_type
 
 
 def normalize_food_estimate_payload(payload: dict[str, Any]) -> FoodImageEstimateResult:
@@ -241,6 +314,22 @@ def _extract_response_text(response: Any) -> str:
 
     if isinstance(response, str):
         return response
+
+    choices = getattr(response, "choices", None)
+    if isinstance(choices, list):
+        for choice in choices:
+            message = getattr(choice, "message", None)
+            if message is None and isinstance(choice, dict):
+                message = choice.get("message")
+            message_content = getattr(message, "content", None)
+            if message_content is None and isinstance(message, dict):
+                message_content = message.get("content")
+            if isinstance(message_content, str) and message_content.strip():
+                return message_content
+            if isinstance(message_content, list):
+                text_parts = _extract_text_parts(message_content)
+                if text_parts:
+                    return "\n".join(text_parts)
 
     output = getattr(response, "output", None)
     if isinstance(output, list):

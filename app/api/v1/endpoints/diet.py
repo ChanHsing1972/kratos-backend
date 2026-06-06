@@ -51,7 +51,10 @@ async def estimate_from_image(
     except DietImageEstimatorError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="饮食图片识别服务暂时不可用，请稍后重试",
+            detail=(
+                "饮食图片识别服务暂时不可用。请确认后端视觉模型可用，"
+                "并优先配置 FOOD_VISION_MODEL 为 gpt-4.1、gpt-4o 或其他支持图片的模型。"
+            ),
         ) from exc
 
     return FoodImageEstimateResponse(data=result)

@@ -32,7 +32,9 @@ def create_body_metric(
     user: User,
     metric_in: BodyMetricCreate,
 ) -> BodyMetric:
-    metric = BodyMetric(user_id=user.id, **metric_in.model_dump())
+    payload = metric_in.model_dump()
+    payload["bmi"] = _calculate_bmi(payload.get("weight_kg"), payload.get("height_cm"))
+    metric = BodyMetric(user_id=user.id, **payload)
     db.add(metric)
     db.commit()
     db.refresh(metric)
@@ -44,8 +46,11 @@ def update_body_metric(
     metric: BodyMetric,
     metric_in: BodyMetricUpdate,
 ) -> BodyMetric:
-    for field, value in metric_in.to_update_dict().items():
+    updates = metric_in.to_update_dict()
+    for field, value in updates.items():
         setattr(metric, field, value)
+    if "weight_kg" in updates or "height_cm" in updates:
+        metric.bmi = _calculate_bmi(metric.weight_kg, metric.height_cm)
     db.add(metric)
     db.commit()
     db.refresh(metric)
@@ -55,3 +60,12 @@ def update_body_metric(
 def delete_body_metric(db: Session, metric: BodyMetric) -> None:
     db.delete(metric)
     db.commit()
+
+
+def _calculate_bmi(weight_kg: float | None, height_cm: float | None) -> float | None:
+    if not weight_kg or not height_cm:
+        return None
+    height_m = float(height_cm) / 100
+    if height_m <= 0:
+        return None
+    return round(float(weight_kg) / (height_m * height_m), 2)

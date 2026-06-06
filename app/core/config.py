@@ -35,6 +35,15 @@ def _load_env_fallback() -> None:
 _load_env_fallback()
 
 
+def _configured_secret(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.upper() in {"EMPTY", "NONE", "NULL"}:
+        return None
+    return stripped
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
@@ -45,6 +54,16 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "Kratos Agent Backend"
     API_V1_STR: str = "/api/v1"
+    CORS_ORIGINS: str = (
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174,"
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "http://192.0.2.1"
+    )
+    CORS_ALLOW_ORIGIN_REGEX: str = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 
     PG_USER: str
     PG_PASSWORD: str
@@ -68,8 +87,12 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str | None = None
-    FOOD_VISION_MODEL: str = "gpt-4.1"
-    FOOD_VISION_TIMEOUT_SECONDS: int = 60
+    FOOD_VISION_API_KEY: str | None = None
+    FOOD_VISION_BASE_URL: str | None = None
+    FOOD_VISION_MODEL: str | None = None
+    FOOD_VISION_TIMEOUT_SECONDS: int = 25
+    FOOD_VISION_MAX_RETRIES: int = 0
+    FOOD_VISION_MAX_OUTPUT_TOKENS: int = 900
 
     MUSCLEWIKI_API_BASE_URL: str = "https://api.musclewiki.com"
     MUSCLEWIKI_API_KEY: str | None = None
@@ -112,11 +135,50 @@ class Settings(BaseSettings):
         return self.AGENT_LLM_API_KEY or self.QWEN_API_KEY or "EMPTY"
 
     @property
+    def FOOD_VISION_EFFECTIVE_API_KEY(self) -> str | None:
+        return (
+            _configured_secret(self.FOOD_VISION_API_KEY)
+            or _configured_secret(self.OPENAI_API_KEY)
+            or _configured_secret(self.AGENT_LLM_API_KEY)
+            or _configured_secret(self.QWEN_API_KEY)
+        )
+
+    @property
+    def FOOD_VISION_EFFECTIVE_BASE_URL(self) -> str | None:
+        configured = self.FOOD_VISION_BASE_URL or self.OPENAI_BASE_URL
+        if configured and configured.strip():
+            return configured.strip()
+        if _configured_secret(self.OPENAI_API_KEY):
+            return None
+        if self.FOOD_VISION_EFFECTIVE_API_KEY:
+            return self.AGENT_LLM_BASE_URL
+        return None
+
+    @property
+    def FOOD_VISION_EFFECTIVE_MODEL(self) -> str:
+        configured = (self.FOOD_VISION_MODEL or "").strip()
+        if configured:
+            return configured
+        agent_model = (self.AGENT_LLM_MODEL or "").strip()
+        if agent_model and agent_model not in {"qwen-turbo", "gpt-3.5-turbo"}:
+            return agent_model
+        base_url = self.FOOD_VISION_EFFECTIVE_BASE_URL or ""
+        return "qwen-vl-plus" if "dashscope" in base_url else "gpt-4.1"
+
+    @property
     def DATABASE_URI(self) -> str:
         return (
             f"postgresql+psycopg2://{self.PG_USER}:{self.PG_PASSWORD}"
             f"@{self.PG_SERVER}:{self.PG_PORT}/{self.PG_DB}"
         )
+
+    @property
+    def CORS_ORIGIN_LIST(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.CORS_ORIGINS.split(",")
+            if origin.strip()
+        ]
 
 
 settings = Settings()  # type: ignore
