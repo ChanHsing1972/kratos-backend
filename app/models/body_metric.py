@@ -19,11 +19,16 @@ class BodyMetric(Base):
     weight_kg: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     target_weight_kg: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     body_fat_percentage: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    # Deprecated: kept for historical records; new data center no longer surfaces this metric.
     skeletal_muscle_mass_kg: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     bmi: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     chest_cm: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     waist_cm: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     hip_cm: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    thigh_cm: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    calf_cm: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    arm_cm: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    # Deprecated: sleep belongs to health_metrics; retained for backward compatibility.
     sleep_hours: Mapped[float | None] = mapped_column(Numeric(4, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

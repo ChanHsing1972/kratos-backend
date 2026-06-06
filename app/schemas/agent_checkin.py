@@ -6,9 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class AgentCheckinBase(BaseModel):
     training_plan_id: int | None = None
-    energy_level: int | None = Field(default=None, ge=1, le=10)
-    sleep_quality: int | None = Field(default=None, ge=1, le=10)
-    soreness_level: int | None = Field(default=None, ge=1, le=10)
+    energy_level: int | None = Field(default=None, ge=1, le=10, json_schema_extra={"deprecated": True})
+    sleep_quality: int | None = Field(default=None, ge=1, le=10, json_schema_extra={"deprecated": True})
+    soreness_level: int | None = Field(default=None, ge=1, le=10, json_schema_extra={"deprecated": True})
     adherence_score: int | None = Field(default=None, ge=1, le=10)
     checkin_date: date | None = None
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
@@ -24,9 +24,9 @@ class AgentCheckinCreate(AgentCheckinBase):
 
 class AgentCheckinUpdate(BaseModel):
     training_plan_id: int | None = None
-    energy_level: int | None = Field(default=None, ge=1, le=10)
-    sleep_quality: int | None = Field(default=None, ge=1, le=10)
-    soreness_level: int | None = Field(default=None, ge=1, le=10)
+    energy_level: int | None = Field(default=None, ge=1, le=10, json_schema_extra={"deprecated": True})
+    sleep_quality: int | None = Field(default=None, ge=1, le=10, json_schema_extra={"deprecated": True})
+    soreness_level: int | None = Field(default=None, ge=1, le=10, json_schema_extra={"deprecated": True})
     adherence_score: int | None = Field(default=None, ge=1, le=10)
     checkin_date: date | None = None
     sleep_hours: float | None = Field(default=None, ge=0, le=24)

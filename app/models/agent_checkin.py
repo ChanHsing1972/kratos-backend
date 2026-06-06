@@ -20,8 +20,11 @@ class AgentCheckin(Base):
         nullable=True,
         index=True,
     )
+    # Deprecated: daily readiness moved to structured health/body metrics.
     energy_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Deprecated: use health_metrics.sleep_hours and notes instead.
     sleep_quality: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Deprecated: use workout notes or health/body metrics instead.
     soreness_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     adherence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     checkin_date: Mapped[date | None] = mapped_column(Date, nullable=True)

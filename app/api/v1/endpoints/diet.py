@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -9,7 +9,7 @@ from app.schemas.diet import (
     FoodImageEstimateResponse,
 )
 from app.services.auth import get_current_user
-from app.services.diet import create_diet_records
+from app.services.diet import create_diet_records, get_recent_diet_records
 from app.services.diet_image_estimator import DietImageEstimatorError, estimate_food_from_image
 
 
@@ -17,6 +17,15 @@ router = APIRouter()
 
 ALLOWED_FOOD_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FOOD_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+@router.get("/records", response_model=list[DietRecordResponse])
+def list_records(
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_recent_diet_records(db, current_user.id, limit=limit)
 
 
 @router.post("/estimate-from-image", response_model=FoodImageEstimateResponse)

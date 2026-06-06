@@ -12,8 +12,30 @@ BODY_METRIC_COLUMN_DDL = {
     "chest_cm": "NUMERIC(5, 2)",
     "waist_cm": "NUMERIC(5, 2)",
     "hip_cm": "NUMERIC(5, 2)",
+    "thigh_cm": "NUMERIC(5, 2)",
+    "calf_cm": "NUMERIC(5, 2)",
+    "arm_cm": "NUMERIC(5, 2)",
     "sleep_hours": "NUMERIC(4, 2)",
     "notes": "TEXT",
+    "measured_at": "TIMESTAMP",
+    "source": "VARCHAR(30) DEFAULT 'manual' NOT NULL",
+    "external_id": "VARCHAR(120)",
+}
+
+HEALTH_METRIC_COLUMN_DDL = {
+    "id": "SERIAL PRIMARY KEY",
+    "user_id": "INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE",
+    "metric_date": "DATE",
+    "sleep_hours": "NUMERIC(4, 2)",
+    "active_kcal": "NUMERIC(8, 1)",
+    "dietary_kcal": "NUMERIC(8, 1)",
+    "hrv_ms": "NUMERIC(6, 2)",
+    "stress_level": "INTEGER",
+    "resting_heart_rate": "INTEGER",
+    "vo2_max": "NUMERIC(5, 2)",
+    "blood_oxygen_percentage": "NUMERIC(5, 2)",
+    "notes": "TEXT",
+    "recorded_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL",
     "measured_at": "TIMESTAMP",
     "source": "VARCHAR(30) DEFAULT 'manual' NOT NULL",
     "external_id": "VARCHAR(120)",
@@ -86,6 +108,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
             ("body_metrics", name, ddl)
             for name, ddl in BODY_METRIC_COLUMN_DDL.items()
             if name not in existing_columns
+        )
+
+    if "health_metrics" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("health_metrics")
+        }
+        missing_columns.extend(
+            ("health_metrics", name, ddl)
+            for name, ddl in HEALTH_METRIC_COLUMN_DDL.items()
+            if name not in existing_columns and name != "id"
         )
 
     if "workout_logs" in table_names:
@@ -180,6 +213,21 @@ def ensure_runtime_schema(engine: Engine) -> None:
         with engine.begin() as connection:
             for table_name, name, ddl in missing_columns:
                 connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+
+    if "health_metrics" not in table_names:
+        columns = ", ".join(
+            f"{name} {ddl}" for name, ddl in HEALTH_METRIC_COLUMN_DDL.items()
+        )
+        with engine.begin() as connection:
+            connection.execute(text(f"CREATE TABLE IF NOT EXISTS health_metrics ({columns})"))
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_health_metrics_user_metric_date "
+                "ON health_metrics (user_id, metric_date)"
+            )
+        )
 
     if "heart_rate_samples" not in table_names:
         with engine.begin() as connection:

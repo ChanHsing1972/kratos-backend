@@ -9,6 +9,7 @@ from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.core.config import settings
 from app.models.agent_checkin import AgentCheckin
 from app.models.body_metric import BodyMetric
+from app.models.health_metric import HealthMetric
 from app.models.user import User
 from app.models.user_profile import UserProfile
 
@@ -23,6 +24,20 @@ BODY_METRIC_FIELDS = {
     "chest_cm",
     "waist_cm",
     "hip_cm",
+    "thigh_cm",
+    "calf_cm",
+    "arm_cm",
+}
+HEALTH_METRIC_FIELDS = {
+    "sleep_hours",
+    "active_kcal",
+    "dietary_kcal",
+    "hrv_ms",
+    "stress_level",
+    "resting_heart_rate",
+    "vo2_max",
+    "blood_oxygen_percentage",
+    "notes",
 }
 CHECKIN_FIELDS = {"energy_level", "sleep_quality", "soreness_level", "sleep_hours", "mood", "pain_notes"}
 PROFILE_FIELDS = {
@@ -64,6 +79,7 @@ def ingest_body_data_from_message(
         return None
 
     metric_fields = pending.get("body_metric") or {}
+    health_fields = pending.get("health_metric") or {}
     checkin_fields = pending.get("checkin") or {}
     profile_fields = pending.get("profile") or {}
 
@@ -87,6 +103,16 @@ def ingest_body_data_from_message(
             )
         )
         persisted["body_metric"] = metric_fields
+
+    if health_fields:
+        db.add(
+            HealthMetric(
+                user_id=user_id,
+                source="chat_confirmation",
+                **health_fields,
+            )
+        )
+        persisted["health_metric"] = health_fields
 
     if checkin_fields:
         db.add(
@@ -160,7 +186,9 @@ def _extract_user_health_data_with_llm(
       equipment_access, injury_history, medical_conditions,
       preferred_workout_types, dietary_habits, dietary_restrictions
     body_metric: height_cm, weight_kg, target_weight_kg, body_fat_percentage,
-      skeletal_muscle_mass_kg, bmi, chest_cm, waist_cm, hip_cm
+      skeletal_muscle_mass_kg, bmi, chest_cm, waist_cm, hip_cm, thigh_cm, calf_cm, arm_cm
+    health_metric: sleep_hours, active_kcal, dietary_kcal, hrv_ms, stress_level,
+      resting_heart_rate, vo2_max, blood_oxygen_percentage, notes
     checkin: energy_level, sleep_quality, soreness_level, sleep_hours, mood, pain_notes
 
     返回格式：
@@ -168,6 +196,7 @@ def _extract_user_health_data_with_llm(
       "pending_health_data": {{
         "profile": {{}},
         "body_metric": {{}},
+        "health_metric": {{}},
         "checkin": {{}}
       }}
     }}
@@ -202,6 +231,7 @@ def _normalize_pending_health_data(payload: dict[str, Any]) -> dict[str, Any] | 
     section_specs = {
         "profile": PROFILE_FIELDS,
         "body_metric": BODY_METRIC_FIELDS,
+        "health_metric": HEALTH_METRIC_FIELDS,
         "checkin": CHECKIN_FIELDS,
     }
     for section, allowed_fields in section_specs.items():
@@ -254,6 +284,27 @@ def _clean_health_value(section: str, key: str, value: Any) -> Any | None:
             return int(number) if number is not None and 1 <= number <= 10 else None
         return str(value)[:500]
 
+    if section == "health_metric":
+        if key == "notes":
+            return str(value)[:500]
+        number = _to_float(value)
+        if number is None:
+            return None
+        bounds = {
+            "sleep_hours": (0, 24),
+            "active_kcal": (0, 10000),
+            "dietary_kcal": (0, 10000),
+            "hrv_ms": (0, 500),
+            "stress_level": (0, 10),
+            "resting_heart_rate": (20, 220),
+            "vo2_max": (0, 100),
+            "blood_oxygen_percentage": (0, 100),
+        }
+        lower, upper = bounds.get(key, (0, 10_000))
+        if lower <= number <= upper:
+            return int(number) if key in {"stress_level", "resting_heart_rate"} else round(float(number), 2)
+        return None
+
     number = _to_float(value)
     if number is None:
         return None
@@ -267,6 +318,9 @@ def _clean_health_value(section: str, key: str, value: Any) -> Any | None:
         "chest_cm": (30, 220),
         "waist_cm": (30, 220),
         "hip_cm": (30, 220),
+        "thigh_cm": (20, 120),
+        "calf_cm": (10, 80),
+        "arm_cm": (10, 80),
     }
     lower, upper = bounds.get(key, (0, 10_000))
     if lower <= number <= upper:
@@ -316,6 +370,9 @@ def _parse_body_metric_data(message: str) -> dict[str, Any]:
         "chest_cm": r"(?:胸围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
         "waist_cm": r"(?:腰围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
         "hip_cm": r"(?:臀围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
+        "thigh_cm": r"(?:大腿围|腿围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
+        "calf_cm": r"(?:小腿围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
+        "arm_cm": r"(?:臂围|手臂围)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米)?",
     }
 
     for key, pattern in patterns.items():

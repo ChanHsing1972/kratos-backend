@@ -9,12 +9,20 @@ class BodyMetricBase(BaseModel):
     weight_kg: float | None = Field(default=None, ge=0, le=500)
     target_weight_kg: float | None = Field(default=None, ge=0, le=500)
     body_fat_percentage: float | None = Field(default=None, ge=0, le=100)
-    skeletal_muscle_mass_kg: float | None = Field(default=None, ge=0, le=500)
+    skeletal_muscle_mass_kg: float | None = Field(
+        default=None,
+        ge=0,
+        le=500,
+        json_schema_extra={"deprecated": True},
+    )
     bmi: float | None = Field(default=None, ge=0, le=100)
     chest_cm: float | None = Field(default=None, ge=0, le=300)
     waist_cm: float | None = Field(default=None, ge=0, le=300)
     hip_cm: float | None = Field(default=None, ge=0, le=300)
-    sleep_hours: float | None = Field(default=None, ge=0, le=24)
+    thigh_cm: float | None = Field(default=None, ge=0, le=300)
+    calf_cm: float | None = Field(default=None, ge=0, le=300)
+    arm_cm: float | None = Field(default=None, ge=0, le=300)
+    sleep_hours: float | None = Field(default=None, ge=0, le=24, json_schema_extra={"deprecated": True})
     notes: str | None = None
     measured_at: datetime | None = None
     source: str = Field(default="manual", max_length=30)
@@ -30,12 +38,20 @@ class BodyMetricUpdate(BaseModel):
     weight_kg: float | None = Field(default=None, ge=0, le=500)
     target_weight_kg: float | None = Field(default=None, ge=0, le=500)
     body_fat_percentage: float | None = Field(default=None, ge=0, le=100)
-    skeletal_muscle_mass_kg: float | None = Field(default=None, ge=0, le=500)
+    skeletal_muscle_mass_kg: float | None = Field(
+        default=None,
+        ge=0,
+        le=500,
+        json_schema_extra={"deprecated": True},
+    )
     bmi: float | None = Field(default=None, ge=0, le=100)
     chest_cm: float | None = Field(default=None, ge=0, le=300)
     waist_cm: float | None = Field(default=None, ge=0, le=300)
     hip_cm: float | None = Field(default=None, ge=0, le=300)
-    sleep_hours: float | None = Field(default=None, ge=0, le=24)
+    thigh_cm: float | None = Field(default=None, ge=0, le=300)
+    calf_cm: float | None = Field(default=None, ge=0, le=300)
+    arm_cm: float | None = Field(default=None, ge=0, le=300)
+    sleep_hours: float | None = Field(default=None, ge=0, le=24, json_schema_extra={"deprecated": True})
     notes: str | None = None
     measured_at: datetime | None = None
     source: str | None = Field(default=None, max_length=30)

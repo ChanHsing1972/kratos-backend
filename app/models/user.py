@@ -46,6 +46,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    health_metrics: Mapped[list["HealthMetric"]] = relationship(
+        "HealthMetric",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     diet_records: Mapped[list["DietRecord"]] = relationship(
         "DietRecord",
         back_populates="user",
