@@ -41,6 +41,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    apple_health_syncs: Mapped[list["AppleHealthSync"]] = relationship(
+        "AppleHealthSync",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     body_metrics: Mapped[list["BodyMetric"]] = relationship(
         "BodyMetric",
         back_populates="user",

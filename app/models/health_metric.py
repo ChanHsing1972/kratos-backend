@@ -16,6 +16,7 @@ class HealthMetric(Base):
         index=True,
     )
     metric_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sleep_hours: Mapped[float | None] = mapped_column(Numeric(4, 2), nullable=True)
     active_kcal: Mapped[float | None] = mapped_column(Numeric(8, 1), nullable=True)
     dietary_kcal: Mapped[float | None] = mapped_column(Numeric(8, 1), nullable=True)

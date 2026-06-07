@@ -26,6 +26,7 @@ HEALTH_METRIC_COLUMN_DDL = {
     "id": "SERIAL PRIMARY KEY",
     "user_id": "INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE",
     "metric_date": "DATE",
+    "steps": "INTEGER",
     "sleep_hours": "NUMERIC(4, 2)",
     "active_kcal": "NUMERIC(8, 1)",
     "dietary_kcal": "NUMERIC(8, 1)",
@@ -66,6 +67,17 @@ AGENT_CHECKIN_COLUMN_DDL = {
     "sleep_hours": "NUMERIC(4, 2)",
     "pain_notes": "TEXT",
     "source": "VARCHAR(30) DEFAULT 'manual' NOT NULL",
+}
+
+APPLE_HEALTH_SYNC_COLUMN_DDL = {
+    "id": "SERIAL PRIMARY KEY",
+    "user_id": "INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE",
+    "source": "VARCHAR(64) NOT NULL",
+    "synced_at": "TIMESTAMPTZ NOT NULL",
+    "daily_summary_json": "JSONB NOT NULL",
+    "workouts_json": "JSONB NOT NULL",
+    "payload_json": "JSONB NOT NULL",
+    "stored_at": "TIMESTAMPTZ NOT NULL",
 }
 
 CONVERSATION_SESSION_COLUMN_DDL = {
@@ -165,6 +177,17 @@ def ensure_runtime_schema(engine: Engine) -> None:
             if name not in existing_columns
         )
 
+    if "apple_health_syncs" in table_names:
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns("apple_health_syncs")
+        }
+        missing_columns.extend(
+            ("apple_health_syncs", name, ddl)
+            for name, ddl in APPLE_HEALTH_SYNC_COLUMN_DDL.items()
+            if name not in existing_columns and name != "id"
+        )
+
     if "agent_runs" in table_names:
         existing_columns = {
             column["name"]
@@ -221,11 +244,24 @@ def ensure_runtime_schema(engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(text(f"CREATE TABLE IF NOT EXISTS health_metrics ({columns})"))
 
+    if "apple_health_syncs" not in table_names:
+        columns = ", ".join(
+            f"{name} {ddl}" for name, ddl in APPLE_HEALTH_SYNC_COLUMN_DDL.items()
+        )
+        with engine.begin() as connection:
+            connection.execute(text(f"CREATE TABLE IF NOT EXISTS apple_health_syncs ({columns})"))
+
     with engine.begin() as connection:
         connection.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_health_metrics_user_metric_date "
                 "ON health_metrics (user_id, metric_date)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_apple_health_syncs_user_synced "
+                "ON apple_health_syncs (user_id, synced_at DESC, id DESC)"
             )
         )
 

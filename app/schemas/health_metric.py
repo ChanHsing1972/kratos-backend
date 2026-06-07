@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class HealthMetricBase(BaseModel):
     metric_date: date | None = None
+    steps: int | None = Field(default=None, ge=0)
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
     active_kcal: float | None = Field(default=None, ge=0)
     dietary_kcal: float | None = Field(default=None, ge=0)
@@ -26,6 +27,7 @@ class HealthMetricCreate(HealthMetricBase):
 
 class HealthMetricUpdate(BaseModel):
     metric_date: date | None = None
+    steps: int | None = Field(default=None, ge=0)
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
     active_kcal: float | None = Field(default=None, ge=0)
     dietary_kcal: float | None = Field(default=None, ge=0)

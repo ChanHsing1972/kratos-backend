@@ -1,6 +1,7 @@
 from app.models.agent_tool import AgentToolConfig
 from app.models.agent_checkin import AgentCheckin
 from app.models.agent_run import AgentRun, AgentTraceStep
+from app.models.apple_health import AppleHealthSync
 from app.models.body_metric import BodyMetric
 from app.models.conversation_session import ConversationSession
 from app.models.diet import DietRecord
@@ -19,6 +20,7 @@ __all__ = [
     "AgentCheckin",
     "AgentRun",
     "AgentTraceStep",
+    "AppleHealthSync",
     "BodyMetric",
     "ConversationSession",
     "DietRecord",

@@ -48,6 +48,43 @@ curl -sS http://127.0.0.1:8000/health
 (win的要去掉 -sS)
 ```
 
+## Apple Health 同步
+
+`sports` iOS App 的 HealthKit 数据现在直接同步到本后端，不再需要单独启动 `sports/app` 或 8001 端口。
+
+1. 先用 Agent 账号登录获取 JWT：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"YOUR_USERNAME","password":"YOUR_PASSWORD"}'
+```
+
+2. 使用 Bearer token 上传 Apple Health 摘要：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/apple-health/sync" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "source": "apple_health",
+    "synced_at": "2026-06-05T12:00:00Z",
+    "daily_summary": {
+      "date": "2026-06-05",
+      "steps": 8500,
+      "active_energy_kcal": 520.5,
+      "latest_heart_rate_bpm": 78,
+      "hrv_sdnn_ms": 45.2,
+      "sleep_minutes": 430,
+      "vo2_max": 42.5,
+      "blood_oxygen_percentage": 97
+    },
+    "workouts": []
+  }'
+```
+
+同步成功后，后端会写入 `apple_health_syncs` 原始同步记录，并 upsert 当前用户同一天的 `health_metrics`，因此 Web 前端和 Agent 上下文会读取到最新健康数据。
+
 ## 测试 Agent
 
 ```bash
