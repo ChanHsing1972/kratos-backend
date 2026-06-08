@@ -10,7 +10,6 @@ from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.core.config import settings
 from app.schemas.diet import FoodEstimateItem, FoodEstimateTotal, FoodImageEstimateResult
 
-
 FOOD_ESTIMATE_WARNING = "该结果为 AI 估算，可能受到拍摄角度、食物遮挡、油量、酱料和份量判断误差影响。"
 
 FOOD_IMAGE_ESTIMATE_PROMPT = f"""
@@ -225,11 +224,7 @@ def _prepare_image_for_model(*, image_bytes: bytes, mime_type: str) -> tuple[byt
 
 def normalize_food_estimate_payload(payload: dict[str, Any]) -> FoodImageEstimateResult:
     raw_items = payload.get("items")
-    items = (
-        [_normalize_item(item) for item in raw_items if isinstance(item, dict)]
-        if isinstance(raw_items, list)
-        else []
-    )
+    items = [_normalize_item(item) for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
     total = _total_from_items(items)
 
     return FoodImageEstimateResult(
@@ -243,9 +238,7 @@ def normalize_food_estimate_payload(payload: dict[str, Any]) -> FoodImageEstimat
 def _normalize_item(item: dict[str, Any]) -> FoodEstimateItem:
     assumptions = item.get("assumptions")
     if isinstance(assumptions, list):
-        normalized_assumptions = [
-            str(value).strip() for value in assumptions if str(value).strip()
-        ]
+        normalized_assumptions = [str(value).strip() for value in assumptions if str(value).strip()]
     elif assumptions:
         normalized_assumptions = [str(assumptions).strip()]
     else:
@@ -321,15 +314,24 @@ def _extract_response_text(response: Any) -> str:
             message = getattr(choice, "message", None)
             if message is None and isinstance(choice, dict):
                 message = choice.get("message")
-            message_content = getattr(message, "content", None)
-            if message_content is None and isinstance(message, dict):
-                message_content = message.get("content")
+
+            # GLM-4.6V: check content first
+            message_content = None
+            if message is not None:
+                message_content = getattr(message, "content", None) if not isinstance(message, dict) else message.get("content")
             if isinstance(message_content, str) and message_content.strip():
                 return message_content
             if isinstance(message_content, list):
                 text_parts = _extract_text_parts(message_content)
                 if text_parts:
                     return "\n".join(text_parts)
+
+            # GLM-4.6V: fallback to reasoning_content
+            reasoning = None
+            if message is not None:
+                reasoning = getattr(message, "reasoning_content", None) if not isinstance(message, dict) else message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning
 
     output = getattr(response, "output", None)
     if isinstance(output, list):

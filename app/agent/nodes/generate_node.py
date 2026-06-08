@@ -34,10 +34,8 @@ class GenerateNode(BaseNode):
         """非流式生成最终回答，并同步更新结构化结果。"""
 
         prompt = self.build_prompt(state)
-        response = self.llm.invoke(
-            self.prompt_input(prompt, state, include_attachments=True)
-        )
-        response_text = self.message_text(response)
+        response = self.llm.invoke(self.prompt_input(prompt, state, include_attachments=True))
+        response_text = self._extract_content(response)
         self.apply_response(state, response, response_text)
         return state
 
@@ -51,13 +49,16 @@ class GenerateNode(BaseNode):
     def stream_response_events(self, state: SessionState):
         """流式生成回答事件，并在结束后落回同一套 `apply_response` 逻辑。"""
 
+        import time
+
+        t0 = time.monotonic()
         prompt = self.build_prompt(state)
         response_text = ""
+        last_chunk = None
 
-        for chunk in self.llm.stream(
-            self.prompt_input(prompt, state, include_attachments=True)
-        ):
-            delta = self.message_text(chunk)
+        for chunk in self.llm.stream(self.prompt_input(prompt, state, include_attachments=True)):
+            last_chunk = chunk
+            delta = self._chunk_delta_text(chunk)
             if not delta:
                 continue
             response_text += delta
@@ -67,15 +68,23 @@ class GenerateNode(BaseNode):
                 "content": delta,
             }
 
+        # If streaming returned empty (GLM thinking model), try the collected content
+        if not response_text.strip() and last_chunk is not None:
+            response_text = self._extract_content(last_chunk)
+
+        elapsed = time.monotonic() - t0
+        self.logger.info(
+            "stream_response_events elapsed=%.2fs response_len=%d model=%s",
+            elapsed,
+            len(response_text),
+            getattr(self.llm, "model_name", "") or "",
+        )
+
         structured_card_pending = self._should_emit_workout_plan(state, response_text)
         if response_text:
             yield {
                 "type": "status",
-                "content": (
-                    "Markdown 回答已生成，正在整理可保存的 AI 周期计划草稿"
-                    if structured_card_pending
-                    else "Markdown 回答已生成，正在完成最终校验"
-                ),
+                "content": ("Markdown 回答已生成，正在整理可保存的 AI 周期计划草稿" if structured_card_pending else "Markdown 回答已生成，正在完成最终校验"),
                 "raw": {
                     "answer_stream_complete": True,
                     "structured_card_pending": structured_card_pending,
@@ -97,12 +106,7 @@ class GenerateNode(BaseNode):
         skill_context = self.describe_active_skills(state)
         supported_exercises = "、".join(list_supported_exercise_names())
 
-        task_results = "\n".join(
-            [
-                f"- {task.name} [{task.status}]: {task.result or task.error or '无结果'}"
-                for task in tasks
-            ]
-        )
+        task_results = "\n".join([f"- {task.name} [{task.status}]: {task.result or task.error or '无结果'}" for task in tasks])
         memory_context = json.dumps(
             {
                 "long_term": state.memory.long_term_memory.model_dump(),
@@ -228,9 +232,7 @@ class GenerateNode(BaseNode):
                 if parsed_diet is not None:
                     state.result.diet_plan = parsed_diet
 
-            if state.result.workout_plan is None and isinstance(task.result, dict) and any(
-                keyword in combined_text for keyword in ["训练", "健身", "动作", "workout"]
-            ):
+            if state.result.workout_plan is None and isinstance(task.result, dict) and any(keyword in combined_text for keyword in ["训练", "健身", "动作", "workout"]):
                 parsed_workout = self._build_workout_plan_result(task.result, source, state.reasoning.intent)
                 if parsed_workout is not None:
                     state.result.workout_plan = parsed_workout
@@ -274,11 +276,7 @@ class GenerateNode(BaseNode):
         ]
         source = ResultSource(
             task_ids=[task.task_id for task in state.reasoning.tasks],
-            tool_names=[
-                tool_call.name
-                for task in state.reasoning.tasks
-                for tool_call in task.tool_calls
-            ],
+            tool_names=[tool_call.name for task in state.reasoning.tasks for tool_call in task.tool_calls],
             summary="strict workout_plan JSON",
         )
         supported_exercises = "、".join(list_supported_exercise_names())
@@ -381,11 +379,7 @@ class GenerateNode(BaseNode):
             diet_plan = content.get("diet_plan") or {}
             profile_summary = DietPlanProfileSummary(**(diet_plan.get("profile_summary") or {}))
             nutrition_targets = GenerateNode._build_nutrition_targets(diet_plan.get("nutrition_targets") or {})
-            meals = [
-                GenerateNode._build_meal(item)
-                for item in (diet_plan.get("meals") or [])
-                if isinstance(item, dict)
-            ]
+            meals = [GenerateNode._build_meal(item) for item in (diet_plan.get("meals") or []) if isinstance(item, dict)]
             tips = [str(item) for item in (diet_plan.get("tips") or []) if str(item).strip()]
             return DietPlanResult(
                 profile_summary=profile_summary,
@@ -488,9 +482,7 @@ class GenerateNode(BaseNode):
             if not sessions:
                 return None
             requested_plan_kind = str(content.get("plan_kind") or "").strip().lower()
-            plan_kind = requested_plan_kind if requested_plan_kind in {"daily", "program"} else (
-                "program" if len(sessions) > 1 else "daily"
-            )
+            plan_kind = requested_plan_kind if requested_plan_kind in {"daily", "program"} else ("program" if len(sessions) > 1 else "daily")
             plan = WorkoutPlanResult(
                 title=session_title,
                 goal=str(content.get("goal") or goal) if (content.get("goal") or goal) else None,
@@ -524,18 +516,9 @@ class GenerateNode(BaseNode):
         if plan_data is None:
             return None
 
-        raw_main_training = (
-            plan_data.get("主训练")
-            or plan_data.get("main_training")
-            or plan_data.get("exercises")
-            or plan_data.get("动作")
-        )
+        raw_main_training = plan_data.get("主训练") or plan_data.get("main_training") or plan_data.get("exercises") or plan_data.get("动作")
         raw_exercises = raw_main_training if isinstance(raw_main_training, list) else []
-        exercises = [
-            exercise
-            for item in raw_exercises
-            if (exercise := GenerateNode._build_structured_exercise(item)) is not None
-        ]
+        exercises = [exercise for item in raw_exercises if (exercise := GenerateNode._build_structured_exercise(item)) is not None]
         if not exercises:
             return None
 
@@ -624,10 +607,7 @@ class GenerateNode(BaseNode):
 
     @staticmethod
     def _is_daily_request(user_text: str) -> bool:
-        return any(
-            keyword in str(user_text or "")
-            for keyword in ["今日", "今天", "本次", "一次", "单次", "今晚", "上午", "下午"]
-        )
+        return any(keyword in str(user_text or "") for keyword in ["今日", "今天", "本次", "一次", "单次", "今晚", "上午", "下午"])
 
     @staticmethod
     def _coerce_daily_plan(plan: WorkoutPlanResult) -> None:
@@ -637,11 +617,7 @@ class GenerateNode(BaseNode):
             return
 
         primary = next(
-            (
-                session
-                for session in plan.sessions
-                if not GenerateNode._is_guidance_line(f"{session.title} {session.focus or ''}")
-            ),
+            (session for session in plan.sessions if not GenerateNode._is_guidance_line(f"{session.title} {session.focus or ''}")),
             plan.sessions[0],
         )
         guidance_notes: list[str] = []
@@ -649,19 +625,12 @@ class GenerateNode(BaseNode):
             if session is primary:
                 guidance_notes.extend(session.notes)
                 continue
-            exercise_text = "；".join(
-                GenerateNode._format_exercise_note(exercise)
-                for exercise in session.exercises
-            )
+            exercise_text = "；".join(GenerateNode._format_exercise_note(exercise) for exercise in session.exercises)
             if exercise_text:
                 guidance_notes.append(f"{session.title}：{exercise_text}")
             guidance_notes.extend(session.notes)
 
-        primary.exercises = [
-            exercise
-            for exercise in primary.exercises
-            if not GenerateNode._is_guidance_line(exercise.name)
-        ]
+        primary.exercises = [exercise for exercise in primary.exercises if not GenerateNode._is_guidance_line(exercise.name)]
         for exercise in primary.exercises:
             exercise.name = display_exercise_name(exercise.name)
         primary.title = GenerateNode._infer_session_title(primary.exercises)
@@ -866,11 +835,7 @@ class GenerateNode(BaseNode):
 
     @staticmethod
     def _precautions_from_text(content: str) -> list[str]:
-        return [
-            line.strip("-•| ")
-            for line in content.splitlines()
-            if any(keyword in line for keyword in ["注意", "避免", "热身", "拉伸", "疼痛", "头晕"])
-        ]
+        return [line.strip("-•| ") for line in content.splitlines() if any(keyword in line for keyword in ["注意", "避免", "热身", "拉伸", "疼痛", "头晕"])]
 
     @staticmethod
     def _is_guidance_line(line: str) -> bool:

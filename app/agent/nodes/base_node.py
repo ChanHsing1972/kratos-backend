@@ -1,6 +1,7 @@
 """Agent 节点基类与通用 prompt 辅助函数。"""
 
 import logging
+import time
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -20,6 +21,31 @@ class BaseNode:
         self.llm = llm
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
+    def _extract_content(self, response: Any) -> str:
+        """Extract text from LLM response, handling GLM-4.6V reasoning_content."""
+
+        # Standard content
+        content = getattr(response, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content
+
+        # GLM-4.6V puts thinking in reasoning_content, final answer in content
+        reasoning = getattr(response, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+
+        # Check additional_kwargs
+        addl = getattr(response, "additional_kwargs", {}) if hasattr(response, "additional_kwargs") else {}
+        if isinstance(addl, dict):
+            rc = addl.get("reasoning_content")
+            if isinstance(rc, str) and rc.strip():
+                return rc
+
+        # Fallback: str(response)
+        if isinstance(content, str):
+            return content
+        return str(response)
+
     def __call__(self, state: SessionState) -> SessionState:
         """处理并返回会话状态；子类必须实现。"""
 
@@ -36,10 +62,16 @@ class BaseNode:
             LLM 调用异常或 JSON 解析异常会向上传递，由节点决定兜底策略。
         """
 
-        response = self.llm.invoke(self.prompt_input(prompt, state))
-        content = getattr(response, "content", response)
-        if not isinstance(content, str):
-            content = str(content)
+        t0 = time.monotonic()
+        response = self.llm.invoke(self.prompt_input(prompt, state, include_attachments=True))
+        content = self._extract_content(response)
+        elapsed = time.monotonic() - t0
+        self.logger.info(
+            "invoke_json elapsed=%.2fs content_len=%d model=%s",
+            elapsed,
+            len(content),
+            getattr(self.llm, "model_name", "") or "",
+        )
         return parse_json_object(content)
 
     def prompt_input(
@@ -51,11 +83,7 @@ class BaseNode:
     ):
         """根据最近用户附件决定返回纯文本 prompt 或多模态 HumanMessage。"""
 
-        attachment_parts = (
-            self.latest_attachment_parts(state)
-            if include_attachments and state
-            else []
-        )
+        attachment_parts = self.latest_attachment_parts(state) if include_attachments and state else []
         if not attachment_parts:
             return prompt
         return [HumanMessage(content=[{"type": "text", "text": prompt}, *attachment_parts])]
@@ -89,11 +117,7 @@ class BaseNode:
                     parts.append("[用户上传了一张图片]")
                 elif item_type == "file":
                     file_info = item.get("file")
-                    filename = (
-                        file_info.get("filename")
-                        if isinstance(file_info, dict)
-                        else None
-                    )
+                    filename = file_info.get("filename") if isinstance(file_info, dict) else None
                     parts.append(f"[用户上传了文件：{filename or '未命名文件'}]")
             return "\n".join(part for part in parts if part)
         return str(content)
@@ -110,12 +134,43 @@ class BaseNode:
             content = getattr(message, "content", None)
             if not isinstance(content, list):
                 return []
-            return [
-                item
-                for item in content
-                if isinstance(item, dict) and item.get("type") in {"image_url", "file"}
-            ]
+            return [item for item in content if isinstance(item, dict) and item.get("type") in {"image_url", "file"}]
         return []
+
+    @staticmethod
+    def _chunk_delta_text(chunk: Any) -> str:
+        """Extract delta text from streaming chunk, handling GLM-4.6V reasoning_content."""
+
+        # Standard streaming delta
+        delta = getattr(chunk, "content", None)
+        if isinstance(delta, str) and delta.strip():
+            return delta
+
+        # GLM-4.6V may stream reasoning_content instead
+        reasoning = getattr(chunk, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+
+        addl = getattr(chunk, "additional_kwargs", {}) if hasattr(chunk, "additional_kwargs") else {}
+        if isinstance(addl, dict):
+            rc = addl.get("reasoning_content")
+            if isinstance(rc, str) and rc.strip():
+                return rc
+
+        # Handle AIMessageChunk
+        if hasattr(chunk, "content_blocks") and callable(getattr(chunk, "content_blocks", None)):
+            try:
+                blocks = chunk.content_blocks
+                if blocks:
+                    for block in blocks:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            t = block.get("text", "")
+                            if t.strip():
+                                return t
+            except Exception:
+                pass
+
+        return ""
 
     @staticmethod
     def describe_tools(tools: dict[str, Any]) -> list[dict[str, Any]]:
@@ -142,9 +197,7 @@ class BaseNode:
         if not state.active_skills:
             return "未启用 Skill。"
 
-        sections = [
-            "Skill 是 Markdown/YAML 描述的领域能力包，只改变 Agent 的行为策略、提示片段、输出格式和工具范围，不直接执行代码。"
-        ]
+        sections = ["Skill 是 Markdown/YAML 描述的领域能力包，只改变 Agent 的行为策略、提示片段、输出格式和工具范围，不直接执行代码。"]
         for skill in state.active_skills:
             parts = [f"## {skill.name}"]
             if skill.applicable_scenarios:

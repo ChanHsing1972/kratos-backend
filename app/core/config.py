@@ -8,7 +8,6 @@ from pathlib import Path
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = BASE_DIR / ".env"
 ENV_EXAMPLE_FILE = BASE_DIR / ".env.example"
@@ -55,13 +54,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Kratos Agent Backend"
     API_V1_STR: str = "/api/v1"
     CORS_ORIGINS: str = (
-        "http://localhost:5173,"
-        "http://127.0.0.1:5173,"
-        "http://localhost:5174,"
-        "http://127.0.0.1:5174,"
-        "http://localhost:3000,"
-        "http://127.0.0.1:3000,"
-        "http://192.0.2.1"
+        "http://localhost:5173," "http://127.0.0.1:5173," "http://localhost:5174," "http://127.0.0.1:5174," "http://localhost:3000," "http://127.0.0.1:3000," "http://192.0.2.1"
     )
     CORS_ALLOW_ORIGIN_REGEX: str = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 
@@ -79,8 +72,8 @@ class Settings(BaseSettings):
     AGENT_LLM_MODEL: str = "qwen-turbo"
     AGENT_LLM_API_KEY: str | None = None
     AGENT_LLM_TEMPERATURE: float = 0.5
-    AGENT_LLM_TIMEOUT_SECONDS: int = 60
-    AGENT_LLM_MAX_RETRIES: int = 2
+    AGENT_LLM_TIMEOUT_SECONDS: int = 120
+    AGENT_LLM_MAX_RETRIES: int = 0
     AGENT_CHAT_RATE_LIMIT_COUNT: int = 8
     AGENT_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
     TAVILY_API_KEY: str | None = None
@@ -90,9 +83,9 @@ class Settings(BaseSettings):
     FOOD_VISION_API_KEY: str | None = None
     FOOD_VISION_BASE_URL: str | None = None
     FOOD_VISION_MODEL: str | None = None
-    FOOD_VISION_TIMEOUT_SECONDS: int = 25
+    FOOD_VISION_TIMEOUT_SECONDS: int = 120
     FOOD_VISION_MAX_RETRIES: int = 0
-    FOOD_VISION_MAX_OUTPUT_TOKENS: int = 900
+    FOOD_VISION_MAX_OUTPUT_TOKENS: int = 4096
 
     MUSCLEWIKI_API_BASE_URL: str = "https://api.musclewiki.com"
     MUSCLEWIKI_API_KEY: str | None = None
@@ -167,18 +160,11 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URI(self) -> str:
-        return (
-            f"postgresql+psycopg2://{self.PG_USER}:{self.PG_PASSWORD}"
-            f"@{self.PG_SERVER}:{self.PG_PORT}/{self.PG_DB}"
-        )
+        return f"postgresql+psycopg2://{self.PG_USER}:{self.PG_PASSWORD}" f"@{self.PG_SERVER}:{self.PG_PORT}/{self.PG_DB}"
 
     @property
     def CORS_ORIGIN_LIST(self) -> list[str]:
-        return [
-            origin.strip()
-            for origin in self.CORS_ORIGINS.split(",")
-            if origin.strip()
-        ]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
 
 settings = Settings()  # type: ignore

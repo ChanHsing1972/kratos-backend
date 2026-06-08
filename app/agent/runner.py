@@ -4,6 +4,8 @@
 `AgentRunner`，避免两套流程在节点顺序、反思重规划或最终状态生成上分叉。
 """
 
+import logging
+import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -18,6 +20,8 @@ from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.state.session_state import SessionState
+
+_logger = logging.getLogger(__name__)
 
 
 AfterNodeCallback = Callable[[str, SessionState], Iterable[dict[str, Any]]]
@@ -99,11 +103,19 @@ class AgentRunner:
 
         step_count = 0
 
+        t_run_start = time.monotonic()
+        user_id = getattr(state, "user_id", "unknown")
+        session_id = state.session_id
+
+        t0 = time.monotonic()
         state = self.nodes.intent(state)
+        _log_node_time("intent", t0, user_id, session_id)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("intent", state, after_node)
 
+        t0 = time.monotonic()
         state = self.nodes.plan(state)
+        _log_node_time("plan", t0, user_id, session_id)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("plan", state, after_node)
 
@@ -111,7 +123,9 @@ class AgentRunner:
 
         while state.reasoning.replan_count <= state.reasoning.max_replans:
             while True:
+                t0 = time.monotonic()
                 state = self.nodes.reason(state)
+                _log_node_time("reason", t0, user_id, session_id)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("reason", state, after_node)
 
@@ -120,12 +134,16 @@ class AgentRunner:
                     break
 
                 if task.status == TaskStatus.waiting_for_tool:
+                    t0 = time.monotonic()
                     state = self.nodes.act(state)
+                    _log_node_time("act", t0, user_id, session_id)
                     step_count = self._check_step_budget(step_count)
                     yield from self._after_node("act", state, after_node)
                     continue
 
+                t0 = time.monotonic()
                 state = self.nodes.finish(state)
+                _log_node_time("finish", t0, user_id, session_id)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("finish", state, after_node)
 
@@ -140,12 +158,16 @@ class AgentRunner:
                 for generated_event in self.nodes.generate.stream_response_events(state):
                     yield generated_event
             else:
+                t0 = time.monotonic()
                 state = self.nodes.generate(state)
+                _log_node_time("generate", t0, user_id, session_id)
             step_count = self._check_step_budget(step_count)
             final_generated = True
             yield from self._after_node("generate", state, after_node)
 
+            t0 = time.monotonic()
             state = self.nodes.reflect(state)
+            _log_node_time("reflect", t0, user_id, session_id)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("reflect", state, after_node)
 
@@ -175,9 +197,19 @@ class AgentRunner:
                 "raw": state.result.model_dump(mode="json"),
             }
 
-        self.nodes.end(state)
+        t_end = self.nodes.end(state)
+        _log_node_time("end", time.monotonic() - 0.001, user_id, session_id)  # approximate
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("end", state, after_node)
+
+        total_elapsed = time.monotonic() - t_run_start
+        _logger.info(
+            "AGENT_RUN_COMPLETE user_id=%s session_id=%s total_elapsed=%.2fs node_count=%d",
+            user_id,
+            session_id,
+            total_elapsed,
+            step_count,
+        )
 
     def _check_step_budget(self, current: int) -> int:
         """限制最大节点步数，防止重规划或状态异常导致死循环。"""
@@ -215,3 +247,14 @@ class AgentRunner:
         if after_node is None:
             return
         yield from after_node(node_name, state)
+
+
+def _log_node_time(node_name: str, start_time: float, user_id: str, session_id: str) -> None:
+    elapsed = time.monotonic() - start_time
+    _logger.info(
+        "AGENT_NODE_TIMING node=%s elapsed=%.2fs user_id=%s session_id=%s",
+        node_name,
+        elapsed,
+        user_id,
+        session_id,
+    )
