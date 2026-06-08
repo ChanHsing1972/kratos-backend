@@ -16,12 +16,7 @@ from app.schemas.training_plan import TrainingPlanCreate, TrainingPlanUpdate
 
 
 def get_training_plans_by_user_id(db: Session, user_id: int) -> list[TrainingPlan]:
-    return (
-        db.query(TrainingPlan)
-        .filter(TrainingPlan.user_id == user_id)
-        .order_by(TrainingPlan.created_at.desc())
-        .all()
-    )
+    return db.query(TrainingPlan).filter(TrainingPlan.user_id == user_id).order_by(TrainingPlan.created_at.desc()).all()
 
 
 def get_training_plan_by_id(
@@ -29,11 +24,7 @@ def get_training_plan_by_id(
     plan_id: int,
     user_id: int,
 ) -> TrainingPlan | None:
-    return (
-        db.query(TrainingPlan)
-        .filter(TrainingPlan.id == plan_id, TrainingPlan.user_id == user_id)
-        .first()
-    )
+    return db.query(TrainingPlan).filter(TrainingPlan.id == plan_id, TrainingPlan.user_id == user_id).first()
 
 
 def create_training_plan(
@@ -54,7 +45,7 @@ def update_training_plan(
     plan: TrainingPlan,
     plan_in: TrainingPlanUpdate,
 ) -> TrainingPlan:
-    for field, value in _normalize_plan_payload(plan_in.to_update_dict()).items():
+    for field, value in _normalize_plan_payload(plan_in.to_update_dict(), existing_plan_kind=plan.plan_kind).items():
         setattr(plan, field, value)
     if plan.status == "active":
         return activate_training_plan(db, plan)
@@ -84,19 +75,15 @@ def activate_training_plan(
     return plan
 
 
-def _normalize_plan_payload(data: dict) -> dict:
+def _normalize_plan_payload(data: dict, *, existing_plan_kind: str | None = None) -> dict:
     normalized = dict(data)
     schedule_text = normalized.get("weekly_schedule")
     if normalized.get("schedule_json") is None and schedule_text:
         schedule_json = _schedule_json_from_text(schedule_text)
         if schedule_json:
             normalized["schedule_json"] = schedule_json
-    if "plan_kind" not in normalized and schedule_text:
-        normalized["plan_kind"] = (
-            "daily"
-            if len([line for line in schedule_text.splitlines() if line.strip()]) == 1
-            else "program"
-        )
+    if "plan_kind" not in normalized and schedule_text and existing_plan_kind is None:
+        normalized["plan_kind"] = "daily" if len([line for line in schedule_text.splitlines() if line.strip()]) == 1 else "program"
     return normalized
 
 
@@ -173,18 +160,8 @@ def progression_guidance_from_history(
 ) -> tuple[str | None, bool]:
     latest = recent_logs[0] if recent_logs else None
     latest_rpe = latest.perceived_exertion if latest is not None else None
-    set_pain = any(
-        getattr(set_log, "pain_notes", None)
-        for log in recent_logs[:2]
-        for exercise in getattr(log, "exercises", [])
-        for set_log in getattr(exercise, "sets", [])
-    )
-    safety_stop = bool(
-        pain_notes
-        or set_pain
-        or (soreness_level is not None and soreness_level >= 7)
-        or (latest_rpe is not None and latest_rpe >= 9)
-    )
+    set_pain = any(getattr(set_log, "pain_notes", None) for log in recent_logs[:2] for exercise in getattr(log, "exercises", []) for set_log in getattr(exercise, "sets", []))
+    safety_stop = bool(pain_notes or set_pain or (soreness_level is not None and soreness_level >= 7) or (latest_rpe is not None and latest_rpe >= 9))
     if safety_stop:
         return (
             "安全门触发：存在疼痛、高酸痛或 RPE 较高信号；不得建议加量，后续应停止相关刺激并优先降级评估。",
@@ -200,17 +177,13 @@ def progression_guidance_from_history(
     for exercise in getattr(recent_logs[0], "exercises", []):
         if not exercise.completed:
             continue
-        if any(
-            previous.completed and previous.name == exercise.name
-            for previous in getattr(recent_logs[1], "exercises", [])
-        ):
+        if any(previous.completed and previous.name == exercise.name for previous in getattr(recent_logs[1], "exercises", [])):
             completed_names.append(exercise.name)
     if not completed_names:
         return None, False
 
     return (
-        f"渐进规则命中：{'、'.join(completed_names)}最近两次均完成，最新 RPE 不高于 8 且酸痛不高；"
-        "仅可建议下次小幅增加 2.5-5% 负重或增加 1 组，并继续观察恢复。",
+        f"渐进规则命中：{'、'.join(completed_names)}最近两次均完成，最新 RPE 不高于 8 且酸痛不高；" "仅可建议下次小幅增加 2.5-5% 负重或增加 1 组，并继续观察恢复。",
         False,
     )
 
@@ -271,9 +244,7 @@ def _build_training_guidance_prompt(
     checkin_snapshot = None
     if latest_checkin is not None:
         checkin_snapshot = {
-            "checkin_date": latest_checkin.checkin_date.isoformat()
-            if getattr(latest_checkin, "checkin_date", None)
-            else None,
+            "checkin_date": latest_checkin.checkin_date.isoformat() if getattr(latest_checkin, "checkin_date", None) else None,
             "sleep_hours": latest_checkin.sleep_hours,
             "soreness_level": latest_checkin.soreness_level,
             "energy_level": latest_checkin.energy_level,

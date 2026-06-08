@@ -7,45 +7,15 @@ from app.agent.quality import validate_agent_result
 class ReflectNode(BaseNode):
     """结合确定性规则和 LLM 反思判断最终回答是否可交付。
 
-    确定性规则优先，因为它们覆盖项目已知硬约束；只有硬规则通过后才调用 LLM
-    做更宽泛的质量判断。
+    确定性规则优先并覆盖项目已知硬约束（疼痛安全、工具失败披露、空回复、
+    年龄/时间混淆、缺少动作）。当确定性检查全部通过时跳过 LLM 调用以节约
+    一次请求延迟。
     """
 
     def __call__(self, state):
         """更新反思结果、最终回答可交付标记和是否需要重规划。"""
 
         response = state.result.response
-        user_message = self.latest_user_text(state)
-        task_results = [
-            {
-                "name": task.name,
-                "status": task.status,
-                "result": task.result,
-                "error": task.error,
-            }
-            for task in state.reasoning.tasks
-        ]
-
-        prompt = f"""
-        你是健身 Agent 的质量检查器。
-        请判断最终回复是否充分回答用户问题，是否存在明显事实错误、工具失败未说明、计划不可执行或安全风险。
-
-        用户问题:
-        {user_message}
-
-        子任务结果:
-        {task_results}
-
-        最终回复:
-        {response}
-
-        严格输出一个 JSON 对象，不要 Markdown：
-        {{
-            "is_pass": true,
-            "suggestions": []
-        }}
-        """
-
         deterministic_suggestions = validate_agent_result(state)
         if deterministic_suggestions:
             data = {
@@ -54,15 +24,16 @@ class ReflectNode(BaseNode):
                 "source": "deterministic_quality_gate",
             }
         else:
-            try:
-                data = self.invoke_json(prompt, state)
-            except Exception as exc:  # noqa: BLE001
-                self.logger.warning("Reflection LLM failed: %s", exc)
-                data = {
-                    "is_pass": True,
-                    "suggestions": [],
-                    "source": "reflection_fallback",
-                }
+            # Deterministic checks passed — skip the LLM reflection to save one
+            # round-trip.  Deterministic rules already cover the project's hard
+            # constraints (pain safety, tool-failure disclosure, empty responses,
+            # age/time confusion, missing exercises).  Broader semantic quality is
+            # enforced by the GenerateNode prompt itself.
+            data = {
+                "is_pass": True,
+                "suggestions": [],
+                "source": "deterministic_pass_skip_llm",
+            }
 
         is_pass = bool(data.get("is_pass", data.get("is_PASS", True)))
         suggestions = [str(item) for item in (data.get("suggestions") or []) if str(item).strip()]
@@ -75,9 +46,7 @@ class ReflectNode(BaseNode):
         state.result.final_answer_ready = bool(response) and is_pass
         state.result.touch()
 
-        state.reasoning.need_replan = (
-            not is_pass and state.reasoning.replan_count < state.reasoning.max_replans
-        )
+        state.reasoning.need_replan = not is_pass and state.reasoning.replan_count < state.reasoning.max_replans
         if state.reasoning.need_replan:
             state.reasoning.replan_count += 1
 
