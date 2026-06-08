@@ -21,7 +21,6 @@ from app.models.user_profile import UserProfile
 from app.models.workout_log import WorkoutExerciseLog, WorkoutLog
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
 
-
 PROFILE_REQUIRED_FIELDS = (
     "age",
     "fitness_goal",
@@ -82,24 +81,11 @@ def load_fitness_context(db: Session, user: User, limit: int = 240) -> FitnessCo
         .all()
     )
     recent_diet_records = (
-        db.query(DietRecord)
-        .filter(DietRecord.user_id == user.id)
-        .order_by(DietRecord.meal_date.desc(), DietRecord.created_at.desc(), DietRecord.id.desc())
-        .limit(50)
-        .all()
+        db.query(DietRecord).filter(DietRecord.user_id == user.id).order_by(DietRecord.meal_date.desc(), DietRecord.created_at.desc(), DietRecord.id.desc()).limit(50).all()
     )
-    recent_checkins = (
-        db.query(AgentCheckin)
-        .filter(AgentCheckin.user_id == user.id)
-        .order_by(AgentCheckin.created_at.desc(), AgentCheckin.id.desc())
-        .limit(limit)
-        .all()
-    )
+    recent_checkins = db.query(AgentCheckin).filter(AgentCheckin.user_id == user.id).order_by(AgentCheckin.created_at.desc(), AgentCheckin.id.desc()).limit(limit).all()
     active_plan = (
-        db.query(TrainingPlan)
-        .filter(TrainingPlan.user_id == user.id, TrainingPlan.status == "active")
-        .order_by(TrainingPlan.updated_at.desc(), TrainingPlan.id.desc())
-        .first()
+        db.query(TrainingPlan).filter(TrainingPlan.user_id == user.id, TrainingPlan.status == "active").order_by(TrainingPlan.updated_at.desc(), TrainingPlan.id.desc()).first()
     )
     latest_body_metric = recent_body_metrics[0] if recent_body_metrics else None
     latest_health_metric = recent_health_metrics[0] if recent_health_metrics else None
@@ -126,16 +112,8 @@ def build_onboarding_status(
 ) -> OnboardingStatus:
     """根据资料完整度生成 Agent 可读的 onboarding 状态。"""
 
-    missing_profile_fields = [
-        field
-        for field in PROFILE_REQUIRED_FIELDS
-        if profile is None or _is_empty(getattr(profile, field, None))
-    ]
-    missing_body_metric_fields = [
-        field
-        for field in BODY_REQUIRED_FIELDS
-        if latest_body_metric is None or _is_empty(getattr(latest_body_metric, field, None))
-    ]
+    missing_profile_fields = [field for field in PROFILE_REQUIRED_FIELDS if profile is None or _is_empty(getattr(profile, field, None))]
+    missing_body_metric_fields = [field for field in BODY_REQUIRED_FIELDS if latest_body_metric is None or _is_empty(getattr(latest_body_metric, field, None))]
 
     next_steps: list[str] = []
     if missing_profile_fields:
@@ -210,16 +188,8 @@ def hydrate_agent_memory(state: SessionState, context: FitnessContextResponse) -
         physical.sleep_hours = _to_float(context.latest_health_metric.sleep_hours)
 
     if context.recent_workout_logs:
-        mid_term.completions = [
-            log.id
-            for log in context.recent_workout_logs
-            if log.completed
-        ]
-        mid_term.training_feedbacks = [
-            log.notes
-            for log in context.recent_workout_logs
-            if log.notes
-        ][:5]
+        mid_term.completions = [log.id for log in context.recent_workout_logs if log.completed]
+        mid_term.training_feedbacks = [log.notes for log in context.recent_workout_logs if log.notes][:5]
 
     if context.active_plan is not None:
         mid_term.train_id = context.active_plan.id
@@ -233,6 +203,9 @@ def hydrate_agent_memory(state: SessionState, context: FitnessContextResponse) -
                 "recovery_guidance": context.active_plan.recovery_guidance,
             }
         ]
+
+    if context.recent_diet_records:
+        mid_term.daily_diet = [f"{record.name}（{record.meal_date}，约{record.estimated_kcal:.0f}千卡）" for record in context.recent_diet_records]
 
 
 def context_for_prompt(context: FitnessContextResponse) -> dict[str, Any]:
