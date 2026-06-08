@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import re
 import zipfile
 from pathlib import Path
@@ -11,6 +12,13 @@ from xml.etree import ElementTree
 from fastapi import UploadFile
 
 import oss2
+
+try:
+    from PIL import Image
+    from PIL import ImageOps
+except Exception:  # pragma: no cover - optional runtime dependency fallback
+    Image = None
+    ImageOps = None
 
 from app.core.config import BASE_DIR, settings
 
@@ -50,6 +58,9 @@ DOCX_ATTACHMENT_TYPE = "application/vnd.openxmlformats-officedocument.wordproces
 XLSX_ATTACHMENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PDF_ATTACHMENT_TYPE = "application/pdf"
 ATTACHMENT_TEXT_PREVIEW_CHARS = 12_000
+AGENT_IMAGE_MAX_EDGE_PX = 1024
+AGENT_IMAGE_JPEG_QUALITY = 72
+AGENT_IMAGE_TARGET_BYTES = 450 * 1024
 
 
 def is_allowed_upload(file: UploadFile, allowed_types: set[str]) -> bool:
@@ -166,12 +177,29 @@ def build_agent_attachment_parts(
         filename = str(attachment.get("filename") or "attachment")
         content_type = str(attachment.get("content_type") or "application/octet-stream")
         inline_data_url = str(attachment.get("data_url") or "")
-        if content_type.startswith("image/") and inline_data_url.startswith("data:image/"):
-            parts.append({"type": "image_url", "image_url": {"url": inline_data_url}})
-            continue
 
         url = str(attachment.get("url") or "")
         file_path = resolve_upload_url_for_user(user_id=user_id, url=url)
+        if content_type.startswith("image/"):
+            image_data_url = None
+            if file_path is not None and file_path.is_file():
+                image_data_url = image_data_url_for_agent(
+                    file_path.read_bytes(),
+                    content_type,
+                )
+            if image_data_url is None and inline_data_url.startswith("data:image/"):
+                image_data_url = image_data_url_from_inline(inline_data_url)
+            if image_data_url is not None:
+                parts.append({"type": "image_url", "image_url": {"url": image_data_url}})
+            else:
+                parts.append(
+                    {
+                        "type": "text",
+                        "text": f"图片附件 {filename} 暂时无法压缩读取，请根据文件名和用户描述回答。",
+                    }
+                )
+            continue
+
         if file_path is None or not file_path.is_file():
             parts.append(
                 {
@@ -183,10 +211,6 @@ def build_agent_attachment_parts(
 
         content = file_path.read_bytes()
         data_url = _data_url(content_type, content)
-        if content_type.startswith("image/"):
-            parts.append({"type": "image_url", "image_url": {"url": data_url}})
-            continue
-
         parts.append(
             {
                 "type": "file",
@@ -249,6 +273,55 @@ def extract_attachment_text_preview(
 def _data_url(content_type: str, content: bytes) -> str:
     encoded = base64.b64encode(content).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
+
+def image_data_url_for_agent(content: bytes, content_type: str = "image/jpeg") -> str | None:
+    compressed = _compress_image_for_agent(content)
+    if compressed is None:
+        return (
+            _data_url(content_type, content)
+            if len(content) <= AGENT_IMAGE_TARGET_BYTES
+            else None
+        )
+    return _data_url("image/jpeg", compressed)
+
+
+def image_data_url_from_inline(data_url: str) -> str | None:
+    match = re.fullmatch(r"data:(image/[^;]+);base64,(.+)", data_url, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        content = base64.b64decode(match.group(2), validate=True)
+    except ValueError:
+        return None
+    return image_data_url_for_agent(content, match.group(1))
+
+
+def _compress_image_for_agent(content: bytes) -> bytes | None:
+    if Image is None or ImageOps is None:
+        return None
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            image = ImageOps.exif_transpose(image)
+            image.thumbnail((AGENT_IMAGE_MAX_EDGE_PX, AGENT_IMAGE_MAX_EDGE_PX))
+            if image.mode in {"RGBA", "LA"}:
+                background = Image.new("RGB", image.size, "white")
+                alpha = image.getchannel("A")
+                background.paste(image, mask=alpha)
+                image = background
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+
+            for quality in (AGENT_IMAGE_JPEG_QUALITY, 64, 56, 48):
+                output = BytesIO()
+                image.save(output, format="JPEG", quality=quality, optimize=True)
+                value = output.getvalue()
+                if len(value) <= AGENT_IMAGE_TARGET_BYTES or quality == 48:
+                    return value
+    except Exception:
+        return None
+    return None
 
 
 def _decode_text(content: bytes) -> str:

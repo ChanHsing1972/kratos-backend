@@ -34,7 +34,9 @@ class GenerateNode(BaseNode):
         """非流式生成最终回答，并同步更新结构化结果。"""
 
         prompt = self.build_prompt(state)
-        response = self.llm.invoke(self.prompt_input(prompt, state))
+        response = self.llm.invoke(
+            self.prompt_input(prompt, state, include_attachments=True)
+        )
         response_text = self.message_text(response)
         self.apply_response(state, response, response_text)
         return state
@@ -52,7 +54,9 @@ class GenerateNode(BaseNode):
         prompt = self.build_prompt(state)
         response_text = ""
 
-        for chunk in self.llm.stream(self.prompt_input(prompt, state)):
+        for chunk in self.llm.stream(
+            self.prompt_input(prompt, state, include_attachments=True)
+        ):
             delta = self.message_text(chunk)
             if not delta:
                 continue

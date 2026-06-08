@@ -1,6 +1,7 @@
 """Agent 聊天 HTTP 与 SSE 接口。"""
 
 import json
+from queue import Empty
 from queue import Queue
 from threading import Lock
 from threading import Thread
@@ -19,6 +20,7 @@ from app.services.auth import get_current_user
 from app.services.rate_limit import check_agent_chat_rate_limit
 
 router = APIRouter()
+SSE_HEARTBEAT_INTERVAL_SECONDS = 15
 
 
 class LiveAgentStream:
@@ -33,6 +35,7 @@ class LiveAgentStream:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
         self.subscribers: list[Queue[dict[str, Any] | None]] = []
+        self.cancelled = False
         self.done = False
         self.lock = Lock()
 
@@ -58,6 +61,35 @@ class LiveAgentStream:
             self.subscribers.clear()
         for queue in subscribers:
             queue.put(None)
+
+    def cancel(self) -> None:
+        """标记请求取消，并通知订阅者退出。"""
+
+        with self.lock:
+            if self.done:
+                return
+            self.cancelled = True
+            self.events.append(
+                {
+                    "type": "error",
+                    "content": "已终止本次 Agent 回复。",
+                }
+            )
+            subscribers = list(self.subscribers)
+            self.done = True
+            self.subscribers.clear()
+        for queue in subscribers:
+            queue.put(
+                {
+                    "type": "error",
+                    "content": "已终止本次 Agent 回复。",
+                }
+            )
+            queue.put(None)
+
+    def is_cancelled(self) -> bool:
+        with self.lock:
+            return self.cancelled
 
     def subscribe(self) -> Queue[dict[str, Any] | None]:
         """创建订阅队列，并回放已经发布的事件。"""
@@ -149,16 +181,22 @@ def stream_chat_with_agent(
     # 启动 Agent 工作线程，调用 stream_agent_chat 函数与 Agent 进行交互，并将产生的事件发布到 LiveAgentStream 中
     def agent_worker() -> None:
         db = SessionLocal()  # 在工作线程中创建独立的数据库会话，避免与主线程共享同一个会话导致线程安全问题
+        event_stream = None
         try:
-            for event in stream_agent_chat(
+            event_stream = stream_agent_chat(
                 user_id=user_id,
                 message=payload.message,
                 attachments=[item.model_dump() for item in payload.attachments],
                 session_id=payload.session_id,
                 client_turn_id=payload.client_turn_id,
                 db=db,
-            ):
+            )
+            for event in event_stream:
+                if live_stream.is_cancelled():
+                    break
                 live_stream.publish(event)  # 将每个产生的事件发布到 LiveAgentStream 中，供 SSE 连接实时获取和推送给前端
+                if live_stream.is_cancelled():
+                    break
         except Exception as exc:
             live_stream.publish(
                 {
@@ -167,6 +205,8 @@ def stream_chat_with_agent(
                 }
             )
         finally:
+            if live_stream.is_cancelled() and event_stream is not None:
+                event_stream.close()
             db.close()
             live_stream.finish()
             if stream_key is not None:
@@ -196,7 +236,11 @@ def stream_chat_with_agent(
         )
         try:
             while True:
-                event = events.get()
+                try:
+                    event = events.get(timeout=SSE_HEARTBEAT_INTERVAL_SECONDS)
+                except Empty:
+                    yield ": keepalive\n\n"
+                    continue
                 if event is None:
                     break
                 event_type = str(event.get("type", "message"))  # 获取事件类型，默认为 "message"
@@ -217,3 +261,19 @@ def stream_chat_with_agent(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/chat/stream/{client_turn_id}/cancel")
+def cancel_stream_chat_with_agent(
+    client_turn_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """请求终止一个仍在运行的流式 Agent 回合。"""
+
+    stream_key = (current_user.id, client_turn_id)
+    with _LIVE_AGENT_STREAMS_LOCK:
+        live_stream = _LIVE_AGENT_STREAMS.get(stream_key)
+    if live_stream is None or live_stream.done:
+        return {"cancelled": False}
+    live_stream.cancel()
+    return {"cancelled": True}

@@ -42,10 +42,20 @@ class BaseNode:
             content = str(content)
         return parse_json_object(content)
 
-    def prompt_input(self, prompt: str, state: SessionState | None = None):
+    def prompt_input(
+        self,
+        prompt: str,
+        state: SessionState | None = None,
+        *,
+        include_attachments: bool = False,
+    ):
         """根据最近用户附件决定返回纯文本 prompt 或多模态 HumanMessage。"""
 
-        attachment_parts = self.latest_attachment_parts(state) if state else []
+        attachment_parts = (
+            self.latest_attachment_parts(state)
+            if include_attachments and state
+            else []
+        )
         if not attachment_parts:
             return prompt
         return [HumanMessage(content=[{"type": "text", "text": prompt}, *attachment_parts])]
