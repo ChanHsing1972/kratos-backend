@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     AGENT_LLM_TIMEOUT_SECONDS: int = 120
     AGENT_LLM_MAX_RETRIES: int = 0
     AGENT_LLM_MAX_OUTPUT_TOKENS: int = 1800
+    AGENT_LLM_HTTP_USER_AGENT: str = "curl/8.7.1"
     AGENT_INCLUDE_ATTACHMENTS_IN_LLM: bool = False
     AGENT_ENABLE_MEMORY_SUMMARY_LLM: bool = False
     AGENT_ENABLE_SESSION_TITLE_LLM: bool = True
@@ -133,6 +134,13 @@ class Settings(BaseSettings):
     @property
     def AGENT_LLM_EFFECTIVE_API_KEY(self) -> str:
         return self.AGENT_LLM_API_KEY or self.QWEN_API_KEY or "EMPTY"
+
+    @property
+    def OPENAI_COMPAT_DEFAULT_HEADERS(self) -> dict[str, str]:
+        user_agent = (self.AGENT_LLM_HTTP_USER_AGENT or "").strip()
+        if not user_agent:
+            return {}
+        return {"User-Agent": user_agent}
 
     @property
     def FOOD_VISION_EFFECTIVE_API_KEY(self) -> str | None:

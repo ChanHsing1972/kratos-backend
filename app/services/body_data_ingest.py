@@ -231,6 +231,7 @@ def _extract_user_health_data_with_llm(
     resolved_llm = llm or ChatOpenAI(
         api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
         base_url=settings.AGENT_LLM_BASE_URL,
+        default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
         model=settings.AGENT_LLM_MODEL,
         temperature=0,
         timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,

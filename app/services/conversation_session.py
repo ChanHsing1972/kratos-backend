@@ -439,6 +439,7 @@ def compress_session_summary(summary: str) -> str:
         llm = ChatOpenAI(
             api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
             base_url=settings.AGENT_LLM_BASE_URL,
+            default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
             model=settings.AGENT_LLM_MODEL,
             temperature=0,
         )
@@ -506,6 +507,7 @@ def _generate_session_title_with_llm(
         llm = ChatOpenAI(
             api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
             base_url=settings.AGENT_LLM_BASE_URL,
+            default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
             model=settings.AGENT_LLM_MODEL,
             temperature=0,
             timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,

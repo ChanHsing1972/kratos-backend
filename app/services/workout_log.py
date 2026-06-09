@@ -225,6 +225,7 @@ def _generate_coach_comment(
         llm = ChatOpenAI(
             api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
             base_url=settings.AGENT_LLM_BASE_URL,
+            default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
             model=settings.AGENT_LLM_MODEL,
             temperature=0.4,
             timeout=12,

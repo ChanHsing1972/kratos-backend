@@ -105,6 +105,7 @@ def get_food_vision_client() -> Any:
 
     kwargs: dict[str, Any] = {
         "api_key": api_key,
+        "default_headers": settings.OPENAI_COMPAT_DEFAULT_HEADERS,
         "max_retries": settings.FOOD_VISION_MAX_RETRIES,
         "timeout": settings.FOOD_VISION_TIMEOUT_SECONDS,
     }
@@ -194,6 +195,7 @@ def get_food_agent_llm() -> Any:
     return ChatOpenAI(
         api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
         base_url=settings.AGENT_LLM_BASE_URL,
+        default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
         max_retries=settings.FOOD_VISION_MAX_RETRIES,
         model=settings.FOOD_VISION_EFFECTIVE_MODEL,
         temperature=0,
