@@ -1,3 +1,5 @@
+from importlib.util import find_spec
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -28,7 +30,6 @@ def list_records(
     return get_recent_diet_records(db, current_user.id, limit=limit)
 
 
-@router.post("/estimate-from-image", response_model=FoodImageEstimateResponse)
 async def estimate_from_image(
     image: UploadFile | None = File(default=None),
     current_user: User = Depends(get_current_user),
@@ -58,6 +59,10 @@ async def estimate_from_image(
         ) from exc
 
     return FoodImageEstimateResponse(data=result)
+
+
+if find_spec("multipart") is not None:
+    router.post("/estimate-from-image", response_model=FoodImageEstimateResponse)(estimate_from_image)
 
 
 @router.post(

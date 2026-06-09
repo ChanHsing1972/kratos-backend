@@ -5,6 +5,13 @@ PlanNode 把意图、用户消息、数据库上下文和反思建议拆成 1-5 
 """
 
 from app.agent.nodes.base_node import BaseNode
+from app.agent.intent_policy import (
+    INFO_INTENTS,
+    has_plan_intent,
+    is_news_query,
+    is_route_query,
+    is_weather_query,
+)
 from app.agent.state.reasoning import Task
 
 
@@ -102,6 +109,42 @@ class PlanNode(BaseNode):
         user_message: str,
         extracted_info: dict,
     ) -> list[Task] | None:
+        if any(item in INFO_INTENTS for item in intent) and not has_plan_intent(intent):
+            tasks: list[Task] = []
+            if "天气查询" in intent or is_weather_query(user_message):
+                tasks.append(
+                    Task(
+                        task_id=len(tasks),
+                        name="查询天气",
+                        description="查询用户提到地点和时间对应的天气，并整理对运动安排的简要影响。",
+                    )
+                )
+            if "新闻搜索" in intent or is_news_query(user_message):
+                tasks.append(
+                    Task(
+                        task_id=len(tasks),
+                        name="搜索相关新闻",
+                        description="搜索用户请求主题的近期资讯，保留标题、摘要和可靠链接。",
+                    )
+                )
+            if "路线查询" in intent or is_route_query(user_message):
+                tasks.append(
+                    Task(
+                        task_id=len(tasks),
+                        name="查询路线",
+                        description="根据用户提到的位置、距离和偏好查询适合的路线建议。",
+                    )
+                )
+            if not tasks:
+                tasks.append(
+                    Task(
+                        task_id=0,
+                        name="直接回答信息查询",
+                        description="基于用户问题、会话历史和数据库上下文回答，不生成训练计划。",
+                    )
+                )
+            return tasks
+
         if "健身计划" in intent:
             profile = extracted_info.get("profile", {}) if isinstance(extracted_info, dict) else {}
             available_time = profile.get("available_time_minutes") if isinstance(profile, dict) else None

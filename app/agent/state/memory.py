@@ -23,7 +23,20 @@ class PhysicalProfile(BaseModel):
     body_fat_percentage: float | None = None
     skeletal_muscle_mass_kg: float | None = None
     bmi: float | None = None
+    chest_cm: float | None = None
+    waist_cm: float | None = None
+    hip_cm: float | None = None
+    thigh_cm: float | None = None
+    calf_cm: float | None = None
+    arm_cm: float | None = None
     sleep_hours: float | None = None
+    active_kcal: float | None = None
+    dietary_kcal: float | None = None
+    hrv_ms: float | None = None
+    stress_level: int | None = None
+    resting_heart_rate: int | None = None
+    vo2_max: float | None = None
+    blood_oxygen_percentage: float | None = None
     body_condition: str | None = None
 
 
@@ -63,6 +76,7 @@ class LongTermMemory(BaseModel):
     name: str | None = None
     gender: str | None = None
     job: str | None = None
+    location: str | None = None
     physical_profile: PhysicalProfile = Field(default_factory=PhysicalProfile)
     lifestyle_profile: LifestyleProfile = Field(default_factory=LifestyleProfile)
     dietary_profile: DietaryProfile = Field(default_factory=DietaryProfile)

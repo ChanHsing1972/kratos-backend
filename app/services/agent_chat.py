@@ -8,6 +8,7 @@ Agent、补齐动作媒体、持久化运行结果和会话产物。状态构造
 from functools import lru_cache
 from collections.abc import Callable
 from typing import Any, Iterator
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -142,8 +143,11 @@ def stream_agent_chat(
     )
     state = prepared.state  # 从准备好的对象中获取 SessionState，作为后续 Agent 运行的输入状态
     reserved_run = None  # 预留的 Agent 运行记录，用于幂等控制；如果数据库中已经存在相同消息的未完成或已完成记录，则复用该记录的结果；如果没有，则在后续创建新的运行记录
+    run_id = str(uuid4())
     if db is not None:
         reserved_run, should_run = reserve_agent_run(db, user_id, state.session_id, prepared.stored_message, client_turn_id)
+        if reserved_run is not None:
+            run_id = str(reserved_run.id)
         if not should_run and reserved_run is not None:
             if reserved_run.status == "completed":
                 yield {
@@ -151,17 +155,28 @@ def stream_agent_chat(
                     "content": reserved_run.answer,
                     "raw": reserved_run.result_payload,
                     "session_id": reserved_run.session_id,
+                    "run_id": str(reserved_run.id),
                 }
                 yield {
                     "type": "done",
+                    "content": "Agent 回复完成",
                     "session_id": reserved_run.session_id,
                     "answer": reserved_run.answer,
+                    "run_id": str(reserved_run.id),
                 }
             else:
                 yield {
                     "type": "error",
                     "content": "这条消息正在处理或此前未成功完成，请稍后重试。",
                     "session_id": reserved_run.session_id,
+                    "run_id": str(reserved_run.id),
+                }
+                yield {
+                    "type": "done",
+                    "content": "Agent 运行结束",
+                    "session_id": reserved_run.session_id,
+                    "answer": "",
+                    "run_id": str(reserved_run.id),
                 }
             return
 
@@ -174,6 +189,7 @@ def stream_agent_chat(
         "type": "status",
         "content": "Agent 已读取数据库上下文，开始处理请求",
         "session_id": state.session_id,
+        "run_id": run_id,
     }
     append_persistable_event(persisted_trace, event)
     yield event
@@ -182,6 +198,7 @@ def stream_agent_chat(
             "type": "observation",
             "content": f"已读取用户上下文：{format_context_snapshot(prepared.context_snapshot)}",
             "session_id": state.session_id,
+            "run_id": run_id,
         }
         append_persistable_event(persisted_trace, event)
         yield event
@@ -190,6 +207,7 @@ def stream_agent_chat(
             "type": "observation",
             "content": f"已启用 Skill：{format_skill_snapshot(prepared.skill_snapshot)}",
             "session_id": state.session_id,
+            "run_id": run_id,
         }
         append_persistable_event(persisted_trace, event)
         yield event
@@ -199,6 +217,7 @@ def stream_agent_chat(
             "content": ("检测到可记录的健康数据，请确认后保存：" f"{format_persisted_body_data(prepared.pending_health_updates)}"),
             "raw": {"pending_health_data": prepared.pending_health_updates},
             "session_id": state.session_id,
+            "run_id": run_id,
         }
         append_persistable_event(persisted_trace, event)
         yield event
@@ -208,7 +227,7 @@ def stream_agent_chat(
     final_state = state  # 最终状态，初始为准备好的状态；在运行 Agent 的过程中会不断更新这个状态，直到得到最终的结果状态
 
     try:
-        for event in _run_streaming_agent(final_state, emitted_keys, is_cancelled=is_cancelled):
+        for event in _run_streaming_agent(final_state, emitted_keys, run_id=run_id, is_cancelled=is_cancelled):
             append_persistable_event(persisted_trace, event)
             yield event
     except AgentCancelledError:
@@ -242,14 +261,17 @@ def stream_agent_chat(
 
     yield {
         "type": "done",
+        "content": "Agent 回复完成",
         "session_id": final_state.session_id,
         "answer": answer,
+        "run_id": run_id,
     }
 
 
 def _run_streaming_agent(
     state: SessionState,
     emitted_keys: set[tuple[str, str]],
+    run_id: str | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """运行 AgentRunner 的流式接口，并把 final_state 转为 final 事件。"""
@@ -265,6 +287,8 @@ def _run_streaming_agent(
     ):
         event = dict(raw_event)
         event["session_id"] = state.session_id
+        if run_id is not None:
+            event["run_id"] = run_id
         if event.get("type") == "final_state":
             final_step = AgentTraceStep(
                 type="final",
@@ -276,6 +300,8 @@ def _run_streaming_agent(
                 emitted_keys.add(key)
                 final_event = final_step.model_dump(mode="json")
                 final_event["session_id"] = state.session_id
+                if run_id is not None:
+                    final_event["run_id"] = run_id
                 yield final_event
             continue
         yield event

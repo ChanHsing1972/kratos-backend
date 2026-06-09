@@ -1,6 +1,7 @@
 """最终回答质量检查节点。"""
 
 from app.agent.nodes.base_node import BaseNode
+from app.agent.intent_policy import should_run_reflection
 from app.agent.quality import validate_agent_result
 
 
@@ -16,6 +17,18 @@ class ReflectNode(BaseNode):
         """更新反思结果、最终回答可交付标记和是否需要重规划。"""
 
         response = state.result.response
+        if not should_run_reflection(state):
+            state.reasoning.reflection = {
+                "is_pass": True,
+                "suggestions": [],
+                "source": "skipped_non_quality_task",
+            }
+            state.result.reflection_suggestions = []
+            state.result.final_answer_ready = bool(response)
+            state.reasoning.need_replan = False
+            state.result.touch()
+            return state
+
         deterministic_suggestions = validate_agent_result(state)
         if deterministic_suggestions:
             data = {

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.v1 import api_router
+from app.api.v1 import create_api_router
 from app.core.config import settings
 from app.services.upload import UPLOAD_DIR
 from app.db.schema_sync import ensure_runtime_schema
@@ -48,7 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(api_router, prefix=settings.API_V1_STR)
+app.include_router(create_api_router(), prefix=settings.API_V1_STR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 

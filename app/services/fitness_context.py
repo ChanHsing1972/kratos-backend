@@ -156,36 +156,51 @@ def hydrate_agent_memory(state: SessionState, context: FitnessContextResponse) -
 
     profile = context.profile
     if profile is not None:
-        long_term.gender = profile.gender
-        physical.age = profile.age
-        physical.body_condition = profile.fitness_summary
-        lifestyle.goal = profile.fitness_goal
-        lifestyle.activity_level = profile.activity_level
-        lifestyle.exercise_intensity = profile.experience_level
-        lifestyle.available_days_per_week = profile.available_days_per_week
-        lifestyle.workout_minutes_per_session = profile.workout_minutes_per_session
-        lifestyle.available_cooking_time_minutes = profile.workout_minutes_per_session
-        lifestyle.equipment_access = profile.equipment_access
-        lifestyle.injury_history = profile.injury_history
-        lifestyle.medical_conditions = profile.medical_conditions
-        lifestyle.preferred_workout_types = profile.preferred_workout_types
-        dietary.diet = profile.dietary_habits
-        dietary.restrictions_text = profile.dietary_restrictions
+        _assign_if_present(long_term, "gender", _clean_text(profile.gender))
+        _assign_if_present(long_term, "location", _clean_text(profile.location))
+        _assign_if_present(physical, "age", profile.age)
+        _assign_if_present(physical, "body_condition", _clean_text(profile.fitness_summary))
+        _assign_if_present(lifestyle, "goal", _clean_text(profile.fitness_goal))
+        _assign_if_present(lifestyle, "activity_level", _clean_text(profile.activity_level))
+        _assign_if_present(lifestyle, "exercise_intensity", _clean_text(profile.experience_level))
+        _assign_if_present(lifestyle, "available_days_per_week", profile.available_days_per_week)
+        _assign_if_present(lifestyle, "workout_minutes_per_session", profile.workout_minutes_per_session)
+        _assign_if_present(lifestyle, "available_cooking_time_minutes", profile.workout_minutes_per_session)
+        _assign_if_present(lifestyle, "equipment_access", _clean_text(profile.equipment_access))
+        _assign_if_present(lifestyle, "injury_history", _clean_text(profile.injury_history))
+        _assign_if_present(lifestyle, "medical_conditions", _clean_text(profile.medical_conditions))
+        _assign_if_present(lifestyle, "preferred_workout_types", _clean_text(profile.preferred_workout_types))
+        _assign_if_present(dietary, "diet", _clean_text(profile.dietary_habits))
+        _assign_if_present(dietary, "restrictions_text", _clean_text(profile.dietary_restrictions))
 
     metric = context.latest_body_metric
     if metric is not None:
-        physical.height_cm = _to_float(metric.height_cm)
-        physical.weight_kg = _to_float(metric.weight_kg)
-        physical.target_weight_kg = _to_float(metric.target_weight_kg)
-        physical.body_fat_rate = _to_float(metric.body_fat_percentage)
-        physical.body_fat_percentage = _to_float(metric.body_fat_percentage)
-        physical.skeletal_muscle_mass_kg = _to_float(metric.skeletal_muscle_mass_kg)
-        physical.bmi = _to_float(metric.bmi)
+        _assign_if_present(physical, "height_cm", _to_float(metric.height_cm))
+        _assign_if_present(physical, "weight_kg", _to_float(metric.weight_kg))
+        _assign_if_present(physical, "target_weight_kg", _to_float(metric.target_weight_kg))
+        _assign_if_present(physical, "body_fat_rate", _to_float(metric.body_fat_percentage))
+        _assign_if_present(physical, "body_fat_percentage", _to_float(metric.body_fat_percentage))
+        _assign_if_present(physical, "skeletal_muscle_mass_kg", _to_float(metric.skeletal_muscle_mass_kg))
+        _assign_if_present(physical, "bmi", _to_float(metric.bmi))
+        _assign_if_present(physical, "chest_cm", _to_float(metric.chest_cm))
+        _assign_if_present(physical, "waist_cm", _to_float(metric.waist_cm))
+        _assign_if_present(physical, "hip_cm", _to_float(metric.hip_cm))
+        _assign_if_present(physical, "thigh_cm", _to_float(metric.thigh_cm))
+        _assign_if_present(physical, "calf_cm", _to_float(metric.calf_cm))
+        _assign_if_present(physical, "arm_cm", _to_float(metric.arm_cm))
         # Deprecated fallback retained for older rows; new sleep data lives in health_metrics.
-        physical.sleep_hours = _to_float(metric.sleep_hours)
+        _assign_if_present(physical, "sleep_hours", _to_float(metric.sleep_hours))
 
     if context.latest_health_metric is not None:
-        physical.sleep_hours = _to_float(context.latest_health_metric.sleep_hours)
+        health = context.latest_health_metric
+        _assign_if_present(physical, "sleep_hours", _to_float(health.sleep_hours))
+        _assign_if_present(physical, "active_kcal", _to_float(health.active_kcal))
+        _assign_if_present(physical, "dietary_kcal", _to_float(health.dietary_kcal))
+        _assign_if_present(physical, "hrv_ms", _to_float(health.hrv_ms))
+        _assign_if_present(physical, "stress_level", health.stress_level)
+        _assign_if_present(physical, "resting_heart_rate", health.resting_heart_rate)
+        _assign_if_present(physical, "vo2_max", _to_float(health.vo2_max))
+        _assign_if_present(physical, "blood_oxygen_percentage", _to_float(health.blood_oxygen_percentage))
 
     if context.recent_workout_logs:
         mid_term.completions = [log.id for log in context.recent_workout_logs if log.completed]
@@ -230,3 +245,16 @@ def _to_float(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _assign_if_present(target: Any, field: str, value: Any) -> None:
+    if value is None:
+        return
+    setattr(target, field, value)
+
+
+def _clean_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

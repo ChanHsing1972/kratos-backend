@@ -1,6 +1,7 @@
 """Agent 聊天 HTTP 与 SSE 接口。"""
 
 import json
+import logging
 from queue import Empty
 from queue import Queue
 from threading import Lock
@@ -21,6 +22,7 @@ from app.services.rate_limit import check_agent_chat_rate_limit
 
 router = APIRouter()
 SSE_HEARTBEAT_INTERVAL_SECONDS = 15
+logger = logging.getLogger(__name__)
 
 
 class LiveAgentStream:
@@ -69,22 +71,22 @@ class LiveAgentStream:
             if self.done:
                 return
             self.cancelled = True
-            self.events.append(
-                {
-                    "type": "error",
-                    "content": "已终止本次 Agent 回复。",
-                }
-            )
+            error_event = {
+                "type": "error",
+                "content": "已终止本次 Agent 回复。",
+            }
+            done_event = {
+                "type": "done",
+                "content": "Agent 运行已终止",
+                "answer": "",
+            }
+            self.events.extend([error_event, done_event])
             subscribers = list(self.subscribers)
             self.done = True
             self.subscribers.clear()
         for queue in subscribers:
-            queue.put(
-                {
-                    "type": "error",
-                    "content": "已终止本次 Agent 回复。",
-                }
-            )
+            queue.put(error_event)
+            queue.put(done_event)
             queue.put(None)
 
     def is_cancelled(self) -> bool:
@@ -199,10 +201,25 @@ def stream_chat_with_agent(
                 if live_stream.is_cancelled():
                     break
         except Exception as exc:
+            logger.exception(
+                "Agent stream failed user_id=%s session_id=%s client_turn_id=%s",
+                user_id,
+                payload.session_id,
+                payload.client_turn_id,
+            )
             live_stream.publish(
                 {
                     "type": "error",
                     "content": _agent_stream_error_message(exc),
+                    "session_id": payload.session_id,
+                }
+            )
+            live_stream.publish(
+                {
+                    "type": "done",
+                    "content": "Agent 运行结束",
+                    "session_id": payload.session_id,
+                    "answer": "",
                 }
             )
         finally:
@@ -223,13 +240,6 @@ def stream_chat_with_agent(
     # 生成器会持续监听 LiveAgentStream 的事件队列，直到收到结束信号（None）为止。
     def event_generator():
         events = live_stream.subscribe()  # 订阅 LiveAgentStream，获取一个事件队列，用于接收发布的事件
-        yield _sse_frame(
-            "status",
-            {
-                "type": "status",
-                "content": "已连接 Kratos Agent，正在读取上下文...",
-            },
-        )
         try:
             while True:
                 try:

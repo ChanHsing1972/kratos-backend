@@ -8,6 +8,12 @@
 import re
 from typing import Any
 
+from app.agent.intent_policy import (
+    is_news_query,
+    is_route_query,
+    is_weather_query,
+    is_explicit_training_plan_request,
+)
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.session_state import SessionState
 
@@ -21,6 +27,15 @@ INTENT_MAP = {
     "调整计划": "调整计划",
     "反馈": "反馈",
     "闲聊": "闲聊",
+    "信息查询": "信息查询",
+    "天气": "天气查询",
+    "天气查询": "天气查询",
+    "新闻": "新闻搜索",
+    "新闻搜索": "新闻搜索",
+    "搜索": "新闻搜索",
+    "路线": "路线查询",
+    "路线查询": "路线查询",
+    "普通问答": "普通问答",
 }
 
 
@@ -36,8 +51,9 @@ class IntentNode(BaseNode):
             skill_context = self.describe_active_skills(state)
             prompt = f"""
             你是健身 Agent 的意图识别器。
-            请识别用户意图，可选范围包括：健身计划、饮食计划、调整计划、反馈、闲聊。
+            请识别用户意图，可选范围包括：健身计划、饮食计划、调整计划、反馈、闲聊、信息查询、天气查询、新闻搜索、路线查询、普通问答。
             允许输出多个意图。不要输出范围外的意图。
+            天气、新闻、搜索链接、路线查询属于信息查询，不要归类为健身计划，除非用户明确要求生成训练安排。
             如果启用了 Skill，请结合 Skill 的适用场景辅助判断用户目标，但不要把 Skill 名称当作意图。
 
             启用 Skill:
@@ -68,7 +84,7 @@ class IntentNode(BaseNode):
 
             严格输出一个 JSON 对象，不要 Markdown：
             {{
-                "intent": ["健身计划"],
+                "intent": ["信息查询"],
                 "daily_diet": ["鸡胸肉", "米饭"],
                 "training_feedback": ["今天腿很酸", "跑步完成了 30 分钟"],
                 "name": "Will",
@@ -168,7 +184,7 @@ class IntentNode(BaseNode):
             return None
 
         intents: list[str] = []
-        if any(keyword in text for keyword in ["生成训练计划", "训练计划", "健身计划", "练腿", "练胸", "练背", "上肢", "下肢", "安排训练"]):
+        if is_explicit_training_plan_request(text):
             intents.append("健身计划")
         if any(keyword in text for keyword in ["饮食计划", "记录饮食", "食谱", "吃什么", "热量", "蛋白质", "碳水", "脂肪"]):
             intents.append("饮食计划")
@@ -176,8 +192,14 @@ class IntentNode(BaseNode):
             intents.append("调整计划" if "健身计划" in intents else "反馈")
         if not intents and any(keyword in text for keyword in ["完成", "反馈", "打卡", "感受"]):
             intents.append("反馈")
-        if not intents and any(keyword in text for keyword in ["天气", "跑步路线", "晨跑", "夜跑"]):
-            intents.append("健身计划")
+        if is_weather_query(text):
+            intents.append("天气查询")
+        if is_news_query(text):
+            intents.append("新闻搜索")
+        if is_route_query(text):
+            intents.append("路线查询")
+        if any(intent in intents for intent in ["天气查询", "新闻搜索", "路线查询"]) and "信息查询" not in intents:
+            intents.append("信息查询")
 
         if not intents:
             return None

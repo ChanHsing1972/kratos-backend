@@ -11,7 +11,10 @@ from xml.etree import ElementTree
 
 from fastapi import UploadFile
 
-import oss2
+try:
+    import oss2
+except Exception:  # pragma: no cover - optional runtime dependency fallback
+    oss2 = None
 
 try:
     from PIL import Image
@@ -95,6 +98,8 @@ async def save_upload_file(file: UploadFile, *, user_id: int, purpose: str) -> d
 async def upload_avatar_to_oss(file: UploadFile, *, user_id: int) -> dict[str, str | int]:
     if not settings.ALIYUN_OSS_ACCESS_KEY_ID or not settings.ALIYUN_OSS_ACCESS_KEY_SECRET:
         raise ValueError("OSS 访问密钥未配置")
+    if oss2 is None:
+        raise ValueError("OSS SDK 未安装，请安装 oss2 后重试")
 
     content = await file.read()
     if not content:

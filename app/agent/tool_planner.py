@@ -48,6 +48,14 @@ def build_fallback_reason_data(
         keyword in user_message
         for keyword in ["训练部位", "身体部位", "锻炼部位", "部位列表", "有哪些部位", "可练部位"]
     )
+    is_weather_request = any(
+        keyword in user_message
+        for keyword in ["天气", "气温", "下雨", "适合运动", "适合跑步"]
+    )
+    is_news_request = any(
+        keyword in user_message
+        for keyword in ["新闻", "最新", "资讯", "链接", "搜索", "报道", "动态"]
+    )
     is_safety_request = any(
         keyword in user_message
         for keyword in ["疼", "疼痛", "不舒服", "受伤", "疲劳", "极度疲劳", "膝盖", "腰", "肩"]
@@ -63,7 +71,13 @@ def build_fallback_reason_data(
 
     fallback_tool_name = None
     fallback_id = None
-    if is_safety_request and "pain_safety_gate" in available_tools:
+    if is_weather_request and "weather_fitness_advisor" in available_tools:
+        fallback_tool_name = "weather_fitness_advisor"
+        fallback_id = "fallback-weather"
+    elif is_news_request and "tavily_search" in available_tools:
+        fallback_tool_name = "tavily_search"
+        fallback_id = "fallback-news-search"
+    elif is_safety_request and "pain_safety_gate" in available_tools:
         fallback_tool_name = "pain_safety_gate"
         fallback_id = "fallback-safety-gate"
     elif is_volume_request and "calculate_workout_volume" in available_tools:
@@ -299,9 +313,12 @@ def _diet_plan_fallback(state: SessionState, error_message: str) -> dict[str, An
 
 def _repair_weather_args(args: dict[str, Any], user_message: str) -> None:
     if not args.get("city"):
-        city_match = re.search(r"([\u4e00-\u9fff]{2,12}?)(?:今天|明天|天气)", user_message)
+        city_match = (
+            re.search(r"(?:今天|明天|后天)?\s*([\u4e00-\u9fff]{2,12}?)(?:天气|气温|下雨)", user_message)
+            or re.search(r"([\u4e00-\u9fff]{2,12}?)(?:今天|明天|后天|天气|气温|下雨)", user_message)
+        )
         if city_match:
-            args["city"] = city_match.group(1)
+            args["city"] = city_match.group(1).replace("今天", "").replace("明天", "").replace("后天", "")
     if not args.get("when"):
         args["when"] = "tomorrow" if "明天" in user_message else "today"
 

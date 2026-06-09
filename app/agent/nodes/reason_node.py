@@ -7,6 +7,12 @@ ReasonNode 面向当前子任务判断是否需要工具：可直接回答则写
 
 import json
 
+from app.agent.intent_policy import (
+    INFO_INTENTS,
+    has_plan_intent,
+    information_tool_calls,
+    summarize_tool_result,
+)
 from app.agent.json_utils import LLMJsonParseError
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import TaskStatus
@@ -235,9 +241,15 @@ class ReasonNode(BaseNode):
     ) -> dict | None:
         available = set(available_tools)
         is_fitness_plan = any(intent in state.reasoning.intent for intent in ["健身计划", "调整计划"])
-        is_weather_request = "天气" in user_message or "适合运动" in user_message or "适合跑步" in user_message
+        is_information_query = any(intent in INFO_INTENTS for intent in state.reasoning.intent)
 
         if task.tool_calls:
+            if is_information_query and not is_fitness_plan:
+                summaries = [summarize_tool_result(result) for result in task.tool_results]
+                return {
+                    "tool_calls": [],
+                    "result": "；".join(item for item in summaries if item) or "工具结果已获取，请据此回答用户的信息查询。",
+                }
             if is_fitness_plan:
                 summaries = []
                 for result in task.tool_results:
@@ -264,6 +276,15 @@ class ReasonNode(BaseNode):
             return None
 
         tool_calls: list[dict] = []
+        if is_information_query and not is_fitness_plan:
+            tool_calls = information_tool_calls(state, task, user_message, available_tools)
+            if tool_calls:
+                return {"tool_calls": tool_calls, "result": None}
+            return {
+                "tool_calls": [],
+                "result": "未找到可用的查询工具，请基于已有上下文回答，并说明实时信息可能无法获取。",
+            }
+
         if is_fitness_plan:
             if "pain_safety_gate" in available:
                 tool_calls.append(
@@ -279,14 +300,6 @@ class ReasonNode(BaseNode):
                         "tool_name": "calculate_workout_volume",
                         "args": repair_tool_args("calculate_workout_volume", {}, user_message, task, state),
                         "id": "deterministic-workout-volume",
-                    }
-                )
-            if is_weather_request and "weather_fitness_advisor" in available:
-                tool_calls.append(
-                    {
-                        "tool_name": "weather_fitness_advisor",
-                        "args": repair_tool_args("weather_fitness_advisor", {}, user_message, task, state),
-                        "id": "deterministic-weather",
                     }
                 )
             if tool_calls:
@@ -307,6 +320,7 @@ class ReasonNode(BaseNode):
             "name": long_term.name,
             "gender": long_term.gender,
             "job": long_term.job,
+            "location": long_term.location,
             "physical_profile": long_term.physical_profile.model_dump(),
             "lifestyle_profile": long_term.lifestyle_profile.model_dump(),
             "dietary_profile": long_term.dietary_profile.model_dump(),
@@ -322,7 +336,7 @@ class ReasonNode(BaseNode):
         """对纯记忆查询进行短路回答，避免无意义工具调用。"""
 
         user_message = str(ReasonNode.latest_user_text(state)).strip().lower()
-        if any(intent in state.reasoning.intent for intent in ["健身计划", "饮食计划", "调整计划"]):
+        if has_plan_intent(state.reasoning.intent):
             return None
 
         long_term = state.memory.long_term_memory

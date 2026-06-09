@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from app.agent.intent_policy import should_run_reflection
 from app.agent.nodes.act_node import ActNode
 from app.agent.nodes.end_node import EndNode
 from app.agent.nodes.finish_node import FinishNode
@@ -185,13 +186,23 @@ class AgentRunner:
             final_generated = True
             yield from self._after_node("generate", state, after_node)
 
-            self._raise_if_cancelled(should_cancel)
-            t0 = time.monotonic()
-            state = self.nodes.reflect(state)
-            self._raise_if_cancelled(should_cancel)
-            _log_node_time("reflect", t0, user_id, session_id)
-            step_count = self._check_step_budget(step_count)
-            yield from self._after_node("reflect", state, after_node)
+            if should_run_reflection(state):
+                self._raise_if_cancelled(should_cancel)
+                t0 = time.monotonic()
+                state = self.nodes.reflect(state)
+                self._raise_if_cancelled(should_cancel)
+                _log_node_time("reflect", t0, user_id, session_id)
+                step_count = self._check_step_budget(step_count)
+                yield from self._after_node("reflect", state, after_node)
+            else:
+                state.reasoning.reflection = {
+                    "is_pass": True,
+                    "suggestions": [],
+                    "source": "skipped_non_quality_task",
+                }
+                state.result.reflection_suggestions = []
+                state.result.final_answer_ready = bool(state.result.response)
+                state.result.touch()
 
             if not state.reasoning.need_replan:
                 break

@@ -137,6 +137,9 @@ class GenerateNode(BaseNode):
         要求：
         - 中文回答。
         - 必须使用 Markdown 格式组织内容：用短标题、列表、表格或加粗重点提升可读性；避免整段堆叠。
+        - Markdown 块之间必须保留空行；标题、段落、列表和表格不能粘在同一行。
+        - Markdown 表格必须使用标准 GFM 多行格式：表头一行、分隔行一行、每条数据各占一行；不要把多行表格压成一行。
+        - 列表项必须独占一行，使用 `- 内容`，不要写成 `标题- 内容`。
         - 具体、可执行，避免空泛建议。
         - 回答前必须利用已读取的数据库上下文；如果上下文缺关键数据，先指出缺口并给出下一步引导。
         - 如果用户在消息中提到新的个人信息或身体数据，说明需由用户确认后才会保存，不得声称已经记录。
@@ -189,6 +192,7 @@ class GenerateNode(BaseNode):
         """
 
         tasks = state.reasoning.tasks
+        response_text = self._normalize_markdown_response(response_text)
         state.result.response = response_text
         state.result.task_results = [
             {
@@ -218,6 +222,40 @@ class GenerateNode(BaseNode):
         self._update_structured_artifacts(state, response_text)
         state.result.touch()
         state.conversation.messages.append(response)
+
+    @staticmethod
+    def _normalize_markdown_response(response_text: str) -> str:
+        """Repair common collapsed Markdown without rewriting the answer."""
+
+        text = str(response_text or "").replace("\r\n", "\n").strip()
+        if not text:
+            return text
+
+        text = re.sub(r"([^\n])(\|\s*(?:动作|周几|训练内容|餐次|项目|指标|日期|部位)\s*\|)", r"\1\n\2", text)
+        text = re.sub(r"\|\s+\|", "|\n|", text)
+        text = re.sub(r"\s+(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)", r"\n\1", text)
+        text = "\n".join(GenerateNode._split_trailing_text_after_table_row(line) for line in text.split("\n"))
+        text = re.sub(r"([。.!?])\s*(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
+        text = re.sub(r"([。.!?])\s*(#{2,6}\s+)", r"\1\n\n\2", text)
+        text = re.sub(r"([^\n])\s+(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
+        text = re.sub(r"([^\n])\s+(#{2,6}\s+)", r"\1\n\n\2", text)
+        text = re.sub(r"([\u4e00-\u9fffA-Za-z0-9]{2,30})-\s+(?=[\u4e00-\u9fffA-Za-z])", r"\1\n- ", text)
+        text = re.sub(r"([^\n])([。.!?])\s*-\s+(?=[^\n])", r"\1\2\n- ", text)
+        text = re.sub(r"([^\n])\s+-\s+(?=[\u4e00-\u9fffA-Za-z])", r"\1\n- ", text)
+        return text
+
+    @staticmethod
+    def _split_trailing_text_after_table_row(line: str) -> str:
+        stripped = line.lstrip()
+        if not stripped.startswith("|"):
+            return line
+        last_pipe = line.rfind("|")
+        if last_pipe < 0 or last_pipe == len(line) - 1:
+            return line
+        trailing = line[last_pipe + 1 :].strip()
+        if not trailing:
+            return line
+        return f"{line[: last_pipe + 1]}\n{trailing}"
 
     def _update_structured_artifacts(self, state: SessionState, response_text: str) -> None:
         """根据工具结果和最终文本刷新训练/饮食结构化卡片。"""
