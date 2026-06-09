@@ -190,6 +190,7 @@ def stream_chat_with_agent(
                 session_id=payload.session_id,
                 client_turn_id=payload.client_turn_id,
                 db=db,
+                is_cancelled=live_stream.is_cancelled,
             )
             for event in event_stream:
                 if live_stream.is_cancelled():
@@ -222,17 +223,12 @@ def stream_chat_with_agent(
     # 生成器会持续监听 LiveAgentStream 的事件队列，直到收到结束信号（None）为止。
     def event_generator():
         events = live_stream.subscribe()  # 订阅 LiveAgentStream，获取一个事件队列，用于接收发布的事件
-        yield "event: status\n"
-        yield (
-            "data: "
-            + json.dumps(  # 发送一个初始状态消息，告知前端已经连接上 Agent，并正在读取上下文等准备工作，确保前端能够及时得到反馈，提升用户体验
-                {
-                    "type": "status",
-                    "content": "已连接 Kratos Agent，正在读取上下文...",
-                },
-                ensure_ascii=False,
-            )
-            + "\n\n"
+        yield _sse_frame(
+            "status",
+            {
+                "type": "status",
+                "content": "已连接 Kratos Agent，正在读取上下文...",
+            },
         )
         try:
             while True:
@@ -244,9 +240,7 @@ def stream_chat_with_agent(
                 if event is None:
                     break
                 event_type = str(event.get("type", "message"))  # 获取事件类型，默认为 "message"
-                data = json.dumps(event, ensure_ascii=False, default=str)
-                yield f"event: {event_type}\n"
-                yield f"data: {data}\n\n"
+                yield _sse_frame(event_type, event)
         finally:
             live_stream.unsubscribe(events)
 
@@ -258,9 +252,16 @@ def stream_chat_with_agent(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "Content-Encoding": "identity",
             "X-Accel-Buffering": "no",
+            "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _sse_frame(event_type: str, event: dict[str, Any]) -> str:
+    data = json.dumps(event, ensure_ascii=False, default=str)
+    return f"event: {event_type}\ndata: {data}\n\n"
 
 
 @router.post("/chat/stream/{client_turn_id}/cancel")

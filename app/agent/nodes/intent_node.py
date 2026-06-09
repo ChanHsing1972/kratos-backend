@@ -31,64 +31,66 @@ class IntentNode(BaseNode):
         """更新 `state.reasoning.intent` 与 `state.reasoning.extracted_info`。"""
 
         user_message = self.latest_user_text(state)
-        skill_context = self.describe_active_skills(state)
-        prompt = f"""
-        你是健身 Agent 的意图识别器。
-        请识别用户意图，可选范围包括：健身计划、饮食计划、调整计划、反馈、闲聊。
-        允许输出多个意图。不要输出范围外的意图。
-        如果启用了 Skill，请结合 Skill 的适用场景辅助判断用户目标，但不要把 Skill 名称当作意图。
+        data = self._deterministic_intent_data(user_message)
+        if data is None:
+            skill_context = self.describe_active_skills(state)
+            prompt = f"""
+            你是健身 Agent 的意图识别器。
+            请识别用户意图，可选范围包括：健身计划、饮食计划、调整计划、反馈、闲聊。
+            允许输出多个意图。不要输出范围外的意图。
+            如果启用了 Skill，请结合 Skill 的适用场景辅助判断用户目标，但不要把 Skill 名称当作意图。
 
-        启用 Skill:
-        {skill_context}
+            启用 Skill:
+            {skill_context}
 
-        同时抽取用户输入中的关键信息：
-        - 当日饮食：用户今天吃了什么，若没有则返回空数组
-        - 训练反馈：用户对训练的感受、疲劳、疼痛、完成情况等，若没有则返回空数组
-        - 用户姓名：若提到名字则提取，否则返回 null
-        - 职业/身份：如上班族、学生、程序员、教师等，若提到则返回，否则返回 null
-        - 性别：若能确定则返回，否则返回 null
-        - 年龄：若提到则返回整数，否则返回 null
-        - 身高厘米：若提到则返回数值，否则返回 null
-        - 体重公斤：若提到则返回数值，否则返回 null
-        - 身体状况：如过瘦、偏胖、膝盖不适、久坐、睡眠差等，没有则返回 null
-        - 健身/饮食目标：如增肌、减脂、保持、塑形，没有则返回 null
-        - 活动水平：如低、中、高，没有则返回 null
-        - 训练强度：如低、中、高，没有则返回 null
-        - 可用做饭/训练时间（分钟）：若提到则返回整数，否则返回 null
-        - 饮食方式：如 vegetarian、vegan、高蛋白、低脂等，没有则返回 null
-        - 过敏/不耐受：返回数组，没有则返回空数组
-        - 喜欢的食材：返回数组，没有则返回空数组
-        - 不喜欢的食材：返回数组，没有则返回空数组
-        - 偏好菜系：返回数组，没有则返回空数组
+            同时抽取用户输入中的关键信息：
+            - 当日饮食：用户今天吃了什么，若没有则返回空数组
+            - 训练反馈：用户对训练的感受、疲劳、疼痛、完成情况等，若没有则返回空数组
+            - 用户姓名：若提到名字则提取，否则返回 null
+            - 职业/身份：如上班族、学生、程序员、教师等，若提到则返回，否则返回 null
+            - 性别：若能确定则返回，否则返回 null
+            - 年龄：若提到则返回整数，否则返回 null
+            - 身高厘米：若提到则返回数值，否则返回 null
+            - 体重公斤：若提到则返回数值，否则返回 null
+            - 身体状况：如过瘦、偏胖、膝盖不适、久坐、睡眠差等，没有则返回 null
+            - 健身/饮食目标：如增肌、减脂、保持、塑形，没有则返回 null
+            - 活动水平：如低、中、高，没有则返回 null
+            - 训练强度：如低、中、高，没有则返回 null
+            - 可用做饭/训练时间（分钟）：若提到则返回整数，否则返回 null
+            - 饮食方式：如 vegetarian、vegan、高蛋白、低脂等，没有则返回 null
+            - 过敏/不耐受：返回数组，没有则返回空数组
+            - 喜欢的食材：返回数组，没有则返回空数组
+            - 不喜欢的食材：返回数组，没有则返回空数组
+            - 偏好菜系：返回数组，没有则返回空数组
 
-        用户输入:
-        {user_message}
+            用户输入:
+            {user_message}
 
-        严格输出一个 JSON 对象，不要 Markdown：
-        {{
-            "intent": ["健身计划"],
-            "daily_diet": ["鸡胸肉", "米饭"],
-            "training_feedback": ["今天腿很酸", "跑步完成了 30 分钟"],
-            "name": "Will",
-            "job": "上班族",
-            "gender": null,
-            "age": null,
-            "height_cm": 180,
-            "weight_kg": 75,
-            "body_condition": null,
-            "goal": "增肌",
-            "activity_level": null,
-            "exercise_intensity": null,
-            "available_time_minutes": 30,
-            "diet": null,
-            "intolerances": [],
-            "preferred_ingredients": [],
-            "disliked_ingredients": [],
-            "preferred_cuisines": []
-        }}
-        """
+            严格输出一个 JSON 对象，不要 Markdown：
+            {{
+                "intent": ["健身计划"],
+                "daily_diet": ["鸡胸肉", "米饭"],
+                "training_feedback": ["今天腿很酸", "跑步完成了 30 分钟"],
+                "name": "Will",
+                "job": "上班族",
+                "gender": null,
+                "age": null,
+                "height_cm": 180,
+                "weight_kg": 75,
+                "body_condition": null,
+                "goal": "增肌",
+                "activity_level": null,
+                "exercise_intensity": null,
+                "available_time_minutes": 30,
+                "diet": null,
+                "intolerances": [],
+                "preferred_ingredients": [],
+                "disliked_ingredients": [],
+                "preferred_cuisines": []
+            }}
+            """
 
-        data = self.invoke_json(prompt, state)
+            data = self.invoke_json(prompt, state)
         intents = data.get("intent") or ["闲聊"]
         if isinstance(intents, str):
             intents = [intents]
@@ -156,6 +158,61 @@ class IntentNode(BaseNode):
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+    @staticmethod
+    def _deterministic_intent_data(user_message: str) -> dict[str, Any] | None:
+        """Fast path for common app modes to avoid an LLM round trip."""
+
+        text = user_message.strip()
+        if not text:
+            return None
+
+        intents: list[str] = []
+        if any(keyword in text for keyword in ["生成训练计划", "训练计划", "健身计划", "练腿", "练胸", "练背", "上肢", "下肢", "安排训练"]):
+            intents.append("健身计划")
+        if any(keyword in text for keyword in ["饮食计划", "记录饮食", "食谱", "吃什么", "热量", "蛋白质", "碳水", "脂肪"]):
+            intents.append("饮食计划")
+        if any(keyword in text for keyword in ["调整计划", "调整训练", "调整一下", "太累", "疼", "不舒服", "受伤", "疲劳"]):
+            intents.append("调整计划" if "健身计划" in intents else "反馈")
+        if not intents and any(keyword in text for keyword in ["完成", "反馈", "打卡", "感受"]):
+            intents.append("反馈")
+        if not intents and any(keyword in text for keyword in ["天气", "跑步路线", "晨跑", "夜跑"]):
+            intents.append("健身计划")
+
+        if not intents:
+            return None
+
+        goal = None
+        for keyword in ["减脂塑形", "减脂", "塑形", "增肌", "保持", "恢复", "提升体能"]:
+            if keyword in text:
+                goal = keyword
+                break
+
+        training_feedback = []
+        if any(keyword in text for keyword in ["疼", "不舒服", "受伤", "疲劳", "酸"]):
+            training_feedback.append(text[:120])
+
+        return {
+            "intent": intents,
+            "daily_diet": [],
+            "training_feedback": training_feedback,
+            "name": None,
+            "job": None,
+            "gender": "男" if "男" in text else ("女" if "女" in text else None),
+            "age": IntentNode._extract_age(text, None),
+            "height_cm": IntentNode._extract_height_cm(text, None),
+            "weight_kg": IntentNode._extract_weight_kg(text, None),
+            "body_condition": text[:120] if any(keyword in text for keyword in ["疼", "不舒服", "受伤", "久坐", "睡眠差"]) else None,
+            "goal": goal,
+            "activity_level": None,
+            "exercise_intensity": None,
+            "available_time_minutes": IntentNode._extract_available_time_minutes(text, None),
+            "diet": None,
+            "intolerances": [],
+            "preferred_ingredients": [],
+            "disliked_ingredients": [],
+            "preferred_cuisines": [],
+        }
 
     @staticmethod
     def _clean_str(value: Any) -> str | None:

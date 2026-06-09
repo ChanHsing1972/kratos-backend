@@ -3,9 +3,15 @@ from types import SimpleNamespace
 from langchain_core.messages import HumanMessage
 
 from app.agent.nodes.intent_node import IntentNode
+from app.agent.nodes.plan_node import PlanNode
+from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import Task
 from app.agent.state.session_state import SessionState
+from app.agent.tools.fitness_calculator_tool import (
+    get_calculate_workout_volume_tool,
+    get_pain_safety_gate_tool,
+)
 from app.agent.tool_registry import ToolMetadata
 from app.agent.tool_planner import repair_tool_args
 from app.agent.nodes.generate_node import GenerateNode
@@ -64,6 +70,33 @@ def test_intent_node_does_not_mutate_confirmed_memory():
     assert state.memory.long_term_memory.lifestyle_profile.goal is None
 
 
+def test_training_plan_fast_path_skips_planning_and_reasoning_llm():
+    class ExplodingLLM:
+        def invoke(self, prompt):
+            raise AssertionError("LLM should not be called for deterministic training plan path")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="你现在处于「生成训练计划」模式。请帮我安排45分钟训练"))
+    state.tools.available_tools = {
+        "pain_safety_gate": get_pain_safety_gate_tool(),
+        "calculate_workout_volume": get_calculate_workout_volume_tool(),
+    }
+
+    IntentNode(ExplodingLLM())(state)
+    PlanNode(ExplodingLLM())(state)
+    ReasonNode(ExplodingLLM())(state)
+
+    assert state.reasoning.intent == ["健身计划"]
+    assert len(state.reasoning.tasks) == 1
+    task = state.reasoning.tasks[0]
+    assert task.status == "waiting_for_tool"
+    assert [call.name for call in task.tool_calls] == [
+        "pain_safety_gate",
+        "calculate_workout_volume",
+    ]
+    assert task.tool_calls[1].args["time_min"] == 45
+
+
 def test_tool_arg_repair_uses_known_profile_without_unsafe_defaults():
     task = Task(task_id=0, name="计算基础代谢")
     empty_state = SessionState(session_id="s1", user_id="u1")
@@ -100,6 +133,23 @@ def test_tool_arg_repair_uses_known_profile_without_unsafe_defaults():
         "height_cm": 180,
         "weight_kg": 75,
     }
+
+
+def test_workout_volume_repair_uses_known_session_minutes():
+    task = Task(task_id=0, name="生成训练计划")
+    state = SessionState(session_id="s1", user_id="u1")
+    state.memory.long_term_memory.lifestyle_profile.workout_minutes_per_session = 45
+
+    args = repair_tool_args(
+        "calculate_workout_volume",
+        {},
+        "请根据我的目标生成下一周训练计划",
+        task,
+        state,
+    )
+
+    assert args["time_min"] == 45
+    assert args["exercise_count"] == 3
 
 
 def test_reflection_quality_gate_rejects_sixty_minutes_as_age():
@@ -142,6 +192,19 @@ def test_health_data_is_extracted_for_confirmation():
         "body_metric": {"weight_kg": 68.5},
         "checkin": {"sleep_hours": 7.5, "sleep_quality": 8, "energy_level": 7},
     }
+
+
+def test_health_data_extraction_skips_plain_plan_requests():
+    class ExplodingHealthDataLLM:
+        def invoke(self, prompt):
+            raise AssertionError("health extraction LLM should not run for plan-only requests")
+
+    pending = extract_body_data_from_message(
+        "请根据我的目标、可训练天数和恢复情况，生成下一周训练计划。",
+        llm=ExplodingHealthDataLLM(),
+    )
+
+    assert pending is None
 
 
 def test_legacy_weekly_schedule_is_converted_to_structured_sessions():

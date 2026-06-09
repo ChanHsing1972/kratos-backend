@@ -31,4 +31,5 @@ def get_agent_llm() -> ChatOpenAI:
         temperature=settings.AGENT_LLM_TEMPERATURE,
         timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,
         max_retries=settings.AGENT_LLM_MAX_RETRIES,
+        max_tokens=settings.AGENT_LLM_MAX_OUTPUT_TOKENS,
     )

@@ -24,6 +24,7 @@ from app.agent.state.result import (
     WorkoutSession,
 )
 from app.agent.state.session_state import SessionState
+from app.core.config import settings
 from app.services.exercise_media import display_exercise_name, list_supported_exercise_names
 
 
@@ -34,7 +35,13 @@ class GenerateNode(BaseNode):
         """非流式生成最终回答，并同步更新结构化结果。"""
 
         prompt = self.build_prompt(state)
-        response = self.llm.invoke(self.prompt_input(prompt, state, include_attachments=True))
+        response = self.llm.invoke(
+            self.prompt_input(
+                prompt,
+                state,
+                include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+            )
+        )
         response_text = self._extract_content(response)
         self.apply_response(state, response, response_text)
         return state
@@ -56,7 +63,13 @@ class GenerateNode(BaseNode):
         response_text = ""
         last_chunk = None
 
-        for chunk in self.llm.stream(self.prompt_input(prompt, state, include_attachments=True)):
+        for chunk in self.llm.stream(
+            self.prompt_input(
+                prompt,
+                state,
+                include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+            )
+        ):
             last_chunk = chunk
             delta = self._chunk_delta_text(chunk)
             if not delta:
@@ -279,8 +292,23 @@ class GenerateNode(BaseNode):
             tool_names=[tool_call.name for task in state.reasoning.tasks for tool_call in task.tool_calls],
             summary="strict workout_plan JSON",
         )
-        supported_exercises = "、".join(list_supported_exercise_names())
         user_text = self.latest_user_text(state)
+        requested_kind = self._requested_plan_kind(user_text)
+        if requested_kind is None:
+            requested_kind = "program" if any(keyword in response_text for keyword in ["周一", "周二", "周三", "周计划", "周期"]) else "daily"
+        visible_plan = self._build_visible_workout_plan_result(
+            response_text,
+            source,
+            state.reasoning.intent,
+            requested_kind,
+            self._requested_duration_weeks(user_text),
+        )
+        if visible_plan is not None:
+            return visible_plan
+        if not settings.AGENT_ENABLE_WORKOUT_PLAN_STRUCTURING_LLM:
+            return None
+
+        supported_exercises = "、".join(list_supported_exercise_names())
         force_daily = self._is_daily_request(user_text)
         prompt = f"""
         你是 Kratos 训练计划结构化输出器。

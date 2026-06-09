@@ -137,11 +137,20 @@ def extract_body_data_from_message(
 ) -> dict[str, Any] | None:
     """Extract possible health updates for user confirmation without writing them.
 
-    This intentionally uses the language model instead of regular expressions:
-    the confirmation card should be based on semantic extraction from the user
-    message and known profile context, not brittle text patterns.
+    Most messages are requests for advice rather than data updates.  Avoid an
+    LLM call unless the text looks like an explicit health/profile update.
     """
     if not message.strip():
+        return None
+    if not _looks_like_explicit_health_update(message):
+        return None
+
+    parsed = _parse_user_data(message)
+    if parsed:
+        normalized = _normalize_pending_health_data({"pending_health_data": _section_pending_health_data(parsed)})
+        if normalized:
+            return normalized
+    if not settings.AGENT_ENABLE_HEALTH_EXTRACTION_LLM:
         return None
     try:
         raw_payload = _extract_user_health_data_with_llm(
@@ -152,6 +161,65 @@ def extract_body_data_from_message(
     except Exception:
         return None
     return _normalize_pending_health_data(raw_payload)
+
+
+def _looks_like_explicit_health_update(message: str) -> bool:
+    text = message.strip()
+    if not text:
+        return False
+    request_markers = ["生成", "制定", "安排", "推荐", "计划", "怎么练", "怎么吃", "根据我的", "帮我"]
+    update_markers = ["记录", "更新", "修改", "改成", "新增", "保存", "录入", "打卡", "今天", "刚刚", "现在", "我的", "我是", "我 "]
+    field_markers = [
+        "体重",
+        "身高",
+        "体脂",
+        "腰围",
+        "胸围",
+        "臀围",
+        "睡眠",
+        "睡了",
+        "精力",
+        "酸痛",
+        "疼痛说明",
+        "不适说明",
+        "年龄",
+        "性别",
+        "训练经验",
+        "活动水平",
+        "器械",
+        "伤病",
+        "忌口",
+        "过敏",
+    ]
+    has_field = any(marker in text for marker in field_markers)
+    if not has_field:
+        return False
+    if any(marker in text for marker in update_markers):
+        return True
+    if re.search(r"(身高|体重|体脂|睡眠|精力|酸痛|年龄|性别)\s*[:：=为是]\s*", text):
+        return True
+    if re.search(r"\b\d+(?:\.\d+)?\s*(?:kg|cm|小时|h|岁|%)\b", text, flags=re.IGNORECASE):
+        return not any(marker in text for marker in request_markers)
+    return False
+
+
+def _section_pending_health_data(flat_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    pending: dict[str, dict[str, Any]] = {
+        "profile": {},
+        "body_metric": {},
+        "health_metric": {},
+        "checkin": {},
+    }
+    for key, value in flat_data.items():
+        if key in PROFILE_FIELDS:
+            pending["profile"][key] = value
+        elif key in BODY_METRIC_FIELDS:
+            pending["body_metric"][key] = value
+        elif key in CHECKIN_FIELDS:
+            pending["checkin"][key] = value
+        elif key in HEALTH_METRIC_FIELDS:
+            pending["health_metric"][key] = value
+    return pending
 
 
 def _extract_user_health_data_with_llm(

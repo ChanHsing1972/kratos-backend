@@ -419,6 +419,8 @@ def compress_session_summary(summary: str) -> str:
     cleaned_summary = summary.strip()
     if len(cleaned_summary) <= SESSION_SUMMARY_LIMIT:
         return cleaned_summary
+    if not settings.AGENT_ENABLE_MEMORY_SUMMARY_LLM:
+        return cleaned_summary[-SESSION_SUMMARY_LIMIT:]
 
     prompt = f"""
     你是中文对话摘要压缩器。请把下面的会话摘要压缩为更短的版本，保留这些内容：
@@ -460,13 +462,14 @@ def _build_title_from_message(
     if not cleaned_message:
         return DEFAULT_SESSION_TITLE
 
-    generated_title = _generate_session_title_with_llm(
-        user_message=cleaned_message,
-        assistant_message=_clip_title_context(assistant_message or ""),
-        summary=_clip_title_context(summary or "", limit=500),
-    )
-    if generated_title:
-        return generated_title
+    if settings.AGENT_ENABLE_SESSION_TITLE_LLM:
+        generated_title = _generate_session_title_with_llm(
+            user_message=cleaned_message,
+            assistant_message=_clip_title_context(assistant_message or ""),
+            summary=_clip_title_context(summary or "", limit=500),
+        )
+        if generated_title:
+            return generated_title
 
     return _fallback_session_title(cleaned_message)
 

@@ -20,6 +20,13 @@ class PlanNode(BaseNode):
         reflection = state.reasoning.reflection or {}
         extracted_info = state.reasoning.extracted_info or {}
         skill_context = self.describe_active_skills(state)
+        deterministic_tasks = self._deterministic_tasks(intent, user_msg, extracted_info)
+        if deterministic_tasks is not None and not reflection:
+            state.reasoning.tasks = deterministic_tasks
+            state.reasoning.current_task_index = 0
+            state.reasoning.need_replan = False
+            self.logger.debug("PlanNode deterministic result: %s", {"tasks": [task.model_dump() for task in deterministic_tasks]})
+            return state
 
         prompt = f"""
         你是健身 Agent 的任务规划器。请根据用户意图、用户消息、第一轮 AI 分析以及反思建议来拆解任务。
@@ -88,6 +95,50 @@ class PlanNode(BaseNode):
         self.logger.debug("PlanNode result: %s", {"tasks": [task.model_dump() for task in tasks]})
 
         return state
+
+    @staticmethod
+    def _deterministic_tasks(
+        intent: list[str],
+        user_message: str,
+        extracted_info: dict,
+    ) -> list[Task] | None:
+        if "健身计划" in intent:
+            profile = extracted_info.get("profile", {}) if isinstance(extracted_info, dict) else {}
+            available_time = profile.get("available_time_minutes") if isinstance(profile, dict) else None
+            is_cycle = any(keyword in user_message for keyword in ["每周", "一周", "下周", "周期", "长期", "多周", "周计划"])
+            title = "生成周期训练计划" if is_cycle else "生成今日训练计划"
+            time_part = f"可用训练时长约 {available_time} 分钟。" if available_time else "结合档案中的可训练时长。"
+            return [
+                Task(
+                    task_id=0,
+                    name=title,
+                    description=(
+                        "基于已读取的数据库上下文、当前恢复状态和启用 Skill 的安全约束，"
+                        f"{'生成至少一周的训练安排。' if is_cycle else '生成本次可直接执行的训练安排。'}"
+                        f"{time_part}"
+                    ),
+                )
+            ]
+
+        if "饮食计划" in intent:
+            return [
+                Task(
+                    task_id=0,
+                    name="生成饮食建议",
+                    description="基于用户目标、身体数据、饮食记录和当前输入生成可执行饮食建议。",
+                )
+            ]
+
+        if "反馈" in intent or "调整计划" in intent:
+            return [
+                Task(
+                    task_id=0,
+                    name="处理训练反馈",
+                    description="读取用户反馈和近期训练上下文，给出安全调整建议。",
+                )
+            ]
+
+        return None
 
     @staticmethod
     def _sanitize_task_description(description: str, extracted_info: dict) -> str:

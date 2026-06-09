@@ -76,7 +76,7 @@ def estimate_food_from_image(
 
     if client is not None:
         content = _estimate_with_vision_client(client, data_url=data_url)
-    elif settings.FOOD_VISION_EFFECTIVE_API_KEY:
+    elif settings.FOOD_VISION_API_KEY or settings.OPENAI_API_KEY:
         content = _estimate_with_vision_client(
             get_food_vision_client(),
             data_url=data_url,
@@ -214,9 +214,9 @@ def _prepare_image_for_model(*, image_bytes: bytes, mime_type: str) -> tuple[byt
                 image = image.convert("RGB")
             elif image.mode == "L":
                 image = image.convert("RGB")
-            image.thumbnail((1024, 1024))
+            image.thumbnail((768, 768))
             output = BytesIO()
-            image.save(output, format="JPEG", quality=82, optimize=True)
+            image.save(output, format="JPEG", quality=70, optimize=True)
             return output.getvalue(), "image/jpeg"
     except Exception:
         return image_bytes, mime_type

@@ -10,7 +10,7 @@ import json
 from app.agent.json_utils import LLMJsonParseError
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import TaskStatus
-from app.agent.tool_planner import build_fallback_reason_data, parse_tool_calls
+from app.agent.tool_planner import build_fallback_reason_data, parse_tool_calls, repair_tool_args
 
 
 class ReasonNode(BaseNode):
@@ -33,10 +33,15 @@ class ReasonNode(BaseNode):
 
             return state
 
-        convs = state.conversation.conversations
         available_tools = sorted(state.tools.available_tools.keys())
-        tool_descriptions = self.describe_tools(state.tools.available_tools)
         user_message = self.latest_user_text(state)
+        task.status = TaskStatus.running
+        fast_data = self._deterministic_reason_data(state, task, user_message, available_tools)
+        if fast_data is not None:
+            return self._apply_reason_data(state, task, fast_data, available_tools, user_message)
+
+        convs = state.conversation.conversations
+        tool_descriptions = self.describe_tools(state.tools.available_tools)
         first_ai_message = state.conversation.first_ai_message or state.result.first_response or ""
         extracted_info = state.reasoning.extracted_info or {}
         memory_context = self._memory_context(state)
@@ -189,6 +194,109 @@ class ReasonNode(BaseNode):
         self.logger.debug("ReasonNode failed task: %s", data)
 
         return state
+
+    def _apply_reason_data(
+        self,
+        state,
+        task,
+        data: dict,
+        available_tools: list[str],
+        user_message: str,
+    ):
+        if not task.tool_calls:
+            task.tool_calls = parse_tool_calls(
+                data.get("tool_calls"), available_tools, user_message, task, state
+            )
+            task.result = data.get("result")
+            if task.tool_calls and not task.result:
+                task.status = TaskStatus.waiting_for_tool
+                self.logger.debug("ReasonNode deterministic tool calls: %s", data)
+                return state
+        else:
+            task.result = data.get("result")
+
+        if task.result:
+            task.status = TaskStatus.done
+            state.reasoning.advance_task()
+            self.logger.debug("ReasonNode deterministic result: %s", data)
+            return state
+
+        task.status = TaskStatus.failed
+        task.error = "Reasoning step did not produce a task result."
+        state.reasoning.errors.append(f"{task.name}: {task.error}")
+        return state
+
+    @staticmethod
+    def _deterministic_reason_data(
+        state,
+        task,
+        user_message: str,
+        available_tools: list[str],
+    ) -> dict | None:
+        available = set(available_tools)
+        is_fitness_plan = any(intent in state.reasoning.intent for intent in ["健身计划", "调整计划"])
+        is_weather_request = "天气" in user_message or "适合运动" in user_message or "适合跑步" in user_message
+
+        if task.tool_calls:
+            if is_fitness_plan:
+                summaries = []
+                for result in task.tool_results:
+                    if not isinstance(result, dict):
+                        summaries.append(str(result))
+                        continue
+                    tool = result.get("tool")
+                    if tool == "pain_safety_gate":
+                        reasons = "；".join(str(item) for item in result.get("reasons") or [])
+                        summaries.append(f"安全门建议：{result.get('action')}，{reasons}")
+                    elif tool == "calculate_workout_volume":
+                        summaries.append(
+                            "训练量估算："
+                            f"{result.get('exercise_count')} 个动作，"
+                            f"每个动作约 {result.get('sets_per_exercise')} 组，"
+                            f"预计用时 {result.get('estimated_used_minutes')} 分钟。"
+                        )
+                    else:
+                        summaries.append(json.dumps(result, ensure_ascii=False, default=str))
+                return {
+                    "tool_calls": [],
+                    "result": "；".join(item for item in summaries if item) or "工具结果已获取，请据此生成保守训练建议。",
+                }
+            return None
+
+        tool_calls: list[dict] = []
+        if is_fitness_plan:
+            if "pain_safety_gate" in available:
+                tool_calls.append(
+                    {
+                        "tool_name": "pain_safety_gate",
+                        "args": repair_tool_args("pain_safety_gate", {}, user_message, task, state),
+                        "id": "deterministic-safety-gate",
+                    }
+                )
+            if "calculate_workout_volume" in available:
+                tool_calls.append(
+                    {
+                        "tool_name": "calculate_workout_volume",
+                        "args": repair_tool_args("calculate_workout_volume", {}, user_message, task, state),
+                        "id": "deterministic-workout-volume",
+                    }
+                )
+            if is_weather_request and "weather_fitness_advisor" in available:
+                tool_calls.append(
+                    {
+                        "tool_name": "weather_fitness_advisor",
+                        "args": repair_tool_args("weather_fitness_advisor", {}, user_message, task, state),
+                        "id": "deterministic-weather",
+                    }
+                )
+            if tool_calls:
+                return {"tool_calls": tool_calls, "result": None}
+            return {
+                "tool_calls": [],
+                "result": "已读取用户上下文和训练目标，请生成可执行训练安排，并说明必要的安全边界。",
+            }
+
+        return None
 
     @staticmethod
     def _memory_context(state) -> dict:

@@ -6,7 +6,7 @@ AgentRun 是一次 Agent 对话的审计记录：保存用户消息、最终回�
 
 from typing import Any
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.exc import IntegrityError
 
 from app.agent.state.session_state import SessionState
+from app.core.config import settings
 from app.models.agent_run import AgentRun, AgentTraceStep
 from app.schemas.agent_chat import AgentTraceStep as AgentTraceStepSchema
 
@@ -167,6 +168,7 @@ def get_agent_runs_by_user_id(
 ) -> list[AgentRun]:
     """列出用户最近的 AgentRun，可按会话过滤。"""
 
+    cancel_stale_agent_runs(db, user_id=user_id)
     query = (
         db.query(AgentRun)
         .options(selectinload(AgentRun.trace_steps))
@@ -175,6 +177,33 @@ def get_agent_runs_by_user_id(
     if session_id:
         query = query.filter(AgentRun.session_id == session_id)
     return query.order_by(AgentRun.created_at.desc(), AgentRun.id.desc()).limit(limit).all()
+
+
+def cancel_stale_agent_runs(
+    db: Session,
+    *,
+    user_id: int | None = None,
+    older_than_seconds: int | None = None,
+) -> int:
+    """Mark abandoned running Agent runs as cancelled.
+
+    Streaming runs can be interrupted by browser refreshes or old deployments.
+    Keeping those rows as ``running`` makes the frontend repeatedly attach to
+    work that no longer has a live in-process stream.
+    """
+
+    stale_seconds = older_than_seconds or settings.AGENT_RUNNING_STALE_SECONDS
+    cutoff = datetime.utcnow() - timedelta(seconds=max(60, stale_seconds))
+    query = db.query(AgentRun).filter(AgentRun.status == "running", AgentRun.created_at < cutoff)
+    if user_id is not None:
+        query = query.filter(AgentRun.user_id == user_id)
+    runs = query.all()
+    for run in runs:
+        run.status = "cancelled"
+        db.add(run)
+    if runs:
+        db.commit()
+    return len(runs)
 
 
 def get_latest_agent_memory_payload(

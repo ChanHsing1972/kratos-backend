@@ -20,11 +20,17 @@ from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.state.session_state import SessionState
+from app.core.config import settings
 
 _logger = logging.getLogger(__name__)
 
 
 AfterNodeCallback = Callable[[str, SessionState], Iterable[dict[str, Any]]]
+CancelCheck = Callable[[], bool]
+
+
+class AgentCancelledError(RuntimeError):
+    """Raised when a streaming Agent run is cancelled by the client."""
 
 
 @dataclass
@@ -55,7 +61,7 @@ def build_agent_nodes(llm) -> AgentNodeSet:
         finish=FinishNode(llm),
         generate=GenerateNode(llm),
         reflect=ReflectNode(llm),
-        end=EndNode(llm),
+        end=EndNode(llm if settings.AGENT_ENABLE_MEMORY_SUMMARY_LLM else None),
     )
 
 
@@ -89,6 +95,7 @@ class AgentRunner:
         *,
         stream_answer: bool,
         after_node: AfterNodeCallback | None = None,
+        should_cancel: CancelCheck | None = None,
     ) -> Iterator[dict[str, Any]]:
         """执行 Agent 并产出流式事件。
 
@@ -107,14 +114,18 @@ class AgentRunner:
         user_id = getattr(state, "user_id", "unknown")
         session_id = state.session_id
 
+        self._raise_if_cancelled(should_cancel)
         t0 = time.monotonic()
         state = self.nodes.intent(state)
+        self._raise_if_cancelled(should_cancel)
         _log_node_time("intent", t0, user_id, session_id)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("intent", state, after_node)
 
+        self._raise_if_cancelled(should_cancel)
         t0 = time.monotonic()
         state = self.nodes.plan(state)
+        self._raise_if_cancelled(should_cancel)
         _log_node_time("plan", t0, user_id, session_id)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("plan", state, after_node)
@@ -123,8 +134,10 @@ class AgentRunner:
 
         while state.reasoning.replan_count <= state.reasoning.max_replans:
             while True:
+                self._raise_if_cancelled(should_cancel)
                 t0 = time.monotonic()
                 state = self.nodes.reason(state)
+                self._raise_if_cancelled(should_cancel)
                 _log_node_time("reason", t0, user_id, session_id)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("reason", state, after_node)
@@ -134,15 +147,19 @@ class AgentRunner:
                     break
 
                 if task.status == TaskStatus.waiting_for_tool:
+                    self._raise_if_cancelled(should_cancel)
                     t0 = time.monotonic()
                     state = self.nodes.act(state)
+                    self._raise_if_cancelled(should_cancel)
                     _log_node_time("act", t0, user_id, session_id)
                     step_count = self._check_step_budget(step_count)
                     yield from self._after_node("act", state, after_node)
                     continue
 
+                self._raise_if_cancelled(should_cancel)
                 t0 = time.monotonic()
                 state = self.nodes.finish(state)
+                self._raise_if_cancelled(should_cancel)
                 _log_node_time("finish", t0, user_id, session_id)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("finish", state, after_node)
@@ -156,17 +173,22 @@ class AgentRunner:
 
             if stream_answer:
                 for generated_event in self.nodes.generate.stream_response_events(state):
+                    self._raise_if_cancelled(should_cancel)
                     yield generated_event
             else:
+                self._raise_if_cancelled(should_cancel)
                 t0 = time.monotonic()
                 state = self.nodes.generate(state)
+                self._raise_if_cancelled(should_cancel)
                 _log_node_time("generate", t0, user_id, session_id)
             step_count = self._check_step_budget(step_count)
             final_generated = True
             yield from self._after_node("generate", state, after_node)
 
+            self._raise_if_cancelled(should_cancel)
             t0 = time.monotonic()
             state = self.nodes.reflect(state)
+            self._raise_if_cancelled(should_cancel)
             _log_node_time("reflect", t0, user_id, session_id)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("reflect", state, after_node)
@@ -180,6 +202,7 @@ class AgentRunner:
                 "raw": {"node": "plan", "reason": "reflection_failed"},
             }
             state = self.nodes.plan(state)
+            self._raise_if_cancelled(should_cancel)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("plan", state, after_node)
 
@@ -197,7 +220,9 @@ class AgentRunner:
                 "raw": state.result.model_dump(mode="json"),
             }
 
+        self._raise_if_cancelled(should_cancel)
         t_end = self.nodes.end(state)
+        self._raise_if_cancelled(should_cancel)
         _log_node_time("end", time.monotonic() - 0.001, user_id, session_id)  # approximate
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("end", state, after_node)
@@ -218,6 +243,11 @@ class AgentRunner:
         if next_count > self.max_node_steps:
             raise RuntimeError("Agent exceeded maximum orchestration steps.")
         return next_count
+
+    @staticmethod
+    def _raise_if_cancelled(should_cancel: CancelCheck | None) -> None:
+        if should_cancel is not None and should_cancel():
+            raise AgentCancelledError("Agent run cancelled by client.")
 
     @staticmethod
     def _surface_unresolved_quality_issues(state: SessionState) -> str | None:

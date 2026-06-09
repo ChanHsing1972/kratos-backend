@@ -15,6 +15,7 @@ from app.db.schema_sync import ensure_runtime_schema
 from app.db.session import Base, SessionLocal, engine
 from app.models import User
 from app.services.conversation_session import backfill_conversation_sessions_from_agent_runs
+from app.services.agent_run import cancel_stale_agent_runs
 from app.services.skill import seed_builtin_skills
 
 
@@ -28,6 +29,7 @@ except SQLAlchemyError as exc:
 try:
     with SessionLocal() as seed_db:
         seed_builtin_skills(seed_db)
+        cancel_stale_agent_runs(seed_db)
         backfill_conversation_sessions_from_agent_runs(seed_db)
 except SQLAlchemyError as exc:
     print(f"[startup] Database seed/backfill skipped: {exc}")

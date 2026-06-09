@@ -57,10 +57,10 @@ TEXT_ATTACHMENT_TYPES = {
 DOCX_ATTACHMENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_ATTACHMENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PDF_ATTACHMENT_TYPE = "application/pdf"
-ATTACHMENT_TEXT_PREVIEW_CHARS = 12_000
-AGENT_IMAGE_MAX_EDGE_PX = 1024
-AGENT_IMAGE_JPEG_QUALITY = 72
-AGENT_IMAGE_TARGET_BYTES = 450 * 1024
+ATTACHMENT_TEXT_PREVIEW_CHARS = 4_000
+AGENT_IMAGE_MAX_EDGE_PX = 768
+AGENT_IMAGE_JPEG_QUALITY = 64
+AGENT_IMAGE_TARGET_BYTES = 220 * 1024
 
 
 def is_allowed_upload(file: UploadFile, allowed_types: set[str]) -> bool:

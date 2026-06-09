@@ -6,12 +6,13 @@ Agent、补齐动作媒体、持久化运行结果和会话产物。状态构造
 """
 
 from functools import lru_cache
+from collections.abc import Callable
 from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
 from app.agent.llm import get_agent_llm
-from app.agent.runner import AgentRunner, build_agent_nodes
+from app.agent.runner import AgentCancelledError, AgentRunner, build_agent_nodes
 from app.agent.state.result import ExerciseMedia
 from app.agent.state.session_state import SessionState
 from app.schemas.agent_chat import AgentTraceStep
@@ -121,6 +122,7 @@ def stream_agent_chat(
     session_id: str | None = None,
     client_turn_id: str | None = None,
     db: Session | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """流式运行一次 Agent 聊天并产出 SSE 事件字典。
 
@@ -129,6 +131,8 @@ def stream_agent_chat(
     """
 
     persisted_trace: list[AgentTraceStep] = []  # 持久化的 trace 事件列表，最终会保存到数据库中；在生成事件时会同时追加到这个列表中，以确保持久化和 SSE 输出的一致性
+    if is_cancelled is not None and is_cancelled():
+        return
     prepared = prepare_agent_state(  # 准备 Agent 状态，包括构造 SessionState、处理附件、查询上下文和 Skill 等；返回一个包含准备好的状态和相关信息的对象
         user_id=user_id,
         message=message,
@@ -160,6 +164,11 @@ def stream_agent_chat(
                     "session_id": reserved_run.session_id,
                 }
             return
+
+    if is_cancelled is not None and is_cancelled():
+        if db is not None:
+            fail_reserved_agent_run(db, reserved_run.id if reserved_run else None, status="cancelled")
+        return
 
     event = {
         "type": "status",
@@ -199,9 +208,13 @@ def stream_agent_chat(
     final_state = state  # 最终状态，初始为准备好的状态；在运行 Agent 的过程中会不断更新这个状态，直到得到最终的结果状态
 
     try:
-        for event in _run_streaming_agent(final_state, emitted_keys):
+        for event in _run_streaming_agent(final_state, emitted_keys, is_cancelled=is_cancelled):
             append_persistable_event(persisted_trace, event)
             yield event
+    except AgentCancelledError:
+        if db is not None:
+            fail_reserved_agent_run(db, reserved_run.id if reserved_run else None, status="cancelled")
+        return
     except GeneratorExit:
         if db is not None:
             fail_reserved_agent_run(db, reserved_run.id if reserved_run else None, status="cancelled")
@@ -237,6 +250,7 @@ def stream_agent_chat(
 def _run_streaming_agent(
     state: SessionState,
     emitted_keys: set[tuple[str, str]],
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """运行 AgentRunner 的流式接口，并把 final_state 转为 final 事件。"""
 
@@ -247,6 +261,7 @@ def _run_streaming_agent(
         state,
         stream_answer=True,
         after_node=emit_trace,
+        should_cancel=is_cancelled,
     ):
         event = dict(raw_event)
         event["session_id"] = state.session_id

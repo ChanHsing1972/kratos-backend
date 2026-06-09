@@ -170,7 +170,7 @@ def repair_tool_args(
         _repair_safety_args(args, user_message, task)
 
     if tool_name == "calculate_workout_volume":
-        _repair_workout_volume_args(args, user_message)
+        _repair_workout_volume_args(args, user_message, state)
 
     if tool_name == "calculate_calories_burned":
         _repair_calories_args(args, user_message, state)
@@ -371,10 +371,15 @@ def _repair_safety_args(args: dict[str, Any], user_message: str, task: Task) -> 
         args["planned_activity"] = task.description or task.name
 
 
-def _repair_workout_volume_args(args: dict[str, Any], user_message: str) -> None:
+def _repair_workout_volume_args(
+    args: dict[str, Any],
+    user_message: str,
+    state: SessionState | None,
+) -> None:
     if not args.get("time_min"):
         minute_match = re.search(r"(\d+)\s*分钟", user_message)
-        args["time_min"] = int(minute_match.group(1)) if minute_match else 30
+        known_minutes = known_profile_value(state, "workout_minutes_per_session")
+        args["time_min"] = int(minute_match.group(1)) if minute_match else int(known_minutes or 30)
     if not args.get("exercise_count"):
         count_match = re.search(r"(\d+)\s*个动作", user_message)
         args["exercise_count"] = int(count_match.group(1)) if count_match else 3

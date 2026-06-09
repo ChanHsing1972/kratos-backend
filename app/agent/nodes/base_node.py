@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from app.agent.json_utils import parse_json_object
+from app.core.config import settings
 from app.agent.state.session_state import SessionState
 
 
@@ -63,7 +64,13 @@ class BaseNode:
         """
 
         t0 = time.monotonic()
-        response = self.llm.invoke(self.prompt_input(prompt, state, include_attachments=True))
+        response = self.llm.invoke(
+            self.prompt_input(
+                prompt,
+                state,
+                include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+            )
+        )
         content = self._extract_content(response)
         elapsed = time.monotonic() - t0
         self.logger.info(
