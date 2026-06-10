@@ -239,6 +239,28 @@ def list_supported_exercise_names() -> list[str]:
     return _unique_preserve_order(names)
 
 
+def resolve_supported_exercise_name(action_name: str, db: Session | None = None) -> str:
+    """Resolve a generated action name to the closest displayable exercise name.
+
+    Prefer a media-backed library match so front-end training cards can render an
+    actual image/video. Fall back to the built-in Chinese alias map, then to the
+    cleaned original action name.
+    """
+
+    normalized_action = normalize_action_name(action_name)
+    if not normalized_action or is_non_exercise(normalized_action):
+        return normalized_action or action_name
+
+    library_match = _get_library_media(db, normalized_action)
+    if library_match is not None:
+        library_name = _clean_optional_text(library_match.get("exercise_name"))
+        if library_name:
+            return display_exercise_name(library_name)
+
+    display_name = display_exercise_name(normalized_action)
+    return display_name or normalized_action
+
+
 def _get_library_media(db: Session | None, normalized_action: str) -> dict[str, Any] | None:
     try:
         from app.services.exercise_library import find_library_media

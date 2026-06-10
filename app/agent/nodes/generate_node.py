@@ -88,24 +88,15 @@ class GenerateNode(BaseNode):
                 if not delta:
                     continue
                 response_text += delta
-                yield {
-                    "type": "answer_delta",
-                    "delta": delta,
-                    "content": delta,
-                }
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
             fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
-            delta = (
-                fallback_text[len(response_text) :]
-                if response_text and fallback_text.startswith(response_text)
-                else fallback_text
-            )
-            if delta:
+            normalized_fallback_text = self._normalize_markdown_response(fallback_text)
+            if normalized_fallback_text:
                 yield {
                     "type": "answer_delta",
-                    "delta": delta,
-                    "content": delta,
+                    "delta": normalized_fallback_text,
+                    "content": normalized_fallback_text,
                 }
             yield {
                 "type": "status",
@@ -117,12 +108,23 @@ class GenerateNode(BaseNode):
                     "timeout": self._looks_like_timeout(exc),
                 },
             }
-            self.apply_response(state, AIMessage(content=fallback_text), fallback_text)
+            self.apply_response(
+                state,
+                AIMessage(content=normalized_fallback_text),
+                normalized_fallback_text,
+            )
             return
 
         # If streaming returned empty (GLM thinking model), try the collected content
         if not response_text.strip() and last_chunk is not None:
             response_text = self._extract_content(last_chunk)
+        normalized_response_text = self._normalize_markdown_response(response_text)
+        if normalized_response_text:
+            yield {
+                "type": "answer_delta",
+                "delta": normalized_response_text,
+                "content": normalized_response_text,
+            }
 
         elapsed = time.monotonic() - t0
         self.logger.info(
@@ -132,8 +134,8 @@ class GenerateNode(BaseNode):
             getattr(self.llm, "model_name", "") or "",
         )
 
-        structured_card_pending = self._should_emit_workout_plan(state, response_text)
-        if response_text:
+        structured_card_pending = self._should_emit_workout_plan(state, normalized_response_text)
+        if normalized_response_text:
             yield {
                 "type": "status",
                 "content": ("Markdown 回答已生成，正在整理可保存的 AI 周期计划草稿" if structured_card_pending else "Markdown 回答已生成，正在完成最终校验"),
@@ -143,7 +145,7 @@ class GenerateNode(BaseNode):
                 },
             }
 
-        self.apply_response(state, AIMessage(content=response_text), response_text)
+        self.apply_response(state, AIMessage(content=normalized_response_text), normalized_response_text)
 
     def _fallback_response_text(
         self,
@@ -241,6 +243,7 @@ class GenerateNode(BaseNode):
         - Markdown 表格必须使用标准 GFM 多行格式：表头一行、分隔行一行、每条数据各占一行；不要把多行表格压成一行。
         - Markdown 表格分隔行必须与表头列数一致，例如 `| --- | --- | --- |`；不要输出单独的 `---`、`|---` 或把分隔行当成数据行。
         - 表格单元格内不要输出 HTML，例如 `<br>`；如果一个单元格有多项内容，用中文分号 `；` 分隔。
+        - 个人基础信息必须使用 Markdown 表格或每行一个字段；禁止输出 `性别：男 年龄：21岁 身高：183 cm` 这种单行粘连格式。
         - 列表项必须独占一行，使用 `- 内容`，不要写成 `标题- 内容`。
         - 段落不要以裸冒号开头，例如不要写 `: 若您暂无法...`；标题不要用 `|` 当装饰分隔符，写 `今日训练：全身激活 · 25分钟`，不要写 `今日训练|全身激活·25分钟`。
         - 编号列表必须独占一行，例如 `2. 目标与条件` 前必须换行；不要写成 `年龄：____ 岁2. 目标与条件`。
@@ -344,12 +347,32 @@ class GenerateNode(BaseNode):
         if not text:
             return text
 
+        text = re.sub(r"(?m)^(\s*#{1,6})(?!#)(?=\S)", r"\1 ", text)
         text = re.sub(r"(?m)^(\s*#{1,6})\s+(?:#\s*)+", r"\1 ", text)
+        text = re.sub(r"([^\n])\s+(#{1,6}\s+)", r"\1\n\n\2", text)
+        text = re.sub(r"([^\n])\s*(#{2,6})(?!#)(?=\S)", r"\1\n\n\2 ", text)
+        text = re.sub(
+            r"([^\n•·*+\-])\s*-\s*(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
+            r"\1\n",
+            text,
+        )
+        text = re.sub(
+            r"([^\n•·*+\-])\s+(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
+            r"\1\n",
+            text,
+        )
+        text = re.sub(r"(?m)^个人基础信息$", "## 个人基础信息", text)
         for title in (
             "当前状态摘要",
             "当前无法生成可靠训练计划的原因",
+            "个人基础信息",
             "今日训练方案",
             "恢复训练安排",
+            "今日下肢训练安排",
+            "下肢训练安排",
+            "今日上肢训练安排",
+            "上肢训练安排",
+            "今日训练安排",
             "今日必须完成事项",
             "下周训练计划优化建议",
             "执行要点",
@@ -382,8 +405,21 @@ class GenerateNode(BaseNode):
         text = "\n".join(GenerateNode._split_trailing_text_after_table_row(line) for line in text.split("\n"))
         text = re.sub(r"([。.!?！？])\s*(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
         text = re.sub(r"([。.!?！？])\s*(#{2,6}\s+)", r"\1\n\n\2", text)
+        text = re.sub(r"([^\n])\s+(#{1,6}\s+)", r"\1\n\n\2", text)
+        text = re.sub(r"([^\n])\s*(#{2,6})(?!#)(?=\S)", r"\1\n\n\2 ", text)
         text = re.sub(r"([^\n])\s+(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
         text = re.sub(r"([^\n])\s+(#{2,6}\s+)", r"\1\n\n\2", text)
+        text = re.sub(
+            r"([^\n•·*+\-])\s*-\s*(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
+            r"\1\n",
+            text,
+        )
+        text = re.sub(
+            r"([^\n•·*+\-])\s+(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
+            r"\1\n",
+            text,
+        )
+        text = re.sub(r"(?m)^个人基础信息$", "## 个人基础信息", text)
         text = re.sub(r"([。！？!?；;：:])\s*([-*+]\s+)", r"\1\n\2", text)
         text = re.sub(r"([。！？!?；;：:])\s*(\d+[.)、]\s+)", r"\1\n\2", text)
         text = re.sub(r"([\u4e00-\u9fffA-Za-z）)_%％])\s*(\d+[.)、]\s+)", r"\1\n\2", text)
@@ -396,6 +432,7 @@ class GenerateNode(BaseNode):
         text = re.sub(r"([A-Za-z0-9\u4e00-\u9fff）)])\s*>\s*(?=(?:🔐|✅|⚠️?|📌|📋)|[\u4e00-\u9fff])", r"\1 ", text)
         text = re.sub(r"([\u4e00-\u9fffA-Za-z0-9）)]{2,32})\s*[-*]\s+(?=\S)", r"\1\n- ", text)
         text = re.sub(r"([^\n])---(?=\n|$)", r"\1\n\n---", text)
+        text = re.sub(r"(?m)^(\s*#{1,6})(?!#)(?=\S)", r"\1 ", text)
         text = re.sub(r"(?m)^(\s*#{1,6})\s+(?:#\s*)+", r"\1 ", text)
         text = "\n".join(GenerateNode._strip_unmatched_strong_markers(line) for line in text.split("\n"))
         text = GenerateNode._separate_markdown_table_blocks(text)
@@ -616,21 +653,6 @@ class GenerateNode(BaseNode):
             summary="strict workout_plan JSON",
         )
         user_text = self.latest_user_text(state)
-        requested_kind = self._requested_plan_kind(user_text)
-        if requested_kind is None:
-            requested_kind = "program" if any(keyword in response_text for keyword in ["周一", "周二", "周三", "周计划", "周期"]) else "daily"
-        visible_plan = self._build_visible_workout_plan_result(
-            response_text,
-            source,
-            state.reasoning.intent,
-            requested_kind,
-            self._requested_duration_weeks(user_text),
-        )
-        if visible_plan is not None:
-            return visible_plan
-        if not settings.AGENT_ENABLE_WORKOUT_PLAN_STRUCTURING_LLM:
-            return None
-
         supported_exercises = "、".join(list_supported_exercise_names())
         force_daily = self._is_daily_request(user_text)
         prompt = f"""
@@ -671,7 +693,7 @@ class GenerateNode(BaseNode):
         规则：
         - 必须输出合法 JSON，根字段只能是 workout_plan。
         - 训练动作必须放在 sessions[].exercises[]，不要塞进 Markdown 表格字符串。
-        - exercises[].name 只能写动作名称，不能包含“可选”“3组”“休息60秒”“每组间休息”等处方文字。
+        - exercises[].name 只能写动作名称，不能包含“可选”“3组”“休息60秒”“每组间休息”“今日训练建议总时长”“强度为”“建议”“风险”“恢复”“总时长”等处方或说明文字。
         - 热身、冷身、拉伸、慢走、补水、睡眠、注意事项、风险提示不要作为 exercises 输出，可放入 notes 或 precautions。
         - 动作名称必须优先从“可展示动作库”中选择，并使用库里的准确名称。
         - 如果原文动作不在库里，选择最接近的库内动作替代，并把替代说明写进 notes。
@@ -1129,11 +1151,14 @@ class GenerateNode(BaseNode):
                     if not isinstance(item, dict):
                         continue
                     name = item.get("name") or item.get("title")
-                    if not name or GenerateNode._is_guidance_line(str(name)):
+                    if not name or GenerateNode._is_invalid_exercise_name(str(name)):
+                        continue
+                    cleaned_name = GenerateNode._clean_exercise_name(str(name))
+                    if GenerateNode._is_invalid_exercise_name(cleaned_name):
                         continue
                     exercises.append(
                         WorkoutExercise(
-                            name=GenerateNode._clean_exercise_name(str(name)),
+                            name=cleaned_name,
                             sets=GenerateNode._to_int(item.get("sets")),
                             reps=str(item.get("reps")) if item.get("reps") is not None else None,
                             duration_minutes=GenerateNode._to_int(item.get("duration_minutes") or item.get("durationMinutes")),
@@ -1220,10 +1245,13 @@ class GenerateNode(BaseNode):
     def _build_structured_exercise(item: Any) -> WorkoutExercise | None:
         if isinstance(item, dict):
             name = item.get("name") or item.get("title") or item.get("动作")
-            if not name or GenerateNode._is_guidance_line(str(name)):
+            if not name or GenerateNode._is_invalid_exercise_name(str(name)):
+                return None
+            cleaned_name = GenerateNode._clean_exercise_name(str(name))
+            if GenerateNode._is_invalid_exercise_name(cleaned_name):
                 return None
             return WorkoutExercise(
-                name=GenerateNode._clean_exercise_name(str(name)),
+                name=cleaned_name,
                 sets=GenerateNode._to_int(item.get("sets") or item.get("组数")),
                 reps=str(item.get("reps") or item.get("次数")) if (item.get("reps") or item.get("次数")) else None,
                 duration_minutes=GenerateNode._to_int(item.get("duration_minutes") or item.get("时长")),
@@ -1231,7 +1259,7 @@ class GenerateNode(BaseNode):
             )
 
         line = str(item or "").strip()
-        if not line or GenerateNode._is_guidance_line(line):
+        if not line or GenerateNode._is_invalid_exercise_name(line):
             return None
 
         sets_match = re.search(r"(\d+)\s*组", line)
@@ -1242,7 +1270,7 @@ class GenerateNode(BaseNode):
         duration_match = re.search(r"(\d+)\s*分钟", line)
         name_part = re.split(r"\s*(?:\d+\s*组|\d+\s*分钟|\d+\s*秒)", line, maxsplit=1)[0]
         name = GenerateNode._clean_exercise_name(name_part)
-        if not name:
+        if not name or GenerateNode._is_invalid_exercise_name(name):
             return None
 
         reps = None
@@ -1303,7 +1331,7 @@ class GenerateNode(BaseNode):
                 guidance_notes.append(f"{session.title}：{exercise_text}")
             guidance_notes.extend(session.notes)
 
-        primary.exercises = [exercise for exercise in primary.exercises if not GenerateNode._is_guidance_line(exercise.name)]
+        primary.exercises = [exercise for exercise in primary.exercises if not GenerateNode._is_invalid_exercise_name(exercise.name)]
         for exercise in primary.exercises:
             exercise.name = display_exercise_name(exercise.name)
         primary.title = GenerateNode._infer_session_title(primary.exercises)
@@ -1430,7 +1458,7 @@ class GenerateNode(BaseNode):
                 continue
             prescription_start = sets_match.start() if sets_match else duration_match.start()
             name = line[:prescription_start].strip(" ：:,，")
-            if not name:
+            if not name or GenerateNode._is_invalid_exercise_name(name):
                 continue
             reps_value = None
             if sets_match:
@@ -1545,6 +1573,40 @@ class GenerateNode(BaseNode):
             "呼吸均匀",
         ]
         return any(keyword in line for keyword in guidance_keywords)
+
+    @staticmethod
+    def _is_invalid_exercise_name(name: str) -> bool:
+        text = re.sub(r"\s+", "", str(name or ""))
+        if not text:
+            return True
+        if GenerateNode._is_guidance_line(text):
+            return True
+        invalid_keywords = [
+            "今日训练建议总时长",
+            "训练建议总时长",
+            "建议总时长",
+            "总时长",
+            "强度为",
+            "强度",
+            "建议",
+            "风险",
+            "恢复",
+            "注意",
+            "备注",
+            "说明",
+            "目标",
+            "分钟",
+            "小时",
+            "训练主题",
+            "今日训练",
+        ]
+        if any(keyword in text for keyword in invalid_keywords):
+            return True
+        if re.search(r"\d+\s*(?:组|次|分钟|秒|小时|%|kg|公斤)", text, flags=re.IGNORECASE):
+            return True
+        if len(text) > 24:
+            return True
+        return False
 
     @staticmethod
     def _to_int(value: Any) -> int | None:
