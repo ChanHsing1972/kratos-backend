@@ -517,6 +517,35 @@ def test_generate_node_normalizes_collapsed_markdown_table():
     assert "\n\n## 备注\n- 今日安排适合户外。" in normalized
 
 
+def test_generate_node_parses_food_estimate_from_visible_markdown_table():
+    result = GenerateNode._build_food_image_estimate_result(
+        "我识别到这是一份餐食，以下为估算：\n\n"
+        "| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |\n"
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |\n"
+        "| 米饭 | 180 | 210 | 4 | 0.5 | 46 | 80% | 碗大小估算 |\n"
+        "| 鸡胸肉 | 120 | 198 | 37 | 4 | 0 | 中 | 油量不可见 |\n"
+        "| 合计 | 300 | 408 | 41 | 4.5 | 46 | - | 需确认 |"
+    )
+
+    assert result is not None
+    assert [item.name for item in result.items] == ["米饭", "鸡胸肉"]
+    assert result.total.estimated_kcal == 408
+    assert result.total.protein_g == 41
+    assert result.items[0].confidence == 0.8
+    assert result.items[1].confidence == 0.65
+
+
+def test_workout_card_pending_requires_plan_intent_or_request():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="上肢训练领域最近有哪些新闻？"))
+    state.reasoning.intent = ["新闻搜索", "信息查询"]
+
+    assert GenerateNode(llm=None)._should_emit_workout_plan(
+        state,
+        "新闻里提到卧推可以做 3 组，但这里只是在解释资讯。",
+    ) is False
+
+
 def test_progression_is_allowed_only_after_two_low_strain_completions():
     logs = [
         SimpleNamespace(

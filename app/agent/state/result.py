@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.diet import FoodImageEstimateResult
+
 
 class ResultSource(BaseModel):
     """结构化结果的来源信息，用于追溯由哪些任务和工具生成。"""
@@ -133,12 +135,14 @@ class WorkoutPlanResult(BaseModel):
 class ResultState(BaseModel):
     """Agent 最终输出和中间结果快照。
 
-    `response` 是用户可见 Markdown；`workout_plan` 和 `diet_plan` 是从工具结果
-    或最终回答抽取出的结构化卡片；`final_answer_ready` 由 ReflectNode 质量门设置。
+    `response` 是用户可见 Markdown；`workout_plan`、`diet_plan` 和
+    `food_image_estimate` 是从工具结果或最终回答抽取出的结构化卡片；
+    `final_answer_ready` 由 ReflectNode 质量门设置。
     """
 
     workout_plan: WorkoutPlanResult | None = None
     diet_plan: DietPlanResult | None = None
+    food_image_estimate: FoodImageEstimateResult | None = None
 
     first_response: str | None = None
     response: str | None = None
@@ -166,6 +170,7 @@ class ResultState(BaseModel):
 
         self.workout_plan = None
         self.diet_plan = None
+        self.food_image_estimate = None
         self.first_response = None
         self.response = None
         self.reflection_suggestions = []

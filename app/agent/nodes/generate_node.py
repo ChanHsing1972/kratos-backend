@@ -25,6 +25,7 @@ from app.agent.state.result import (
 )
 from app.agent.state.session_state import SessionState
 from app.core.config import settings
+from app.services.diet_image_estimator import normalize_food_estimate_payload
 from app.services.exercise_media import display_exercise_name, list_supported_exercise_names
 
 
@@ -157,6 +158,8 @@ class GenerateNode(BaseNode):
         - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划行的标题或动作列表里；这些内容只能放在计划前后的说明段。
         - 今日训练只输出当天安排，不要把用户原话重复成标题；标题优先使用“上肢训练”“下肢训练”“全身训练”“恢复训练”等短主题。
         - 生成训练计划时，必须提供可直接保存的训练安排：周/周期计划和今日计划都优先使用 Markdown 表格展示动作、组数、次数/时长、休息和备注。不要在正文与训练安排中给出互相冲突的内容。
+        - 如果用户上传的是食物/餐食图片，必须直接根据图片估算可见食物，回答中包含 Markdown 表格，表头使用：食物｜估算重量(g)｜热量(kcal)｜蛋白质(g)｜脂肪(g)｜碳水(g)｜置信度｜备注。说明这是估算并需要用户确认后保存；不要声称已经保存。
+        - 如果图片不是食物或无法判断食物，不要输出饮食热量估算表，直接说明无法生成饮食记录卡片的原因。
         - 不要把 Skill 描述成会直接执行代码；Skill 只是改变你的领域策略和工具范围。
         - 不要暴露内部任务编号或 JSON。
 
@@ -259,6 +262,10 @@ class GenerateNode(BaseNode):
 
     def _update_structured_artifacts(self, state: SessionState, response_text: str) -> None:
         """根据工具结果和最终文本刷新训练/饮食结构化卡片。"""
+
+        food_estimate = self._build_food_image_estimate_result(response_text)
+        if food_estimate is not None:
+            state.result.food_image_estimate = food_estimate
 
         structured_workout_plan = self._build_workout_plan_from_task_results(state)
         if structured_workout_plan is not None:
@@ -434,9 +441,12 @@ class GenerateNode(BaseNode):
 
         intent_text = " ".join(state.reasoning.intent)
         user_message = self.latest_user_text(state)
-        combined = f"{intent_text}\n{user_message}\n{response_text}"
-        if not any(keyword in combined for keyword in ["健身计划", "训练计划", "今日训练", "训练安排", "动作安排"]):
+        if "健身计划" not in state.reasoning.intent and not re.search(
+            r"训练计划|今日训练|今天.*训练|本次.*训练|训练安排|动作安排|怎么练|周计划|周期计划",
+            user_message,
+        ):
             return False
+        combined = f"{intent_text}\n{user_message}\n{response_text}"
         return any(keyword in combined for keyword in ["组", "次", "动作", "训练", "休息"])
 
     @staticmethod
@@ -464,6 +474,256 @@ class GenerateNode(BaseNode):
             )
 
         return None
+
+    @staticmethod
+    def _build_food_image_estimate_result(content: str):
+        """Parse a saveable diet estimate from the visible assistant answer only."""
+
+        payload = (
+            GenerateNode._food_estimate_payload_from_json(content)
+            or GenerateNode._food_estimate_payload_from_tables(content)
+            or GenerateNode._food_estimate_payload_from_lines(content)
+        )
+        if not payload:
+            return None
+
+        result = normalize_food_estimate_payload(payload)
+        if not result.items:
+            return None
+        if not any(item.estimated_kcal > 0 for item in result.items):
+            return None
+        return result
+
+    @staticmethod
+    def _food_estimate_payload_from_json(content: str) -> dict[str, Any] | None:
+        candidates: list[str] = []
+        for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", content, flags=re.IGNORECASE):
+            candidates.append(match.group(1).strip())
+        stripped = content.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            candidates.append(stripped)
+
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except (TypeError, ValueError):
+                continue
+            coerced = GenerateNode._coerce_food_estimate_payload(payload)
+            if coerced is not None:
+                return coerced
+        return None
+
+    @staticmethod
+    def _coerce_food_estimate_payload(payload: Any) -> dict[str, Any] | None:
+        if isinstance(payload, list):
+            return {"items": [item for item in payload if isinstance(item, dict)]}
+        if not isinstance(payload, dict):
+            return None
+
+        for key in ("food_image_estimate", "food_estimate", "nutrition_estimate", "diet_records", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, (dict, list)):
+                coerced = GenerateNode._coerce_food_estimate_payload(nested)
+                if coerced is not None:
+                    return coerced
+
+        if isinstance(payload.get("items"), list):
+            return payload
+        return None
+
+    @staticmethod
+    def _food_estimate_payload_from_tables(content: str) -> dict[str, Any] | None:
+        for table in GenerateNode._markdown_table_blocks(content):
+            if not table:
+                continue
+            headers = table[0]
+            rows = table[1:]
+            name_index = GenerateNode._column_index(headers, "食物", "菜品", "餐食", "名称", "项目", "food", "item")
+            kcal_index = GenerateNode._column_index(headers, "热量", "kcal", "千卡", "大卡", "卡路里", "calorie")
+            if name_index is None or kcal_index is None:
+                continue
+
+            weight_index = GenerateNode._column_index(headers, "重量", "分量", "份量", "克", "weight")
+            protein_index = GenerateNode._column_index(headers, "蛋白", "protein")
+            fat_index = GenerateNode._column_index(headers, "脂肪", "fat")
+            carbs_index = GenerateNode._column_index(headers, "碳水", "carb")
+            confidence_index = GenerateNode._column_index(headers, "置信", "confidence")
+            notes_index = GenerateNode._column_index(headers, "备注", "说明", "假设", "不确定", "note", "assumption")
+
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                if len(row) <= max(name_index, kcal_index):
+                    continue
+                name = GenerateNode._clean_food_name(row[name_index])
+                if not name or GenerateNode._is_total_food_row(name):
+                    continue
+                estimated_kcal, min_kcal, max_kcal = GenerateNode._parse_kcal_cell(row[kcal_index])
+                if estimated_kcal <= 0:
+                    continue
+                note = GenerateNode._cell(row, notes_index)
+                items.append(
+                    {
+                        "name": name,
+                        "estimated_weight_g": GenerateNode._first_number(GenerateNode._cell(row, weight_index)),
+                        "estimated_kcal": estimated_kcal,
+                        "min_kcal": min_kcal or estimated_kcal,
+                        "max_kcal": max_kcal or estimated_kcal,
+                        "protein_g": GenerateNode._first_number(GenerateNode._cell(row, protein_index)),
+                        "fat_g": GenerateNode._first_number(GenerateNode._cell(row, fat_index)),
+                        "carbs_g": GenerateNode._first_number(GenerateNode._cell(row, carbs_index)),
+                        "confidence": GenerateNode._parse_confidence(GenerateNode._cell(row, confidence_index)),
+                        "assumptions": [note] if note else [],
+                    }
+                )
+            if items:
+                return {"items": items}
+        return None
+
+    @staticmethod
+    def _food_estimate_payload_from_lines(content: str) -> dict[str, Any] | None:
+        items: list[dict[str, Any]] = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip().strip("-*• ")
+            if not line or "|" in line or GenerateNode._is_total_food_row(line):
+                continue
+            if not re.search(r"(?:kcal|千卡|大卡|卡路里|热量)", line, flags=re.IGNORECASE):
+                continue
+            match = re.search(
+                r"^([\u4e00-\u9fffA-Za-z0-9（）()·\s]{1,32}?)[：:，,、\s]+.*?(\d+(?:\.\d+)?)\s*(?:kcal|千卡|大卡|卡路里)",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            name = GenerateNode._clean_food_name(match.group(1))
+            if not name or GenerateNode._is_total_food_row(name):
+                continue
+            estimated_kcal = float(match.group(2))
+            items.append(
+                {
+                    "name": name,
+                    "estimated_weight_g": GenerateNode._first_number(line.split(match.group(2), 1)[0]),
+                    "estimated_kcal": estimated_kcal,
+                    "min_kcal": estimated_kcal,
+                    "max_kcal": estimated_kcal,
+                    "protein_g": GenerateNode._labeled_number(line, r"蛋白(?:质)?"),
+                    "fat_g": GenerateNode._labeled_number(line, r"脂肪"),
+                    "carbs_g": GenerateNode._labeled_number(line, r"碳水(?:化合物)?"),
+                    "confidence": 0.7,
+                    "assumptions": [],
+                }
+            )
+        return {"items": items} if items else None
+
+    @staticmethod
+    def _markdown_table_blocks(content: str) -> list[list[list[str]]]:
+        tables: list[list[list[str]]] = []
+        lines = content.splitlines()
+        index = 0
+        while index < len(lines):
+            if "|" not in lines[index]:
+                index += 1
+                continue
+
+            block: list[str] = []
+            while index < len(lines) and "|" in lines[index]:
+                block.append(lines[index])
+                index += 1
+
+            rows = [GenerateNode._split_table_cells(line) for line in block]
+            rows = [row for row in rows if row and not GenerateNode._is_separator_row(row)]
+            if len(rows) >= 2:
+                tables.append(rows)
+        return tables
+
+    @staticmethod
+    def _split_table_cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    @staticmethod
+    def _is_separator_row(row: list[str]) -> bool:
+        non_empty = [cell.strip() for cell in row if cell.strip()]
+        return bool(non_empty) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in non_empty)
+
+    @staticmethod
+    def _column_index(headers: list[str], *keywords: str) -> int | None:
+        normalized_keywords = [keyword.lower() for keyword in keywords]
+        for index, header in enumerate(headers):
+            normalized_header = re.sub(r"\s+", "", header).lower()
+            if any(keyword in normalized_header for keyword in normalized_keywords):
+                return index
+        return None
+
+    @staticmethod
+    def _cell(row: list[str], index: int | None) -> str:
+        if index is None or index < 0 or index >= len(row):
+            return ""
+        return row[index].strip()
+
+    @staticmethod
+    def _clean_food_name(value: str) -> str:
+        cleaned = re.sub(r"[*`_#]+", "", value)
+        cleaned = re.sub(r"^\d+[.)、]\s*", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ：:,，;；")
+        return cleaned[:80]
+
+    @staticmethod
+    def _is_total_food_row(value: str) -> bool:
+        return bool(re.search(r"^(合计|总计|总热量|总摄入|小计|total)", value.strip(), flags=re.IGNORECASE))
+
+    @staticmethod
+    def _parse_kcal_cell(value: str) -> tuple[float, float, float]:
+        numbers = GenerateNode._numbers(value)
+        if not numbers:
+            return 0, 0, 0
+        if len(numbers) >= 3:
+            estimated, low, high = numbers[0], numbers[1], numbers[2]
+            if low <= high:
+                return estimated, low, high
+        if len(numbers) >= 2 and re.search(r"[-~至–—]", value):
+            low, high = numbers[0], numbers[1]
+            if low > high:
+                low, high = high, low
+            return round((low + high) / 2, 1), low, high
+        estimated = numbers[0]
+        return estimated, estimated, estimated
+
+    @staticmethod
+    def _parse_confidence(value: str) -> float:
+        if not value:
+            return 0.7
+        if "高" in value:
+            return 0.85
+        if "中" in value:
+            return 0.65
+        if "低" in value:
+            return 0.45
+        number = GenerateNode._first_number(value)
+        if number <= 0:
+            return 0.7
+        return number / 100 if "%" in value or number > 1 else number
+
+    @staticmethod
+    def _first_number(value: str) -> float:
+        numbers = GenerateNode._numbers(value)
+        return numbers[0] if numbers else 0
+
+    @staticmethod
+    def _labeled_number(value: str, label_pattern: str) -> float:
+        match = re.search(rf"{label_pattern}[^\d]*(\d+(?:\.\d+)?)", value, flags=re.IGNORECASE)
+        return float(match.group(1)) if match else 0
+
+    @staticmethod
+    def _numbers(value: str) -> list[float]:
+        if not value:
+            return []
+        numbers: list[float] = []
+        for match in re.finditer(r"\d+(?:\.\d+)?", value):
+            try:
+                numbers.append(float(match.group(0)))
+            except ValueError:
+                continue
+        return numbers
 
     @staticmethod
     def _build_nutrition_targets(data: dict[str, Any]) -> DietNutritionTargets:
