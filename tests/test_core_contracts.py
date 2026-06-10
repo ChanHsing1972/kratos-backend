@@ -649,6 +649,24 @@ def test_generate_node_removes_dangling_markdown_punctuation():
     assert "今日训练：全身激活·25分钟（无器械）" in normalized
 
 
+def test_generate_node_preserves_bold_labels_after_list_marker():
+    broken = (
+        "- **恢复建议**：训练后拉伸腘绳肌与髋屈肌。\n"
+        "- **营养提示**：训练后30分钟内补充水分。\n"
+        "- 恢复建议**：这是模型缺了开头星号的坏格式。\n"
+        "• • • 身高：____ cm"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert "- **恢复建议**：训练后拉伸腘绳肌与髋屈肌。" in normalized
+    assert "- **营养提示**：训练后30分钟内补充水分。" in normalized
+    assert "- 恢复建议：这是模型缺了开头星号的坏格式。" in normalized
+    assert "- 恢复建议**：" not in normalized
+    assert "- 营养提示**：" not in normalized
+    assert "- 身高：____ cm" in normalized
+
+
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():
     result = GenerateNode._build_food_image_estimate_result(
         "我识别到这是一份餐食，以下为估算：\n\n"
