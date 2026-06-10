@@ -1,7 +1,6 @@
-"""
-FastAPI 应用入口文件
-"""
+"""FastAPI 应用入口。"""
 
+import logging
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +12,6 @@ from app.core.config import settings
 from app.services.upload import UPLOAD_DIR
 from app.db.schema_sync import ensure_runtime_schema
 from app.db.session import Base, SessionLocal, engine
-from app.models import User
 from app.services.conversation_session import backfill_conversation_sessions_from_agent_runs
 from app.services.agent_run import cancel_stale_agent_runs
 from app.services.skill import seed_builtin_skills
@@ -21,18 +19,20 @@ from app.services.skill import seed_builtin_skills
 
 from fastapi.middleware.cors import CORSMiddleware
 
+logger = logging.getLogger(__name__)
+
 try:
     Base.metadata.create_all(bind=engine)
     ensure_runtime_schema(engine)
 except SQLAlchemyError as exc:
-    print(f"[startup] Database initialization skipped: {exc}")
+    logger.warning("Database initialization skipped: %s", exc)
 try:
     with SessionLocal() as seed_db:
         seed_builtin_skills(seed_db)
         cancel_stale_agent_runs(seed_db)
         backfill_conversation_sessions_from_agent_runs(seed_db)
 except SQLAlchemyError as exc:
-    print(f"[startup] Database seed/backfill skipped: {exc}")
+    logger.warning("Database seed/backfill skipped: %s", exc)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

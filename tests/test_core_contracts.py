@@ -8,7 +8,7 @@ from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import Task
 from app.agent.state.session_state import SessionState
-from app.api.v1.endpoints.agent_chat import LiveAgentStream
+from app.api.v1.endpoints.agent_chat import LiveAgentStream, _agent_stream_error_message
 from app.services.agent_chat import stream_agent_chat
 from app.agent.tools.fitness_calculator_tool import (
     get_calculate_workout_volume_tool,
@@ -22,7 +22,7 @@ from app.services.exercise_media import _pick_best_exercise
 from app.agent.state.result import ResultSource
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
-from app.services.fitness_context import hydrate_agent_memory
+from app.services.fitness_context import build_onboarding_status, hydrate_agent_memory
 from app.services.conversation_session import (
     _build_title_from_message,
     _normalize_session_title,
@@ -229,6 +229,42 @@ def test_live_agent_stream_cancel_replays_error_and_done():
     assert replayed[1]["type"] == "done"
     assert replayed[1]["answer"] == ""
     assert replayed[2] is None
+
+
+def test_agent_stream_error_message_surfaces_tunnel_certificate_issue():
+    inner = RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: IP address mismatch")
+    outer = RuntimeError("Connection error.")
+    outer.__cause__ = inner
+
+    message = _agent_stream_error_message(outer)
+
+    assert "证书校验失败" in message
+    assert "AGENT_LLM_SSL_VERIFY=false" in message
+
+
+def test_onboarding_status_requires_simplified_profile_fields():
+    profile = SimpleNamespace(
+        gender="女",
+        age=28,
+        fitness_goal="减脂塑形",
+        preferred_workout_types="力量训练",
+        activity_level="中等活动",
+        available_days_per_week=4,
+        workout_minutes_per_session=60,
+        injury_history="无",
+        experience_level="中等",
+    )
+    body_metric = SimpleNamespace(height_cm=168, weight_kg=60)
+
+    complete = build_onboarding_status(profile, body_metric)
+    assert complete.ready_for_agent is True
+
+    incomplete = build_onboarding_status(
+        SimpleNamespace(**{**profile.__dict__, "preferred_workout_types": ""}),
+        body_metric,
+    )
+    assert incomplete.ready_for_agent is False
+    assert incomplete.missing_profile_fields == ["preferred_workout_types"]
 
 
 def test_hydrate_agent_memory_keeps_existing_values_and_adds_health_projection():

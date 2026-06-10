@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from app.agent.llm import build_chat_openai
 from app.agent.state.conversation import AskAns
 from app.agent.state.session_state import SessionState
 from app.core.config import settings
@@ -436,11 +437,8 @@ def compress_session_summary(summary: str) -> str:
     """
 
     try:
-        llm = ChatOpenAI(
-            api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
-            base_url=settings.AGENT_LLM_BASE_URL,
-            default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
-            model=settings.AGENT_LLM_MODEL,
+        llm = build_chat_openai(
+            llm_cls=ChatOpenAI,
             temperature=0,
         )
         response = llm.invoke(prompt)
@@ -504,14 +502,9 @@ def _generate_session_title_with_llm(
     """
 
     try:
-        llm = ChatOpenAI(
-            api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
-            base_url=settings.AGENT_LLM_BASE_URL,
-            default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
-            model=settings.AGENT_LLM_MODEL,
+        llm = build_chat_openai(
+            llm_cls=ChatOpenAI,
             temperature=0,
-            timeout=settings.AGENT_LLM_TIMEOUT_SECONDS,
-            max_retries=settings.AGENT_LLM_MAX_RETRIES,
         )
         response = llm.invoke(prompt)
         content = getattr(response, "content", response)

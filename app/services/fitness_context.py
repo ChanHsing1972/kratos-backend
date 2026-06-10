@@ -22,22 +22,28 @@ from app.models.workout_log import WorkoutExerciseLog, WorkoutLog
 from app.schemas.fitness_context import FitnessContextResponse, OnboardingStatus
 
 PROFILE_REQUIRED_FIELDS = (
+    "gender",
     "age",
     "fitness_goal",
+    "preferred_workout_types",
     "activity_level",
-    "experience_level",
     "available_days_per_week",
     "workout_minutes_per_session",
+    "injury_history",
+    "experience_level",
 )
 BODY_REQUIRED_FIELDS = ("height_cm", "weight_kg")
 
 PROFILE_LABELS = {
+    "gender": "性别",
     "age": "年龄",
     "fitness_goal": "健身目标",
+    "preferred_workout_types": "偏好运动类型",
     "activity_level": "日常活动水平",
-    "experience_level": "训练经验",
     "available_days_per_week": "每周可训练天数",
     "workout_minutes_per_session": "单次可训练时长",
+    "injury_history": "伤病史",
+    "experience_level": "训练经验",
 }
 BODY_LABELS = {
     "height_cm": "身高",

@@ -6,6 +6,7 @@ from functools import lru_cache
 from io import BytesIO
 from typing import Any
 
+from app.agent.llm import build_chat_openai
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.core.config import settings
 from app.schemas.diet import FoodEstimateItem, FoodEstimateTotal, FoodImageEstimateResult
@@ -192,10 +193,8 @@ def get_food_agent_llm() -> Any:
     except ImportError as exc:
         raise DietImageEstimatorError("langchain_openai package is not installed") from exc
 
-    return ChatOpenAI(
-        api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
-        base_url=settings.AGENT_LLM_BASE_URL,
-        default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
+    return build_chat_openai(
+        llm_cls=ChatOpenAI,
         max_retries=settings.FOOD_VISION_MAX_RETRIES,
         model=settings.FOOD_VISION_EFFECTIVE_MODEL,
         temperature=0,

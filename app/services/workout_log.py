@@ -1,9 +1,8 @@
 from datetime import date, timedelta
 
-from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import settings
+from app.agent.llm import build_chat_openai
 from app.models.user import User
 from app.models.workout_log import WorkoutExerciseLog, WorkoutLog, WorkoutSetLog
 from app.schemas.workout_log import WorkoutLogCreate, WorkoutLogUpdate
@@ -222,11 +221,7 @@ def _generate_coach_comment(
     完成动作：{'、'.join(actions[:5]) or '未标记'}
     """
     try:
-        llm = ChatOpenAI(
-            api_key=settings.AGENT_LLM_EFFECTIVE_API_KEY,
-            base_url=settings.AGENT_LLM_BASE_URL,
-            default_headers=settings.OPENAI_COMPAT_DEFAULT_HEADERS,
-            model=settings.AGENT_LLM_MODEL,
+        llm = build_chat_openai(
             temperature=0.4,
             timeout=12,
             max_retries=1,

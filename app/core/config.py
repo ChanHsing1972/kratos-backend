@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     AGENT_LLM_MAX_RETRIES: int = 0
     AGENT_LLM_MAX_OUTPUT_TOKENS: int = 1800
     AGENT_LLM_HTTP_USER_AGENT: str = "curl/8.7.1"
+    AGENT_LLM_SSL_VERIFY: bool = True
     AGENT_INCLUDE_ATTACHMENTS_IN_LLM: bool = False
     AGENT_ENABLE_MEMORY_SUMMARY_LLM: bool = False
     AGENT_ENABLE_SESSION_TITLE_LLM: bool = True
