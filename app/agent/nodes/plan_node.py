@@ -163,6 +163,21 @@ class PlanNode(BaseNode):
                 )
             ]
 
+        if "饮食记录" in intent:
+            daily_diet = extracted_info.get("daily_diet") if isinstance(extracted_info, dict) else None
+            has_food_detail = bool(daily_diet)
+            return [
+                Task(
+                    task_id=0,
+                    name="整理饮食记录",
+                    description=(
+                        "基于用户提供的餐食文字或附件生成待确认饮食记录。"
+                        if has_food_detail
+                        else "用户想记录饮食，但尚未提供具体食物或份量；先索要餐食明细或图片。"
+                    ),
+                )
+            ]
+
         if "饮食计划" in intent:
             return [
                 Task(

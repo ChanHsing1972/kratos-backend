@@ -168,11 +168,32 @@ def _looks_like_explicit_health_update(message: str) -> bool:
     if not text:
         return False
     request_markers = ["生成", "制定", "安排", "推荐", "计划", "怎么练", "怎么吃", "根据我的", "帮我"]
-    update_markers = ["记录", "更新", "修改", "改成", "新增", "保存", "录入", "打卡", "今天", "刚刚", "现在", "我的", "我是", "我 "]
+    update_markers = [
+        "记录",
+        "更新",
+        "修改",
+        "改成",
+        "新增",
+        "保存",
+        "录入",
+        "打卡",
+        "今天",
+        "刚刚",
+        "现在",
+        "我的",
+        "我是",
+        "我 ",
+        "刚称",
+        "称重",
+        "称了",
+        "测了",
+    ]
     field_markers = [
         "体重",
         "身高",
         "体脂",
+        "称重",
+        "称了",
         "腰围",
         "胸围",
         "臀围",
@@ -190,15 +211,26 @@ def _looks_like_explicit_health_update(message: str) -> bool:
         "伤病",
         "忌口",
         "过敏",
+        "hrv",
+        "静息心率",
+        "血氧",
+        "最大摄氧量",
     ]
     has_field = any(marker in text for marker in field_markers)
-    if not has_field:
+    has_numeric_candidate = bool(
+        re.search(
+            r"\d+(?:\.\d+)?\s*(?:kg|公斤|千克|cm|厘米|小时|h|岁|%|bpm|ms|kcal|千卡)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not has_field and not has_numeric_candidate:
         return False
     if any(marker in text for marker in update_markers):
         return True
     if re.search(r"(身高|体重|体脂|睡眠|精力|酸痛|年龄|性别)\s*[:：=为是]\s*", text):
         return True
-    if re.search(r"\b\d+(?:\.\d+)?\s*(?:kg|cm|小时|h|岁|%)\b", text, flags=re.IGNORECASE):
+    if has_numeric_candidate:
         return not any(marker in text for marker in request_markers)
     return False
 
@@ -230,6 +262,8 @@ def _extract_user_health_data_with_llm(
 ) -> dict[str, Any]:
     resolved_llm = llm or build_chat_openai(
         temperature=0,
+        timeout=30,
+        max_tokens=800,
         max_retries=1,
     )
     context_json = json.dumps(context_snapshot or {}, ensure_ascii=False, default=str)
@@ -426,7 +460,7 @@ def _parse_body_metric_data(message: str) -> dict[str, Any]:
         )
 
     patterns = {
-        "weight_kg": r"(?:当前体重|体重|weight)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?",
+        "weight_kg": r"(?:当前体重|体重|weight|称重|刚称|称了)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?",
         "target_weight_kg": r"(?:目标体重|目标减到|想减到|想增到|希望到)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?",
         "body_fat_percentage": r"(?:体脂率|体脂|body\s*fat)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*%?",
         "skeletal_muscle_mass_kg": r"(?:骨骼肌|肌肉量)\s*[:：为是=]?\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?",

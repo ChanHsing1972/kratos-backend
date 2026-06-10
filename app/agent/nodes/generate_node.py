@@ -42,14 +42,19 @@ class GenerateNode(BaseNode):
         """非流式生成最终回答，并同步更新结构化结果。"""
 
         prompt = self.build_prompt(state)
-        response = self.llm.invoke(
-            self.prompt_input(
-                prompt,
-                state,
-                include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+        try:
+            response = self.llm.invoke(
+                self.prompt_input(
+                    prompt,
+                    state,
+                    include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+                )
             )
-        )
-        response_text = self._extract_content(response)
+            response_text = self._extract_content(response)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("GenerateNode invoke failed, using fallback answer: %s", exc)
+            response_text = self._fallback_response_text(state, exc)
+            response = AIMessage(content=response_text)
         self.apply_response(state, response, response_text)
         return state
 
@@ -70,23 +75,50 @@ class GenerateNode(BaseNode):
         response_text = ""
         last_chunk = None
 
-        for chunk in self.llm.stream(
-            self.prompt_input(
-                prompt,
-                state,
-                include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+        prompt_input = self.prompt_input(
+            prompt,
+            state,
+            include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
+        )
+
+        try:
+            for chunk in self.llm.stream(prompt_input):
+                last_chunk = chunk
+                delta = self._chunk_delta_text(chunk)
+                if not delta:
+                    continue
+                response_text += delta
+                yield {
+                    "type": "answer_delta",
+                    "delta": delta,
+                    "content": delta,
+                }
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
+            fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
+            delta = (
+                fallback_text[len(response_text) :]
+                if response_text and fallback_text.startswith(response_text)
+                else fallback_text
             )
-        ):
-            last_chunk = chunk
-            delta = self._chunk_delta_text(chunk)
-            if not delta:
-                continue
-            response_text += delta
+            if delta:
+                yield {
+                    "type": "answer_delta",
+                    "delta": delta,
+                    "content": delta,
+                }
             yield {
-                "type": "answer_delta",
-                "delta": delta,
-                "content": delta,
+                "type": "status",
+                "content": "模型服务没有及时返回完整回复，已使用保守结果收尾",
+                "raw": {
+                    "answer_stream_complete": True,
+                    "fallback": "llm_error",
+                    "error_type": type(exc).__name__,
+                    "timeout": self._looks_like_timeout(exc),
+                },
             }
+            self.apply_response(state, AIMessage(content=fallback_text), fallback_text)
+            return
 
         # If streaming returned empty (GLM thinking model), try the collected content
         if not response_text.strip() and last_chunk is not None:
@@ -112,6 +144,60 @@ class GenerateNode(BaseNode):
             }
 
         self.apply_response(state, AIMessage(content=response_text), response_text)
+
+    def _fallback_response_text(
+        self,
+        state: SessionState,
+        exc: Exception,
+        *,
+        partial_response: str = "",
+    ) -> str:
+        """Build a user-visible answer when the final LLM call fails."""
+
+        existing = str(partial_response or "").strip()
+        timeout = self._looks_like_timeout(exc)
+        intro = (
+            "这次模型服务响应超时，我先根据已经完成的步骤给出保守结果。"
+            if timeout
+            else "这次模型服务没有返回完整结果，我先根据已经完成的步骤给出保守结果。"
+        )
+        task_lines: list[str] = []
+        for task in state.reasoning.tasks:
+            result = task.result or task.error
+            if not result:
+                continue
+            task_lines.append(f"- {task.name}：{self._clip_text(str(result), 240)}")
+
+        if existing:
+            suffix = "\n\n**系统提示**\n- " + intro
+            if task_lines:
+                suffix += "\n" + "\n".join(task_lines)
+            return f"{existing}{suffix}"
+
+        if task_lines:
+            return "\n".join([intro, "", "## 已完成的处理", *task_lines])
+
+        return "\n".join(
+            [
+                intro,
+                "",
+                "## 下一步",
+                "- 请稍后重试本次消息。",
+                "- 如果你是在记录饮食，请补充食物名称、估计份量，或上传餐食图片。",
+            ]
+        )
+
+    @staticmethod
+    def _looks_like_timeout(exc: BaseException) -> bool:
+        seen: set[int] = set()
+        current: BaseException | None = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            text = f"{type(current).__name__} {current}".lower()
+            if "timeout" in text or "timed out" in text:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def build_prompt(self, state: SessionState) -> str:
         """构造最终回答 prompt。
@@ -1309,6 +1395,11 @@ class GenerateNode(BaseNode):
             day = day_match.group(1).replace("星期", "周")
             focus = cells[1] if len(cells) >= 3 else None
             details = "；".join(cells[2:] if len(cells) >= 3 else cells[1:]).strip()
+            if len(cells) == 2:
+                compact_match = re.match(r"([^:：]{1,32})[:：]\s*(.+)", cells[1])
+                if compact_match:
+                    focus = compact_match.group(1).strip()
+                    details = compact_match.group(2).strip()
             exercises: list[WorkoutExercise] = []
             for item in re.split(r"[；;，,、](?=\s*[\u4e00-\u9fffA-Za-z])", details):
                 exercises.extend(GenerateNode._parse_exercises_from_text(item.strip()))

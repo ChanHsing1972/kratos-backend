@@ -61,44 +61,19 @@ def root():
 @app.get("/health")
 def health():
     """Health check: returns service status and database connectivity."""
-    db_ok = False
-    database_uri = (
-        f"postgresql+psycopg2://{settings.PG_USER}:***@"
-        f"{settings.PG_SERVER}:{settings.PG_PORT}/{settings.PG_DB}"
-    )
     try:
-        db = SessionLocal()
-        db.execute(text("SELECT 1"))
-        db_ok = True
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
     except Exception as exc:
+        logger.warning("Health check database probe failed: %s", exc)
         return {
             "status": "error",
             "db": False,
-            "database": {
-                "host": settings.PG_SERVER,
-                "port": settings.PG_PORT,
-                "name": settings.PG_DB,
-                "user": settings.PG_USER,
-                "uri": database_uri,
-            },
-            "detail": str(exc),
         }
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
 
     return {
         "status": "ok",
-        "db": db_ok,
-        "database": {
-            "host": settings.PG_SERVER,
-            "port": settings.PG_PORT,
-            "name": settings.PG_DB,
-            "user": settings.PG_USER,
-            "uri": database_uri,
-        },
+        "db": True,
     }
 
 

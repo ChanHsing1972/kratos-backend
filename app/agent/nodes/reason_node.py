@@ -14,7 +14,6 @@ from app.agent.intent_policy import (
     information_tool_calls,
     summarize_tool_result,
 )
-from app.agent.json_utils import LLMJsonParseError
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.tool_planner import build_fallback_reason_data, parse_tool_calls, repair_tool_args
@@ -164,7 +163,7 @@ class ReasonNode(BaseNode):
         if not task.tool_calls:
             try:
                 data = self.invoke_json(prompt_reason, state)
-            except LLMJsonParseError as exc:
+            except Exception as exc:  # noqa: BLE001
                 data = build_fallback_reason_data(state, task, user_message, str(exc))
             task.tool_calls = parse_tool_calls(
                 data.get("tool_calls"), available_tools, user_message, task, state
@@ -180,7 +179,7 @@ class ReasonNode(BaseNode):
         else:
             try:
                 data = self.invoke_json(prompt_observation, state)
-            except LLMJsonParseError as exc:
+            except Exception as exc:  # noqa: BLE001
                 data = {
                     "result": f"工具结果已获取，但模型解析工具观察结果时失败：{exc}。请根据已有工具结果保守生成回答。"
                 }
@@ -243,6 +242,8 @@ class ReasonNode(BaseNode):
         available = set(available_tools)
         is_fitness_plan = any(intent in state.reasoning.intent for intent in ["健身计划", "调整计划"])
         is_information_query = any(intent in INFO_INTENTS for intent in state.reasoning.intent)
+        is_diet_record = "饮食记录" in state.reasoning.intent
+        is_diet_plan = "饮食计划" in state.reasoning.intent and not is_diet_record
 
         if task.tool_calls:
             if is_information_query and not is_fitness_plan:
@@ -277,6 +278,25 @@ class ReasonNode(BaseNode):
             return None
 
         tool_calls: list[dict] = []
+        if is_diet_record:
+            return {
+                "tool_calls": [],
+                "result": ReasonNode._diet_record_result(state),
+            }
+
+        if is_diet_plan:
+            if "diet_plan_generator" in available:
+                return build_fallback_reason_data(
+                    state,
+                    task,
+                    user_message,
+                    "structured_diet_plan_fast_path",
+                )
+            return {
+                "tool_calls": [],
+                "result": "已读取你的饮食目标和身体上下文，但当前没有可用的饮食计划工具；请基于已有信息给出保守饮食建议。",
+            }
+
         if is_information_query and not is_fitness_plan:
             tool_calls = information_tool_calls(state, task, user_message, available_tools)
             if tool_calls:
@@ -311,6 +331,37 @@ class ReasonNode(BaseNode):
             }
 
         return None
+
+    @staticmethod
+    def _diet_record_result(state) -> str:
+        extracted = state.reasoning.extracted_info or {}
+        daily_diet = extracted.get("daily_diet") if isinstance(extracted, dict) else []
+        daily_items = [str(item).strip() for item in daily_diet or [] if str(item).strip()]
+        has_attachment = ReasonNode._has_latest_attachment(state)
+
+        if daily_items:
+            return (
+                "用户提供了待记录餐食："
+                + "；".join(daily_items)
+                + "。请整理为可确认的饮食记录；如缺少热量或三大营养素，明确说明需要用户补充分量或图片。"
+            )
+        if has_attachment:
+            return "用户上传了餐食附件。请基于可见食物估算热量和三大营养素，并生成需要用户确认后保存的饮食记录。"
+        return "用户想记录饮食，但尚未提供具体食物、份量或图片。请先请用户补充餐食明细，暂不生成可保存记录。"
+
+    @staticmethod
+    def _has_latest_attachment(state) -> bool:
+        if getattr(state.result, "user_attachments", None):
+            return True
+        for message in reversed(state.conversation.messages):
+            if getattr(message, "type", None) != "human":
+                continue
+            content = getattr(message, "content", None)
+            return isinstance(content, list) and any(
+                isinstance(item, dict) and item.get("type") in {"image_url", "file"}
+                for item in content
+            )
+        return False
 
     @staticmethod
     def _memory_context(state) -> dict:

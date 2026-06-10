@@ -126,6 +126,8 @@ def _agent_stream_error_message(exc: Exception) -> str:
         return "模型服务证书校验失败：当前通过本机 HTTPS 隧道访问模型，请确认 AGENT_LLM_SSL_VERIFY=false，或改用证书匹配的模型域名。"
     if "connect error" in lowered or "connection error" in lowered or "connection refused" in lowered:
         return "模型服务连接失败：请确认 8443 SSH 反向隧道正在运行，并检查模型网关是否可访问。"
+    if "readtimeout" in lowered or "api timeout" in lowered or "timed out" in lowered or "timeout" in lowered:
+        return "模型服务响应超时：本次 Agent 已停止等待，请稍后重试；如果是在记录饮食，可以直接补充食物名称、份量或上传餐食图片。"
     if "incomplete chunked read" in lowered or "peer closed connection" in lowered:
         return "模型服务连接中途断开了，请确认 8443 SSH 反向隧道仍然可用，然后重试本次消息。"
     return str(exc) or "Agent 运行失败，请稍后重试。"

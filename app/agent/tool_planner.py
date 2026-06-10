@@ -17,6 +17,10 @@ from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolCall
 
 
+def _message_has_any(message: str, markers: list[str]) -> bool:
+    return any(marker in message for marker in markers)
+
+
 def build_fallback_reason_data(
     state: SessionState,
     task: Task,
@@ -36,37 +40,44 @@ def build_fallback_reason_data(
     """
 
     available_tools = set(state.tools.available_tools.keys())
-    is_diet_plan_request = any(
-        keyword in user_message
-        for keyword in ["饮食", "吃", "食谱", "增肌期间", "减脂期间", "控制饮食"]
+    intents = set(state.reasoning.intent or [])
+    has_structured_intent = bool(intents)
+
+    is_diet_record_request = "饮食记录" in intents or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["记录饮食", "保存饮食", "饮食打卡", "记一餐", "帮我记", "我吃了", "今天吃了", "刚吃了"])
     )
-    is_running_route_request = any(
-        keyword in user_message
-        for keyword in ["跑步路线", "跑步", "晨跑", "夜跑", "路线规划", "公里路线", "适合跑步"]
+    is_diet_plan_request = "饮食计划" in intents or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["饮食", "吃", "食谱", "增肌期间", "减脂期间", "控制饮食"])
     )
-    is_bodyparts_request = any(
-        keyword in user_message
-        for keyword in ["训练部位", "身体部位", "锻炼部位", "部位列表", "有哪些部位", "可练部位"]
+    is_running_route_request = "路线查询" in intents or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["跑步路线", "跑步", "晨跑", "夜跑", "路线规划", "公里路线", "适合跑步"])
     )
-    is_weather_request = any(
-        keyword in user_message
-        for keyword in ["天气", "气温", "下雨", "适合运动", "适合跑步"]
+    is_bodyparts_request = (
+        not has_structured_intent
+        and _message_has_any(user_message, ["训练部位", "身体部位", "锻炼部位", "部位列表", "有哪些部位", "可练部位"])
     )
-    is_news_request = any(
-        keyword in user_message
-        for keyword in ["新闻", "最新", "资讯", "链接", "搜索", "报道", "动态"]
+    is_weather_request = "天气查询" in intents or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["天气", "气温", "下雨", "适合运动", "适合跑步"])
     )
-    is_safety_request = any(
-        keyword in user_message
-        for keyword in ["疼", "疼痛", "不舒服", "受伤", "疲劳", "极度疲劳", "膝盖", "腰", "肩"]
+    is_news_request = "新闻搜索" in intents or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["新闻", "最新", "资讯", "链接", "搜索", "报道", "动态"])
     )
-    is_volume_request = any(
-        keyword in user_message
-        for keyword in ["多少组", "几组", "训练量", "分钟", "时间只有", "多久"]
+    is_safety_request = bool({"反馈", "调整计划"} & intents) or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["疼", "疼痛", "不舒服", "受伤", "疲劳", "极度疲劳", "膝盖", "腰", "肩"])
     )
-    is_calorie_request = any(
-        keyword in user_message
-        for keyword in ["热量", "卡路里", "消耗", "kcal", "千卡"]
+    is_volume_request = "健身计划" in intents or (
+        not has_structured_intent
+        and _message_has_any(user_message, ["多少组", "几组", "训练量", "分钟", "时间只有", "多久"])
+    )
+    is_calorie_request = (
+        not has_structured_intent
+        and _message_has_any(user_message, ["热量", "卡路里", "消耗", "kcal", "千卡"])
     )
 
     fallback_tool_name = None
@@ -92,6 +103,13 @@ def build_fallback_reason_data(
     elif is_running_route_request and "running_route_advisor" in available_tools:
         fallback_tool_name = "running_route_advisor"
         fallback_id = "fallback-running-route"
+
+    if is_diet_record_request:
+        return {
+            "tool_calls": [],
+            "result": "我可以帮你记录饮食。请提供具体食物、估计份量，或上传餐食图片；拿到这些信息后我会生成待确认的饮食记录卡片。",
+            "fallback_reason": error_message,
+        }
 
     if fallback_tool_name:
         return {

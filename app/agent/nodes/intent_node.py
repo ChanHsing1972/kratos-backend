@@ -8,6 +8,8 @@
 import re
 from typing import Any
 
+from pydantic import BaseModel, Field, ValidationError
+
 from app.agent.intent_policy import (
     is_news_query,
     is_route_query,
@@ -23,6 +25,9 @@ INTENT_MAP = {
     "健身计划": "健身计划",
     "饮食": "饮食",
     "饮食计划": "饮食计划",
+    "饮食记录": "饮食记录",
+    "记录饮食": "饮食记录",
+    "饮食打卡": "饮食记录",
     "调整": "调整",
     "调整计划": "调整计划",
     "反馈": "反馈",
@@ -39,6 +44,31 @@ INTENT_MAP = {
 }
 
 
+class IntentExtraction(BaseModel):
+    """Structured contract for one-turn intent and slot extraction."""
+
+    intent: list[str] = Field(default_factory=lambda: ["闲聊"])
+    daily_diet: list[str] = Field(default_factory=list)
+    training_feedback: list[str] = Field(default_factory=list)
+    name: str | None = None
+    job: str | None = None
+    gender: str | None = None
+    age: int | float | str | None = None
+    height_cm: int | float | str | None = None
+    weight_kg: int | float | str | None = None
+    body_condition: str | None = None
+    goal: str | None = None
+    activity_level: str | None = None
+    exercise_intensity: str | None = None
+    available_time_minutes: int | float | str | None = None
+    diet: str | None = None
+    intolerances: list[str] = Field(default_factory=list)
+    preferred_ingredients: list[str] = Field(default_factory=list)
+    disliked_ingredients: list[str] = Field(default_factory=list)
+    preferred_cuisines: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.7, ge=0, le=1)
+
+
 class IntentNode(BaseNode):
     """识别用户意图并抽取本轮 profile、饮食和训练反馈信息。"""
 
@@ -51,7 +81,7 @@ class IntentNode(BaseNode):
             skill_context = self.describe_active_skills(state)
             prompt = f"""
             你是健身 Agent 的意图识别器。
-            请识别用户意图，可选范围包括：健身计划、饮食计划、调整计划、反馈、闲聊、信息查询、天气查询、新闻搜索、路线查询、普通问答。
+            请识别用户意图，可选范围包括：健身计划、饮食计划、饮食记录、调整计划、反馈、闲聊、信息查询、天气查询、新闻搜索、路线查询、普通问答。
             允许输出多个意图。不要输出范围外的意图。
             天气、新闻、搜索链接、路线查询属于信息查询，不要归类为健身计划，除非用户明确要求生成训练安排。
             如果启用了 Skill，请结合 Skill 的适用场景辅助判断用户目标，但不要把 Skill 名称当作意图。
@@ -60,7 +90,7 @@ class IntentNode(BaseNode):
             {skill_context}
 
             同时抽取用户输入中的关键信息：
-            - 当日饮食：用户今天吃了什么，若没有则返回空数组
+            - 当日饮食：用户今天吃了什么；如果用户只是想开始记录但没有提供食物，返回空数组
             - 训练反馈：用户对训练的感受、疲劳、疼痛、完成情况等，若没有则返回空数组
             - 用户姓名：若提到名字则提取，否则返回 null
             - 职业/身份：如上班族、学生、程序员、教师等，若提到则返回，否则返回 null
@@ -107,6 +137,7 @@ class IntentNode(BaseNode):
             """
 
             data = self.invoke_json(prompt, state)
+        data = self._validate_intent_payload(data)
         intents = data.get("intent") or ["闲聊"]
         if isinstance(intents, str):
             intents = [intents]
@@ -188,7 +219,10 @@ class IntentNode(BaseNode):
             intents.append("信息查询")
         if is_explicit_training_plan_request(text):
             intents.append("健身计划")
-        if any(keyword in text for keyword in ["饮食计划", "记录饮食", "食谱", "吃什么", "热量", "蛋白质", "碳水", "脂肪"]):
+        diet_record = IntentNode._is_diet_record_request(text)
+        if diet_record:
+            intents.append("饮食记录")
+        if any(keyword in text for keyword in ["饮食计划", "食谱", "吃什么", "怎么吃", "餐单"]):
             intents.append("饮食计划")
         if any(keyword in text for keyword in ["调整计划", "调整训练", "调整一下", "太累", "疼", "不舒服", "受伤", "疲劳"]):
             intents.append("调整计划" if "健身计划" in intents else "反馈")
@@ -216,9 +250,11 @@ class IntentNode(BaseNode):
         if any(keyword in text for keyword in ["疼", "不舒服", "受伤", "疲劳", "酸"]):
             training_feedback.append(text[:120])
 
+        daily_diet = IntentNode._extract_daily_diet_text(text) if diet_record else []
+
         return {
             "intent": intents,
-            "daily_diet": [],
+            "daily_diet": daily_diet,
             "training_feedback": training_feedback,
             "name": None,
             "job": None,
@@ -236,7 +272,56 @@ class IntentNode(BaseNode):
             "preferred_ingredients": [],
             "disliked_ingredients": [],
             "preferred_cuisines": [],
+            "confidence": 0.75,
         }
+
+    @staticmethod
+    def _validate_intent_payload(data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return IntentExtraction().model_dump()
+        try:
+            return IntentExtraction.model_validate(data).model_dump()
+        except ValidationError:
+            return IntentExtraction(
+                intent=IntentNode._ensure_str_list(data.get("intent") or ["闲聊"]),
+                daily_diet=IntentNode._ensure_str_list(data.get("daily_diet") or []),
+                training_feedback=IntentNode._ensure_str_list(data.get("training_feedback") or []),
+            ).model_dump()
+
+    @staticmethod
+    def _is_diet_record_request(text: str) -> bool:
+        record_markers = [
+            "记录饮食",
+            "保存饮食",
+            "饮食打卡",
+            "记一餐",
+            "记一下",
+            "帮我记",
+            "我吃了",
+            "今天吃了",
+            "刚吃了",
+            "早餐",
+            "午餐",
+            "晚餐",
+            "夜宵",
+            "加餐",
+        ]
+        if any(marker in text for marker in record_markers):
+            return "吃什么" not in text and "怎么吃" not in text
+        return False
+
+    @staticmethod
+    def _extract_daily_diet_text(text: str) -> list[str]:
+        patterns = [
+            r"(?:我|今天|刚刚|早餐|午餐|晚餐|夜宵|加餐)?\s*(?:吃了|喝了|摄入了)\s*([^。！？!?；;\n]{1,120})",
+            r"(?:早餐|午餐|晚餐|夜宵|加餐)\s*[:：是为]?\s*([^。！？!?；;\n]{1,120})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                value = match.group(1).strip(" ：:,，。")
+                return [value] if value else []
+        return []
 
     @staticmethod
     def _clean_str(value: Any) -> str | None:

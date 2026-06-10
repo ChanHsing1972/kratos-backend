@@ -6,7 +6,7 @@ from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
-from app.agent.state.reasoning import Task
+from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.session_state import SessionState
 from app.api.v1.endpoints.agent_chat import LiveAgentStream, _agent_stream_error_message
 from app.services.agent_chat import stream_agent_chat
@@ -98,6 +98,29 @@ def test_training_plan_fast_path_skips_planning_and_reasoning_llm():
         "calculate_workout_volume",
     ]
     assert task.tool_calls[1].args["time_min"] == 45
+
+
+def test_diet_record_fast_path_does_not_call_diet_plan_tool():
+    class ExplodingLLM:
+        def invoke(self, prompt):
+            raise AssertionError("LLM should not be called for deterministic diet record path")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="帮我记一下，午餐吃了鸡胸肉和米饭"))
+    state.tools.available_tools = {"diet_plan_generator": object()}
+
+    IntentNode(ExplodingLLM())(state)
+    PlanNode(ExplodingLLM())(state)
+    ReasonNode(ExplodingLLM())(state)
+
+    assert state.reasoning.intent == ["饮食记录"]
+    assert state.reasoning.extracted_info["daily_diet"] == ["鸡胸肉和米饭"]
+    assert len(state.reasoning.tasks) == 1
+    task = state.reasoning.tasks[0]
+    assert task.status == TaskStatus.done
+    assert task.tool_calls == []
+    assert "鸡胸肉和米饭" in task.result
+    assert "饮食计划" not in task.result
 
 
 def test_weather_and_fitness_news_query_uses_only_information_tools():
@@ -245,6 +268,13 @@ def test_agent_stream_error_message_surfaces_tunnel_certificate_issue():
     assert "AGENT_LLM_SSL_VERIFY=false" in message
 
 
+def test_agent_stream_error_message_surfaces_model_timeout():
+    message = _agent_stream_error_message(TimeoutError("Request timed out"))
+
+    assert "模型服务响应超时" in message
+    assert "Request timed out" not in message
+
+
 def test_onboarding_status_requires_simplified_profile_fields():
     profile = SimpleNamespace(
         gender="女",
@@ -382,6 +412,24 @@ def test_tool_arg_repair_uses_known_profile_without_unsafe_defaults():
     }
 
 
+def test_reason_node_timeout_falls_back_to_safe_task_result():
+    class TimeoutLLM:
+        def invoke(self, prompt):
+            raise TimeoutError("Request timed out")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="解释一下渐进超负荷怎么理解"))
+    state.reasoning.intent = ["闲聊"]
+    state.reasoning.tasks = [Task(task_id=0, name="回答概念问题", description="解释训练概念")]
+
+    ReasonNode(TimeoutLLM())(state)
+
+    task = state.reasoning.tasks[0]
+    assert task.status == TaskStatus.done
+    assert task.tool_calls == []
+    assert "模型输出格式异常" in task.result
+
+
 def test_workout_volume_repair_uses_known_session_minutes():
     task = Task(task_id=0, name="生成训练计划")
     state = SessionState(session_id="s1", user_id="u1")
@@ -452,6 +500,20 @@ def test_health_data_extraction_skips_plain_plan_requests():
     )
 
     assert pending is None
+
+
+def test_health_data_extraction_handles_colloquial_weight_update():
+    class FakeHealthDataLLM:
+        def invoke(self, prompt):
+            assert "健康数据抽取器" in prompt
+            return SimpleNamespace(content='{"pending_health_data": {"body_metric": {"weight_kg": 68.5}, "profile": {}}}')
+
+    pending = extract_body_data_from_message(
+        "我刚称了 68.5kg",
+        llm=FakeHealthDataLLM(),
+    )
+
+    assert pending == {"body_metric": {"weight_kg": 68.5}}
 
 
 def test_legacy_weekly_schedule_is_converted_to_structured_sessions():
@@ -603,6 +665,53 @@ def test_generate_node_parses_food_estimate_from_visible_markdown_table():
     assert result.total.protein_g == 41
     assert result.items[0].confidence == 0.8
     assert result.items[1].confidence == 0.7
+
+
+def test_generate_node_parses_food_estimate_with_reordered_columns_and_fullwidth_pipes():
+    result = GenerateNode._build_food_image_estimate_result(
+        "识别结果如下：\n\n"
+        "｜菜品｜蛋白质(g)｜碳水(g)｜脂肪(g)｜热量范围(kcal)｜估算分量｜备注｜\n"
+        "｜---｜---:｜---:｜---:｜---:｜---:｜---｜\n"
+        "｜牛肉饭｜32｜78｜18｜650-760｜420g｜酱汁油量不确定｜\n"
+        "｜味噌汤｜6｜8｜3｜80｜250g｜按一碗估算｜\n"
+        "｜合计｜38｜86｜21｜730-840｜670g｜需确认｜"
+    )
+
+    assert result is not None
+    assert [item.name for item in result.items] == ["牛肉饭", "味噌汤"]
+    assert result.items[0].estimated_kcal == 705
+    assert result.items[0].min_kcal == 650
+    assert result.items[0].max_kcal == 760
+    assert result.items[0].estimated_weight_g == 420
+    assert result.total.estimated_kcal == 785
+
+
+def test_generate_node_stream_timeout_emits_fallback_and_updates_result():
+    class TimeoutStreamingLLM:
+        def stream(self, prompt):
+            yield SimpleNamespace(content="## 已开始回答\n\n")
+            raise TimeoutError("Request timed out")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="今天怎么安排恢复训练？"))
+    state.reasoning.intent = ["健身计划"]
+    state.reasoning.tasks = [
+        Task(
+            task_id=0,
+            name="整理训练建议",
+            status=TaskStatus.done,
+            result="建议安排低强度恢复训练，控制在 30 分钟内。",
+        )
+    ]
+
+    events = list(GenerateNode(TimeoutStreamingLLM()).stream_response_events(state))
+
+    assert events[0]["type"] == "answer_delta"
+    status_event = next(event for event in events if event["type"] == "status")
+    assert status_event["raw"]["timeout"] is True
+    assert "模型服务响应超时" in state.result.response
+    assert "整理训练建议" in state.result.response
+    assert state.result.final_answer_ready is True
 
 
 def test_workout_card_pending_requires_plan_intent_or_request():

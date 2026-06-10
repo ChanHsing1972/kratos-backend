@@ -63,6 +63,13 @@ async def estimate_from_image(
 
 if find_spec("multipart") is not None:
     router.post("/estimate-from-image", response_model=FoodImageEstimateResponse)(estimate_from_image)
+else:
+    @router.post("/estimate-from-image", response_model=FoodImageEstimateResponse)
+    async def estimate_from_image_unavailable():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="饮食图片上传依赖未安装，请安装 python-multipart 后重启服务。",
+        )
 
 
 @router.post(
