@@ -517,6 +517,47 @@ def test_generate_node_normalizes_collapsed_markdown_table():
     assert "\n\n## 备注\n- 今日安排适合户外。" in normalized
 
 
+def test_generate_node_repairs_common_markdown_format_artifacts():
+    broken = (
+        "⚠️ 当前无法生成可靠训练计划的原因| 类别 | 缺失项 | 影响 |\n"
+        "|---\n"
+        "| 基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界 |\n\n"
+        "✅ 下一步建议\n"
+        ": 3步快速启动请依次提供以下信息，年龄：____ 岁2. 目标与条件 - 主要目标\n"
+        "3. **身体数据（可选但强烈推荐）\n"
+        "• • • 身高：____ cm\n"
+        "• 当前体重：____ kg> 🔐 您提供的所有数据仅用于本次计划生成；"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert "当前无法生成可靠训练计划的原因\n| 类别 | 缺失项 | 影响 |" in normalized
+    assert "\n| --- | --- | --- |\n" in normalized
+    assert "\n|---\n" not in normalized
+    assert "\n: 3步" not in normalized
+    assert "岁\n2. 目标与条件" in normalized
+    assert "3. 身体数据（可选但强烈推荐）" in normalized
+    assert "- 身高：____ cm" in normalized
+    assert "kg 🔐 您提供" in normalized
+
+
+def test_generate_node_keeps_table_header_without_leading_pipe():
+    broken = (
+        "⚠️ 当前无法生成可靠训练计划的原因\n"
+        "类别 | 缺失项 | 影响 |\n"
+        "---\n"
+        "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界\n"
+        "目标导向 | 健身目标 | 训练结构无法定向设计"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert "类别 | 缺失项 | 影响" in normalized
+    assert "\n| --- | --- | --- |\n" in normalized
+    assert "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界" in normalized
+    assert "\n类别\n| 缺失项 | 影响 |" not in normalized
+
+
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():
     result = GenerateNode._build_food_image_estimate_result(
         "我识别到这是一份餐食，以下为估算：\n\n"
