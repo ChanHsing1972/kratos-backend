@@ -6,6 +6,7 @@ ReasonNode 面向当前子任务判断是否需要工具：可直接回答则写
 """
 
 import json
+import re
 
 from app.agent.intent_policy import (
     INFO_INTENTS,
@@ -338,6 +339,16 @@ class ReasonNode(BaseNode):
         user_message = str(ReasonNode.latest_user_text(state)).strip().lower()
         if has_plan_intent(state.reasoning.intent):
             return None
+
+        if re.search(r"(工具|tools?|可调用|能力清单|支持哪些)", user_message, flags=re.IGNORECASE):
+            tool_descriptions = ReasonNode.describe_tools(state.tools.available_tools)
+            if not tool_descriptions:
+                return "当前没有启用可调用工具。"
+            lines = ["当前可调用工具如下："]
+            for tool in tool_descriptions:
+                description = str(tool.get("description") or "暂无描述").strip()
+                lines.append(f"- `{tool.get('name')}`：{description}")
+            return "\n".join(lines)
 
         long_term = state.memory.long_term_memory
         physical = long_term.physical_profile

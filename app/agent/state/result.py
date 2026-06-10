@@ -143,6 +143,7 @@ class ResultState(BaseModel):
     workout_plan: WorkoutPlanResult | None = None
     diet_plan: DietPlanResult | None = None
     food_image_estimate: FoodImageEstimateResult | None = None
+    structured_artifacts: dict[str, Any] = Field(default_factory=lambda: {"version": 1})
 
     first_response: str | None = None
     response: str | None = None
@@ -159,6 +160,29 @@ class ResultState(BaseModel):
 
         self.last_updated_at = datetime.now()
 
+    def sync_structured_artifacts(self) -> None:
+        """把可保存卡片统一镜像到稳定 JSON 合同，供前端优先消费。"""
+
+        artifacts = dict(self.structured_artifacts or {})
+        artifacts["version"] = 1
+
+        if self.workout_plan is not None:
+            artifacts["workout_plan"] = self.workout_plan.model_dump(mode="json")
+        else:
+            artifacts.pop("workout_plan", None)
+
+        if self.diet_plan is not None:
+            artifacts["diet_plan"] = self.diet_plan.model_dump(mode="json")
+        else:
+            artifacts.pop("diet_plan", None)
+
+        if self.food_image_estimate is not None:
+            artifacts["food_image_estimate"] = self.food_image_estimate.model_dump(mode="json")
+        else:
+            artifacts.pop("food_image_estimate", None)
+
+        self.structured_artifacts = artifacts
+
     def reset_runtime_for_new_turn(self) -> None:
         """清理跨轮不应继承的运行态字段，保留可持久化结构化结果。"""
 
@@ -171,6 +195,7 @@ class ResultState(BaseModel):
         self.workout_plan = None
         self.diet_plan = None
         self.food_image_estimate = None
+        self.structured_artifacts = {"version": 1}
         self.first_response = None
         self.response = None
         self.reflection_suggestions = []

@@ -77,6 +77,7 @@ def run_agent_chat(
         db=db,
     )
     state = prepared.state
+    attach_pending_health_artifact(state, prepared.pending_health_updates)
     reserved_run = None
     if db is not None:
         reserved_run, should_run = reserve_agent_run(db, user_id, state.session_id, prepared.stored_message, client_turn_id)
@@ -142,6 +143,7 @@ def stream_agent_chat(
         db=db,
     )
     state = prepared.state
+    attach_pending_health_artifact(state, prepared.pending_health_updates)
     reserved_run = None
     run_id = str(uuid4())
     if db is not None:
@@ -227,6 +229,10 @@ def stream_agent_chat(
 
     try:
         for event in _run_streaming_agent(final_state, emitted_keys, run_id=run_id, is_cancelled=is_cancelled):
+            if event.get("type") == "final":
+                enrich_workout_plan_media(final_state, db)
+                final_state.result.sync_structured_artifacts()
+                event["raw"] = final_state.result.model_dump(mode="json")
             append_persistable_event(persisted_trace, event)
             yield event
     except AgentCancelledError:
@@ -325,3 +331,18 @@ def enrich_workout_plan_media(state: SessionState, db: Session | None = None) ->
             if media.get("source") == "skipped":
                 continue
             exercise.media = ExerciseMedia(**media)
+    state.result.sync_structured_artifacts()
+
+
+def attach_pending_health_artifact(
+    state: SessionState,
+    pending_health_updates: dict[str, Any] | None,
+) -> None:
+    """Expose pending health/profile cards through the same stable artifact payload."""
+
+    if not pending_health_updates:
+        return
+    artifacts = dict(state.result.structured_artifacts or {})
+    artifacts["version"] = 1
+    artifacts["pending_health_data"] = pending_health_updates
+    state.result.structured_artifacts = artifacts

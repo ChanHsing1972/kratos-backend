@@ -184,6 +184,8 @@ class IntentNode(BaseNode):
             return None
 
         intents: list[str] = []
+        if re.search(r"(工具|tools?|可调用|能力清单|支持哪些)", text, flags=re.IGNORECASE):
+            intents.append("信息查询")
         if is_explicit_training_plan_request(text):
             intents.append("健身计划")
         if any(keyword in text for keyword in ["饮食计划", "记录饮食", "食谱", "吃什么", "热量", "蛋白质", "碳水", "脂肪"]):

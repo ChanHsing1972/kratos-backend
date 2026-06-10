@@ -119,6 +119,12 @@ class GenerateNode(BaseNode):
         intents = state.reasoning.intent
         skill_context = self.describe_active_skills(state)
         supported_exercises = "、".join(list_supported_exercise_names())
+        available_tools = json.dumps(
+            self.describe_tools(state.tools.available_tools),
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
 
         task_results = "\n".join([f"- {task.name} [{task.status}]: {task.result or task.error or '无结果'}" for task in tasks])
         memory_context = json.dumps(
@@ -157,12 +163,13 @@ class GenerateNode(BaseNode):
         - 生成训练计划或动作安排时，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
         - 面向用户展示的动作名称必须使用中文；不要在标题、正文、表格或动作列表中输出英文动作名或英文别名。
         - 如果用户需求确实无法由可展示动作库覆盖，选择最接近的可展示动作替代，并在备注里说明替代原因。
-        - 训练计划行必须保持干净格式：`周三｜训练主题：动作A 3组 x 10次；动作B 3组 x 12次`。
+        - 训练计划行必须保持干净格式：`周三|训练主题：动作A 3组 x 10次；动作B 3组 x 12次`。
         - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划行的标题或动作列表里；这些内容只能放在计划前后的说明段。
         - 今日训练只输出当天安排，不要把用户原话重复成标题；标题优先使用“上肢训练”“下肢训练”“全身训练”“恢复训练”等短主题。
         - 生成训练计划时，必须提供可直接保存的训练安排：周/周期计划和今日计划都优先使用 Markdown 表格展示动作、组数、次数/时长、休息和备注。不要在正文与训练安排中给出互相冲突的内容。
-        - 如果用户上传的是食物/餐食图片，必须直接根据图片估算可见食物，回答中包含 Markdown 表格，表头使用：食物｜估算重量(g)｜热量(kcal)｜蛋白质(g)｜脂肪(g)｜碳水(g)｜置信度｜备注。说明这是估算并需要用户确认后保存；不要声称已经保存。
+        - 如果用户上传的是食物/餐食图片，必须直接根据图片估算可见食物，回答中包含标准 Markdown 表格，表头必须为：`| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |`。说明这是估算并需要用户确认后保存；不要声称已经保存。
         - 如果图片不是食物或无法判断食物，不要输出饮食热量估算表，直接说明无法生成饮食记录卡片的原因。
+        - 如果用户询问“你有哪些工具 / 可调用 tools / 支持哪些能力”，必须基于“当前可用工具”如实列出工具名、用途和限制；不要编造未出现在清单里的工具。
         - 不要把 Skill 描述成会直接执行代码；Skill 只是改变你的领域策略和工具范围。
         - 不要暴露内部任务编号或 JSON。
 
@@ -171,6 +178,9 @@ class GenerateNode(BaseNode):
 
         启用 Skill:
         {skill_context}
+
+        当前可用工具(JSON):
+        {available_tools}
 
         用户问题:
         {user_message}
@@ -295,7 +305,9 @@ class GenerateNode(BaseNode):
     def _update_structured_artifacts(self, state: SessionState, response_text: str) -> None:
         """根据工具结果和最终文本刷新训练/饮食结构化卡片。"""
 
-        food_estimate = self._build_food_image_estimate_result(response_text)
+        food_estimate = self._build_strict_food_image_estimate_from_context(state, response_text)
+        if food_estimate is None:
+            food_estimate = self._build_food_image_estimate_result(response_text)
         if food_estimate is not None:
             state.result.food_image_estimate = food_estimate
 
@@ -326,6 +338,8 @@ class GenerateNode(BaseNode):
                 parsed_workout = self._build_workout_plan_result(task.result, source, state.reasoning.intent)
                 if parsed_workout is not None:
                     state.result.workout_plan = parsed_workout
+
+        state.result.sync_structured_artifacts()
 
     def _build_workout_plan_from_task_results(self, state: SessionState) -> WorkoutPlanResult | None:
         """优先从工具结果中构建训练计划，减少从自然语言反解析的误差。"""
@@ -526,6 +540,75 @@ class GenerateNode(BaseNode):
             return None
         return result
 
+    def _build_strict_food_image_estimate_from_context(
+        self,
+        state: SessionState,
+        response_text: str,
+    ):
+        """Use a fixed JSON contract for food-image cards, with Markdown parsing as fallback."""
+
+        if not self.latest_attachment_parts(state):
+            return None
+        combined_text = f"{self.latest_user_text(state)}\n{response_text}"
+        if not re.search(r"(食物|餐|饭|热量|kcal|千卡|蛋白|脂肪|碳水|饮食|图片)", combined_text, flags=re.IGNORECASE):
+            return None
+
+        prompt = f"""
+        你是 Kratos 饮食图片结构化输出器。
+        只返回一个 JSON 对象，不要 Markdown，不要解释，不要代码块。
+
+        目标：根据本轮用户上传图片、用户问题和最终回复，输出可保存的饮食热量估算卡片。
+        如果图片不是食物、无法判断食物，或最终回复没有做食物热量估算，返回：{{"food_image_estimate": null}}
+
+        JSON Schema:
+        {{
+          "food_image_estimate": {{
+            "items": [
+              {{
+                "name": "食物名称",
+                "estimated_weight_g": 120,
+                "estimated_kcal": 360,
+                "min_kcal": 320,
+                "max_kcal": 420,
+                "protein_g": 28,
+                "fat_g": 24,
+                "carbs_g": 2,
+                "confidence": 0.8,
+                "assumptions": ["份量、油量或食材判断依据"]
+              }}
+            ],
+            "warning": "该结果为 AI 估算，需要用户确认后保存。"
+          }}
+        }}
+
+        规则：
+        - items 必须是一食物一行，不要把“合计”作为 item。
+        - 所有营养字段必须是数字；无法判断填 0。
+        - confidence 使用 0 到 1 的数字。
+        - min_kcal/max_kcal 应反映不确定区间；如果没有区间，等于 estimated_kcal。
+        - 不得声称已保存记录。
+
+        用户问题：
+        {self.latest_user_text(state)}
+
+        最终回复：
+        {self._clip_text(response_text, 4000)}
+        """
+
+        try:
+            payload = self.invoke_json(prompt, state)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Failed to build strict food_image_estimate JSON: %s", exc)
+            return None
+
+        coerced = self._coerce_food_estimate_payload(payload)
+        if not coerced:
+            return None
+        result = normalize_food_estimate_payload(coerced)
+        if not result.items or not any(item.estimated_kcal > 0 for item in result.items):
+            return None
+        return result
+
     @staticmethod
     def _food_estimate_payload_from_json(content: str) -> dict[str, Any] | None:
         candidates: list[str] = []
@@ -653,12 +736,12 @@ class GenerateNode(BaseNode):
         lines = content.splitlines()
         index = 0
         while index < len(lines):
-            if "|" not in lines[index]:
+            if "|" not in lines[index] and "｜" not in lines[index]:
                 index += 1
                 continue
 
             block: list[str] = []
-            while index < len(lines) and "|" in lines[index]:
+            while index < len(lines) and ("|" in lines[index] or "｜" in lines[index]):
                 block.append(lines[index])
                 index += 1
 
@@ -670,7 +753,7 @@ class GenerateNode(BaseNode):
 
     @staticmethod
     def _split_table_cells(line: str) -> list[str]:
-        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+        return [cell.strip() for cell in line.replace("｜", "|").strip().strip("|").split("|")]
 
     @staticmethod
     def _is_separator_row(row: list[str]) -> bool:

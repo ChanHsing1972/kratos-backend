@@ -453,8 +453,8 @@ def test_health_data_extraction_skips_plain_plan_requests():
 
 def test_legacy_weekly_schedule_is_converted_to_structured_sessions():
     schedule = _schedule_json_from_text(
-        "周一｜上肢推：卧推 4 组 x 8 次；肩推 3 组 x 10 次\n"
-        "周三｜下肢：深蹲 4 组 x 8 次"
+        "周一|上肢推：卧推 4 组 x 8 次；肩推 3 组 x 10 次\n"
+        "周三|下肢：深蹲 4 组 x 8 次"
     )
 
     assert schedule is not None
@@ -466,8 +466,8 @@ def test_legacy_weekly_schedule_is_converted_to_structured_sessions():
 
 def test_agent_weekly_text_creates_multiple_editable_sessions():
     sessions = GenerateNode._parse_weekly_sessions_from_text(
-        "周一｜上肢推：卧推 4 组 x 8 次；肩推 3 组 x 10 次\n"
-        "周三｜下肢：深蹲 4 组 x 8 次"
+        "周一|上肢推：卧推 4 组 x 8 次；肩推 3 组 x 10 次\n"
+        "周三|下肢：深蹲 4 组 x 8 次"
     )
 
     assert len(sessions) == 2

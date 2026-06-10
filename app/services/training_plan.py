@@ -366,7 +366,7 @@ def _build_training_plan_adjustment_prompt(
 - 如果计划已经有周训练安排，优先修改 weekly_schedule，让后续训练更符合这次反馈。
 - 如果修改 weekly_schedule 或替换动作，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
 - 如果反馈需要的动作不在可展示动作库里，选择最接近的可展示动作替代，并在 rationale 中说明替代原因。
-- weekly_schedule 必须使用干净训练行，例如：周三｜恢复训练：动作A 2组 x 12次；动作B 2组 x 10次。
+- weekly_schedule 必须使用干净训练行，例如：周三|恢复训练：动作A 2组 x 12次；动作B 2组 x 10次。
 - 不要把用户反馈、年龄、身高、体重、训练经验或解释文字放进 weekly_schedule 的训练标题和动作列表；这些内容只允许放在 rationale 或 recovery_guidance。
 - 如果反馈涉及疼痛、疲劳、提前结束、补给不足，请同步调整 recovery_guidance 或 nutrition_guidance。
 - 请保留已经发生的训练历史，不要回写历史日志；你的修改只作用于当前计划及未来训练。
@@ -413,7 +413,7 @@ def _propose_training_plan_adjustment_fallback(
         )
         recovery = append_guidance(
             recovery,
-            "调整提示｜疼痛反馈日后续：相关部位动作减少 1 组，优先选择低冲击、可控速度的替代动作。",
+            "调整提示|疼痛反馈日后续：相关部位动作减少 1 组，优先选择低冲击、可控速度的替代动作。",
         )
         if any(keyword in normalized for keyword in ["头晕", "胸痛", "急性", "明显疼痛"]):
             recovery = append_guidance(
@@ -432,7 +432,7 @@ def _propose_training_plan_adjustment_fallback(
         rationale.append("反馈中显示当前刺激偏低，可小幅增加训练挑战。")
         recovery = append_guidance(
             recovery,
-            "进阶提示｜若动作质量稳定，下次同类训练可增加 1 组或提高 2.5-5% 负重。",
+            "进阶提示|若动作质量稳定，下次同类训练可增加 1 组或提高 2.5-5% 负重。",
         )
 
     if completed is False:
