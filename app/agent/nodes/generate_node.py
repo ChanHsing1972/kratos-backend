@@ -270,7 +270,7 @@ class GenerateNode(BaseNode):
         text = re.sub(r"([：:])\s*>\s*(?=\n|$)", r"\1", text)
         text = re.sub(r"([\u4e00-\u9fffA-Za-z0-9）)。！？!?；;，,、])\s*>\s*(?=\n|$)", r"\1", text)
 
-        text = re.sub(r"([^\n])(\|\s*(?:动作|周几|训练内容|餐次|项目|指标|日期|部位|食物|菜品|估算重量|估算分量|热量|蛋白质|脂肪|碳水)\s*\|)", r"\1\n\2", text)
+        text = re.sub(r"([^\n])(\|\s*(?:动作|周几|训练内容|餐次|项目|指标|日期|部位|食物|菜品|估算重量|估算分量|热量|蛋白质|脂肪|碳水|类别|缺失项|影响|原因|建议|风险|边界|可用资源|基础身份|目标导向|身体数据|训练结构|计划可行性)\s*\|)", r"\1\n\2", text)
         text = re.sub(r"\|{2,}\s*(?=:?-{3,}:?\s*(?:\||$))", "|\n|", text)
         text = re.sub(r"\|{2,}\s*(?=[\u4e00-\u9fffA-Za-z0-9（(*_`-])", "|\n|", text)
         text = re.sub(r"\|\s+\|", "|\n|", text)
@@ -1152,8 +1152,11 @@ class GenerateNode(BaseNode):
         for raw_line in content.splitlines():
             if "|" not in raw_line:
                 continue
-            cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
+            stripped_line = raw_line.strip()
+            cells = [cell.strip() for cell in stripped_line.strip("|").split("|")]
             if len(cells) < 2 or re.search(r"周几|星期|训练内容|主要动作|说明", cells[0]):
+                continue
+            if len(cells) == 2 and not stripped_line.startswith("|"):
                 continue
             day_match = re.fullmatch(r"((?:周|星期)[一二三四五六日天](?:/[日天])?)", cells[0])
             if not day_match:
