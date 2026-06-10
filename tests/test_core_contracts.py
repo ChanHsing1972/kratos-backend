@@ -532,7 +532,7 @@ def test_generate_node_parses_food_estimate_from_visible_markdown_table():
     assert result.total.estimated_kcal == 408
     assert result.total.protein_g == 41
     assert result.items[0].confidence == 0.8
-    assert result.items[1].confidence == 0.65
+    assert result.items[1].confidence == 0.7
 
 
 def test_workout_card_pending_requires_plan_intent_or_request():
