@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     AGENT_LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     AGENT_LLM_MODEL: str = "qwen-turbo"
     AGENT_LLM_API_KEY: str | None = None
-    AGENT_LLM_TEMPERATURE: float = 0.5
+    AGENT_LLM_TEMPERATURE: float = 0.2
     AGENT_LLM_TIMEOUT_SECONDS: int = 120
     AGENT_LLM_MAX_RETRIES: int = 0
     AGENT_LLM_MAX_OUTPUT_TOKENS: int = 1800

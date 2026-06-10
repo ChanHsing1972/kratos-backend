@@ -156,8 +156,9 @@ class GenerateNode(BaseNode):
         - Markdown 表格分隔行必须与表头列数一致，例如 `| --- | --- | --- |`；不要输出单独的 `---`、`|---` 或把分隔行当成数据行。
         - 表格单元格内不要输出 HTML，例如 `<br>`；如果一个单元格有多项内容，用中文分号 `；` 分隔。
         - 列表项必须独占一行，使用 `- 内容`，不要写成 `标题- 内容`。
+        - 段落不要以裸冒号开头，例如不要写 `: 若您暂无法...`；标题不要用 `|` 当装饰分隔符，写 `今日训练：全身激活 · 25分钟`，不要写 `今日训练|全身激活·25分钟`。
         - 编号列表必须独占一行，例如 `2. 目标与条件` 前必须换行；不要写成 `年龄：____ 岁2. 目标与条件`。
-        - 不要输出未闭合的 Markdown 标记，例如孤立的 `**身体数据`；如果不加粗就不要写 `**`。
+        - 不要输出未闭合的 Markdown 标记或句尾裸控制符，例如孤立的 `**身体数据`、`档案**。`、`*子任务估算`；如果不加粗/斜体就不要写 `**` 或 `*`。
         - 不要连续输出多个项目符号，例如 `• • • 身高`。
         - 不要把 `>` 当作装饰符或行尾符号；只有真正引用段落时才可在行首使用 `>`。
         - 具体、可执行，避免空泛建议。
@@ -289,6 +290,7 @@ class GenerateNode(BaseNode):
         text = re.sub(r"\|{2,}\s*(?=[\u4e00-\u9fffA-Za-z0-9（(*_`-])", "|\n|", text)
         text = re.sub(r"\|\s+\|", "|\n|", text)
         text = re.sub(r"\s+(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)", r"\n\1", text)
+        text = re.sub(r"(?m)^(\s*(?:#{1,6}\s*)?(?:今日训练|今日计划|训练安排|恢复训练|示例方案|通用方案))\s*[|｜]\s*(?=\S)", r"\1：", text)
         text = GenerateNode._repair_markdown_table_blocks(text)
         text = re.sub(r"(?m)^(\s*)\|\s*(?!:?-{3,}:?\s*\|?\s*$)([^|\n]+?)\s*\|?\s*$", r"\1\2", text)
         text = "\n".join(GenerateNode._split_trailing_text_after_table_row(line) for line in text.split("\n"))
@@ -309,6 +311,7 @@ class GenerateNode(BaseNode):
         text = re.sub(r"([^\n])---(?=\n|$)", r"\1\n\n---", text)
         text = re.sub(r"(?m)^(\s*#{1,6})\s+(?:#\s*)+", r"\1 ", text)
         text = "\n".join(GenerateNode._strip_unmatched_strong_markers(line) for line in text.split("\n"))
+        text = GenerateNode._separate_markdown_table_blocks(text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text
 
@@ -338,6 +341,30 @@ class GenerateNode(BaseNode):
             if GenerateNode._is_probable_table_row(next_line):
                 output.append(GenerateNode._separator_row(column_count))
             index += 1
+        return "\n".join(output)
+
+    @staticmethod
+    def _separate_markdown_table_blocks(text: str) -> str:
+        lines = text.split("\n")
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if not GenerateNode._has_known_table_header(line):
+                output.append(line)
+                index += 1
+                continue
+
+            output.append(line)
+            index += 1
+            if index < len(lines) and GenerateNode._is_markdown_separator_row(lines[index]):
+                output.append(lines[index])
+                index += 1
+            while index < len(lines) and GenerateNode._is_probable_table_row(lines[index]):
+                output.append(lines[index])
+                index += 1
+            if index < len(lines) and lines[index].strip():
+                output.append("")
         return "\n".join(output)
 
     @staticmethod

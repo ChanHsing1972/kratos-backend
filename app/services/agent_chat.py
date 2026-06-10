@@ -295,9 +295,22 @@ def _run_streaming_agent(
         if run_id is not None:
             event["run_id"] = run_id
         if event.get("type") == "final_state":
+            normalized_answer = str(event.get("content") or "")
+            if normalized_answer:
+                replace_event = {
+                    "type": "answer_replace",
+                    "content": normalized_answer,
+                    "answer": normalized_answer,
+                    "raw": {"normalized_answer": True},
+                    "session_id": state.session_id,
+                }
+                if run_id is not None:
+                    replace_event["run_id"] = run_id
+                yield replace_event
+
             final_step = AgentTraceStep(
                 type="final",
-                content=str(event.get("content") or ""),
+                content=normalized_answer,
                 raw=event.get("raw"),
             )
             key = trace_key(final_step)

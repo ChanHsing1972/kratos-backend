@@ -184,8 +184,8 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
             state.result.response = "## 回答\n\n已完成。"
             yield {
                 "type": "answer_delta",
-                "delta": "## 回答\n\n已完成。",
-                "content": "## 回答\n\n已完成。",
+                "delta": ": ## 回答**\n\n已完成。",
+                "content": ": ## 回答**\n\n已完成。",
             }
             yield {
                 "type": "final_state",
@@ -209,6 +209,9 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
     assert events[0]["type"] == "status"
     assert events[0]["run_id"]
     assert any(event["type"] == "answer_delta" and event["run_id"] == events[0]["run_id"] for event in events)
+    replace_event = next(event for event in events if event["type"] == "answer_replace")
+    assert replace_event["answer"] == "## 回答\n\n已完成。"
+    assert replace_event["run_id"] == events[0]["run_id"]
     final_event = next(event for event in events if event["type"] == "final")
     done_event = events[-1]
     assert final_event["run_id"] == events[0]["run_id"]
@@ -559,9 +562,29 @@ def test_generate_node_keeps_table_header_without_leading_pipe():
     assert "\n| --- | --- | --- |\n" in normalized
     assert "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界" in normalized
     assert "\n| 🔍" not in normalized
+    assert "\n\n🔍 子任务估算仅为通用模板参考，不适用于实际执行。" in normalized
     assert "🔍 子任务估算仅为通用模板参考，不适用于实际执行。" in normalized
     assert "🔍 *子任务" not in normalized
     assert "\n类别\n| 缺失项 | 影响 |" not in normalized
+
+
+def test_generate_node_removes_dangling_markdown_punctuation():
+    broken = (
+        "📋 **示例**\n"
+        ": 若您暂无法提供全部信息，可先试用「通用新手友好方案」 以下为无个人信息前提下的最低安全方案\n"
+        "- 当前体重：____ kg 🔐 您提供的所有数据仅用于本次计划生成；\n"
+        "- 未经您确认，不会保存至档案**。\n"
+        "今日训练|全身激活·25分钟（无器械）"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert "\n: 若您" not in normalized
+    assert normalized.startswith("📋 **示例**\n若您")
+    assert "档案**" not in normalized
+    assert "- 未经您确认，不会保存至档案。" in normalized
+    assert "今日训练|全身激活" not in normalized
+    assert "今日训练：全身激活·25分钟（无器械）" in normalized
 
 
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():

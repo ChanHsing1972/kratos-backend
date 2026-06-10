@@ -10,6 +10,7 @@ TraceStepType = Literal[
     "observation",
     "reflection",
     "answer_delta",
+    "answer_replace",
     "final",
     "error",
     "done",
