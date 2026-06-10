@@ -290,6 +290,7 @@ class GenerateNode(BaseNode):
         text = re.sub(r"\|\s+\|", "|\n|", text)
         text = re.sub(r"\s+(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)", r"\n\1", text)
         text = GenerateNode._repair_markdown_table_blocks(text)
+        text = re.sub(r"(?m)^(\s*)\|\s*(?!:?-{3,}:?\s*\|?\s*$)([^|\n]+?)\s*\|?\s*$", r"\1\2", text)
         text = "\n".join(GenerateNode._split_trailing_text_after_table_row(line) for line in text.split("\n"))
         text = re.sub(r"([。.!?！？])\s*(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
         text = re.sub(r"([。.!?！？])\s*(#{2,6}\s+)", r"\1\n\n\2", text)
@@ -299,6 +300,7 @@ class GenerateNode(BaseNode):
         text = re.sub(r"([。！？!?；;：:])\s*(\d+[.)、]\s+)", r"\1\n\2", text)
         text = re.sub(r"([\u4e00-\u9fffA-Za-z）)_%％])\s*(\d+[.)、]\s+)", r"\1\n\2", text)
         text = re.sub(r"([）)])\s*([-*+]\s+)", r"\1\n\2", text)
+        text = re.sub(r"(?m)^\s*(?:[-*+•·]\s*){1,}$", "", text)
         text = re.sub(r"(?m)^(\s*)[:：]\s+(?=\S)", r"\1", text)
         text = re.sub(r"(?m)^(\s*)(?:[-*+•·]\s*){2,}(?=\S)", r"\1- ", text)
         text = re.sub(r"(?m)^(\s*)[•·]\s*", r"\1- ", text)
@@ -398,9 +400,12 @@ class GenerateNode(BaseNode):
 
     @staticmethod
     def _strip_unmatched_strong_markers(line: str) -> str:
-        if line.count("**") % 2 == 0:
-            return line
-        return line.replace("**", "")
+        normalized = line
+        if normalized.count("**") % 2 != 0:
+            normalized = normalized.replace("**", "")
+        if len(re.findall(r"(?<!\*)\*(?!\*)", normalized)) % 2 != 0:
+            normalized = re.sub(r"(?<!\*)\*(?!\*)", "", normalized)
+        return normalized
 
     @staticmethod
     def _split_trailing_text_after_table_row(line: str) -> str:

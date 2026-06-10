@@ -522,6 +522,7 @@ def test_generate_node_repairs_common_markdown_format_artifacts():
         "⚠️ 当前无法生成可靠训练计划的原因| 类别 | 缺失项 | 影响 |\n"
         "|---\n"
         "| 基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界 |\n\n"
+        "• •\n"
         "✅ 下一步建议\n"
         ": 3步快速启动请依次提供以下信息，年龄：____ 岁2. 目标与条件 - 主要目标\n"
         "3. **身体数据（可选但强烈推荐）\n"
@@ -534,6 +535,7 @@ def test_generate_node_repairs_common_markdown_format_artifacts():
     assert "当前无法生成可靠训练计划的原因\n| 类别 | 缺失项 | 影响 |" in normalized
     assert "\n| --- | --- | --- |\n" in normalized
     assert "\n|---\n" not in normalized
+    assert "• •" not in normalized
     assert "\n: 3步" not in normalized
     assert "岁\n2. 目标与条件" in normalized
     assert "3. 身体数据（可选但强烈推荐）" in normalized
@@ -547,7 +549,8 @@ def test_generate_node_keeps_table_header_without_leading_pipe():
         "类别 | 缺失项 | 影响 |\n"
         "---\n"
         "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界\n"
-        "目标导向 | 健身目标 | 训练结构无法定向设计"
+        "目标导向 | 健身目标 | 训练结构无法定向设计\n"
+        "| 🔍 *子任务估算仅为通用模板参考，不适用于实际执行。"
     )
 
     normalized = GenerateNode._normalize_markdown_response(broken)
@@ -555,6 +558,9 @@ def test_generate_node_keeps_table_header_without_leading_pipe():
     assert "类别 | 缺失项 | 影响" in normalized
     assert "\n| --- | --- | --- |\n" in normalized
     assert "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界" in normalized
+    assert "\n| 🔍" not in normalized
+    assert "🔍 子任务估算仅为通用模板参考，不适用于实际执行。" in normalized
+    assert "🔍 *子任务" not in normalized
     assert "\n类别\n| 缺失项 | 影响 |" not in normalized
 
 
