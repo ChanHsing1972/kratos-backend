@@ -37,7 +37,7 @@ from app.services.agent_trace import (
 from app.services.conversation_session import (
     persist_session_turn_artifacts,
 )
-from app.services.exercise_media import get_exercise_media
+from app.services.exercise_media import get_exercise_media, resolve_supported_exercise_name
 
 
 @lru_cache(maxsize=1)
@@ -340,6 +340,16 @@ def enrich_workout_plan_media(state: SessionState, db: Session | None = None) ->
         for exercise in session.exercises:
             if exercise.media is not None and exercise.media.media_url:
                 continue
+            original_name = exercise.name
+            resolved_name = resolve_supported_exercise_name(original_name, db)
+            if resolved_name and resolved_name != original_name:
+                exercise.name = resolved_name
+                replacement_note = f"已用库内可展示动作 {resolved_name} 替代原动作 {original_name}。"
+                if exercise.notes:
+                    if replacement_note not in exercise.notes:
+                        exercise.notes = f"{exercise.notes}；{replacement_note}"
+                else:
+                    exercise.notes = replacement_note
             media = get_exercise_media(exercise.name, db)
             if media.get("source") == "skipped":
                 continue

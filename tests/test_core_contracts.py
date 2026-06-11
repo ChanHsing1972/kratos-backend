@@ -2,14 +2,15 @@ from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
 
+from app.agent.nodes.act_node import ActNode
 from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.state.reasoning import Task, TaskStatus
+from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
 from app.agent.state.session_state import SessionState
 from app.api.v1.endpoints.agent_chat import LiveAgentStream, _agent_stream_error_message
-from app.services.agent_chat import stream_agent_chat
 from app.agent.tools.fitness_calculator_tool import (
     get_calculate_workout_volume_tool,
     get_pain_safety_gate_tool,
@@ -17,9 +18,10 @@ from app.agent.tools.fitness_calculator_tool import (
 from app.agent.tool_registry import ToolMetadata
 from app.agent.tool_planner import repair_tool_args
 from app.agent.nodes.generate_node import GenerateNode
+from app.services.agent_chat import enrich_workout_plan_media, stream_agent_chat
+from app.services.agent_trace import build_trace
 from app.services.exercise_library import _match_score
-from app.services.exercise_media import _pick_best_exercise
-from app.agent.state.result import ResultSource
+from app.services.exercise_media import _pick_best_exercise, resolve_supported_exercise_name
 from app.services.agent_tool import _new_config
 from app.services.body_data_ingest import extract_body_data_from_message
 from app.services.fitness_context import build_onboarding_status, hydrate_agent_memory
@@ -123,6 +125,55 @@ def test_diet_record_fast_path_does_not_call_diet_plan_tool():
     assert "饮食计划" not in task.result
 
 
+def test_training_plan_fast_path_executes_tools_and_builds_trace():
+    class ExplodingLLM:
+        def invoke(self, prompt):
+            raise AssertionError("LLM should not be called for deterministic training plan path")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请帮我安排45分钟训练"))
+    state.reasoning.intent = ["健身计划"]
+    state.reasoning.tasks = [Task(task_id=0, name="生成训练计划", description="安排45分钟训练")]
+    state.tools.available_tools = {
+        "pain_safety_gate": get_pain_safety_gate_tool(),
+        "calculate_workout_volume": get_calculate_workout_volume_tool(),
+    }
+
+    ReasonNode(ExplodingLLM())(state)
+    ActNode()(state)
+
+    trace = build_trace(state, include_final=False)
+    assert [call.name for call in state.reasoning.tasks[0].tool_calls] == [
+        "pain_safety_gate",
+        "calculate_workout_volume",
+    ]
+    assert any(step.type == "action" and "pain_safety_gate" in step.content for step in trace)
+    assert any(step.type == "action" and "calculate_workout_volume" in step.content for step in trace)
+    assert sum(1 for step in trace if step.type == "observation") >= 2
+
+
+def test_memory_query_can_answer_without_tool_calls():
+    class ExplodingLLM:
+        def invoke(self, prompt):
+            raise AssertionError("LLM should not be called for direct memory answers")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="我叫什么？"))
+    state.memory.long_term_memory.name = "Will"
+    state.reasoning.intent = ["信息查询"]
+    state.reasoning.tasks = [Task(task_id=0, name="回答记忆问题")]
+    state.tools.available_tools = {
+        "tavily_search": object(),
+        "calculate_bmr": object(),
+    }
+
+    ReasonNode(ExplodingLLM())(state)
+
+    task = state.reasoning.tasks[0]
+    assert task.tool_calls == []
+    assert task.result == "你叫Will。"
+
+
 def test_weather_and_fitness_news_query_uses_only_information_tools():
     class ExplodingLLM:
         def invoke(self, prompt):
@@ -165,6 +216,93 @@ def test_weather_and_fitness_news_query_uses_only_information_tools():
     ]
     assert "pain_safety_gate" not in all_tool_names
     assert "calculate_workout_volume" not in all_tool_names
+
+
+def test_resolve_supported_exercise_name_prefers_library_media(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.exercise_media._get_library_media",
+        lambda db, action_name: {
+            "exercise_name": "barbell bench press",
+            "media_url": "https://example.com/bench.mp4",
+        },
+    )
+
+    assert resolve_supported_exercise_name("胸部推举 4组 x 8次", db=object()) == "杠铃卧推"
+
+
+def test_enrich_workout_plan_media_replaces_action_with_supported_name(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.agent_chat.resolve_supported_exercise_name",
+        lambda action_name, db=None: "卧推" if action_name == "胸部推举" else action_name,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_chat.get_exercise_media",
+        lambda action_name, db=None: {
+            "action_name": action_name,
+            "query": "bench press",
+            "exercise_id": "bench-1",
+            "exercise_name": "bench press",
+            "media_url": "https://example.com/bench.mp4",
+            "image_url": None,
+            "video_url": "https://example.com/bench.mp4",
+            "source": "exercise_library",
+        },
+    )
+    state = SessionState(session_id="s1", user_id="u1")
+    state.result.workout_plan = WorkoutPlanResult(
+        sessions=[
+            WorkoutSession(
+                title="推训练",
+                exercises=[WorkoutExercise(name="胸部推举", sets=4, reps="8次")],
+            )
+        ]
+    )
+
+    enrich_workout_plan_media(state, db=None)
+
+    exercise = state.result.workout_plan.sessions[0].exercises[0]
+    assert exercise.name == "卧推"
+    assert "替代原动作 胸部推举" in exercise.notes
+    assert exercise.media is not None
+    assert exercise.media.media_url == "https://example.com/bench.mp4"
+    assert state.result.structured_artifacts["workout_plan"]["sessions"][0]["exercises"][0]["name"] == "卧推"
+
+
+def test_enrich_workout_plan_media_keeps_unknown_action_when_no_match(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.agent_chat.resolve_supported_exercise_name",
+        lambda action_name, db=None: action_name,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_chat.get_exercise_media",
+        lambda action_name, db=None: {
+            "action_name": action_name,
+            "query": None,
+            "exercise_id": None,
+            "exercise_name": None,
+            "media_url": None,
+            "image_url": None,
+            "video_url": None,
+            "source": "not_found",
+        },
+    )
+    state = SessionState(session_id="s1", user_id="u1")
+    state.result.workout_plan = WorkoutPlanResult(
+        sessions=[
+            WorkoutSession(
+                title="全身训练",
+                exercises=[WorkoutExercise(name="自定义平衡练习", notes="控制速度")],
+            )
+        ]
+    )
+
+    enrich_workout_plan_media(state, db=None)
+
+    exercise = state.result.workout_plan.sessions[0].exercises[0]
+    assert exercise.name == "自定义平衡练习"
+    assert exercise.notes == "控制速度"
+    assert exercise.media is not None
+    assert exercise.media.media_url is None
 
 
 def test_reflection_skips_non_plan_information_queries():
@@ -692,6 +830,80 @@ def test_generate_node_repairs_glued_heading_and_bullet_prefixed_collapsed_table
     assert "| | ---" not in normalized
 
 
+def test_generate_node_repairs_hash_heading_without_space_and_splits_body():
+    normalized = GenerateNode._normalize_markdown_response(
+        "#今日下肢训练安排由于存在腿部不适，建议本次训练以下肢激活、基础力量及康复为主。"
+    )
+
+    assert normalized.startswith("# 今日下肢训练安排\n\n由于存在腿部不适")
+    assert "#今日" not in normalized
+
+
+def test_generate_node_repairs_collapsed_profile_and_training_headings():
+    broken = (
+        "下肢训练建议###个人基础信息\n\n"
+        "性别：男- 年龄：21岁\n"
+        "身高：183 cm-体重：69.8 kg-训练目标：增肌-训练经验：中级\n"
+        "器械条件：健身房\n"
+        "每次训练时长：60分钟\n"
+        "每周可训练天数：4天-近期状态：有腿部不适（建议避免直接负荷和疼痛动作）\n"
+        "# 今日下肢训练安排由于存在腿部不适，建议本次训练以下肢激活、基础力量及康复为主。"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert any(
+        f"下肢训练建议\n\n{marker} 个人基础信息" in normalized
+        for marker in ("##", "###")
+    )
+    assert "性别：男\n年龄：21岁" in normalized
+    assert "身高：183 cm\n体重：69.8 kg\n训练目标：增肌\n训练经验：中级" in normalized
+    assert "每周可训练天数：4天\n近期状态：有腿部不适" in normalized
+    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in normalized
+
+
+def test_generate_node_repairs_space_collapsed_profile_fields():
+    broken = (
+        "下肢训练建议\n\n"
+        "个人基础信息\n"
+        "性别：男 年龄：21岁 身高：183 cm 体重：69.8 kg 训练目标：增肌 "
+        "训练经验：中级 器械条件：健身房 每次训练时长：60分钟 每周可训练天数：4天 "
+        "近期状态：有腿部不适（建议避免直接负荷和疼痛动作）\n\n"
+        "# 今日下肢训练安排由于存在腿部不适，建议本次训练以下肢激活、基础力量及康复为主。"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert "## 个人基础信息" in normalized
+    assert "性别：男\n年龄：21岁\n身高：183 cm\n体重：69.8 kg" in normalized
+    assert "训练目标：增肌\n训练经验：中级\n器械条件：健身房" in normalized
+    assert "每次训练时长：60分钟\n每周可训练天数：4天\n近期状态：有腿部不适" in normalized
+    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in normalized
+
+
+def test_generate_node_stream_emits_only_normalized_markdown_delta():
+    class CollapsedMarkdownLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="下肢训练建议\n\n个人基础信息\n性别：男 年龄：21岁 ")
+            yield SimpleNamespace(content="# 今日下肢训练安排由于存在腿部不适，建议激活为主。")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="解释今天怎么练"))
+    state.reasoning.intent = ["信息查询"]
+
+    events = list(GenerateNode(CollapsedMarkdownLLM()).stream_response_events(state))
+    answer_events = [event for event in events if event.get("type") == "answer_delta"]
+
+    assert len(answer_events) == 1
+    emitted = answer_events[0]["delta"]
+    assert "性别：男\n年龄：21岁" in emitted
+    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in emitted
+    assert "# 今日下肢训练安排由于" not in emitted
+    assert state.result.response == emitted
+
+
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():
     result = GenerateNode._build_food_image_estimate_result(
         "我识别到这是一份餐食，以下为估算：\n\n"
@@ -766,6 +978,85 @@ def test_workout_card_pending_requires_plan_intent_or_request():
         state,
         "新闻里提到卧推可以做 3 组，但这里只是在解释资讯。",
     ) is False
+
+
+def test_workout_plan_not_extracted_from_visible_guidance_text():
+    class NullWorkoutPlanLLM:
+        model_name = "fake-json"
+
+        def invoke(self, prompt):
+            assert "训练计划结构化输出器" in prompt
+            return SimpleNamespace(content='{"workout_plan": null}')
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="今天怎么训练？"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = "周四|今日训练：今日训练建议总时长约 60 分钟（今日训练建议总时长约60 分钟，强度为中等偏上。）"
+
+    result = GenerateNode(NullWorkoutPlanLLM())._build_strict_workout_plan_from_context(
+        state,
+        response_text,
+    )
+
+    assert result is None
+
+
+def test_strict_workout_plan_json_builds_daily_card():
+    class StrictWorkoutPlanLLM:
+        model_name = "fake-json"
+
+        def invoke(self, prompt):
+            assert "训练计划结构化输出器" in prompt
+            return SimpleNamespace(
+                content=(
+                    '{"workout_plan":{"title":"今日训练计划","goal":"增肌",'
+                    '"plan_kind":"daily","duration_weeks":null,'
+                    '"sessions":[{"weekday":null,"title":"上肢推训练","focus":"上肢推",'
+                    '"exercises":[{"name":"杠铃卧推","sets":4,"reps":"8 次",'
+                    '"duration_minutes":null,"notes":"组间休息90秒"}],"notes":[]}],'
+                    '"precautions":["动作全程保持控制"]}}'
+                )
+            )
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="今天安排一个训练"))
+    state.reasoning.intent = ["健身计划"]
+
+    result = GenerateNode(StrictWorkoutPlanLLM())._build_strict_workout_plan_from_context(
+        state,
+        "建议主训练做杠铃卧推 4组 x 8次。",
+    )
+
+    assert result is not None
+    assert result.plan_kind == "daily"
+    assert len(result.sessions) == 1
+    assert result.sessions[0].exercises[0].name == "杠铃卧推"
+
+
+def test_structured_workout_plan_filters_guidance_exercise_name():
+    source = ResultSource(summary="test")
+    payload = {
+        "workout_plan": {
+            "title": "今日训练计划",
+            "plan_kind": "daily",
+            "sessions": [
+                {
+                    "title": "今日训练",
+                    "exercises": [
+                        {
+                            "name": "今日训练建议总时长约 60 分钟，强度为中等偏上",
+                            "sets": None,
+                            "reps": None,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+
+    result = GenerateNode._build_workout_plan_result(payload, source, ["健身计划"])
+
+    assert result is None
 
 
 def test_progression_is_allowed_only_after_two_low_strain_completions():
