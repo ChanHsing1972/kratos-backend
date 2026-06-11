@@ -12,6 +12,12 @@ from pydantic import BaseModel, Field
 from app.agent.state.tools import ToolCall
 
 
+class ExecutionMode(str, Enum):
+    workflow = "workflow"
+    autonomous_loop = "autonomous_loop"
+    multi_agent = "multi_agent"
+
+
 class TaskStatus(str, Enum):
     """子任务生命周期状态。"""
 
@@ -46,6 +52,10 @@ class ReasoningState(BaseModel):
 
     intent: list[str] = Field(default_factory=list)
     extracted_info: dict[str, Any] = Field(default_factory=dict)
+    execution_mode: ExecutionMode = ExecutionMode.autonomous_loop
+    required_agents: list[str] = Field(default_factory=list)
+    routing_reason: str | None = None
+    requires_safety_gate: bool = False
 
     tasks: list[Task] = Field(default_factory=list)
     current_task_index: int = 0
@@ -79,6 +89,10 @@ class ReasoningState(BaseModel):
 
         self.intent = []
         self.extracted_info = {}
+        self.execution_mode = ExecutionMode.autonomous_loop
+        self.required_agents = []
+        self.routing_reason = None
+        self.requires_safety_gate = False
         self.reset_tasks()
         self.need_replan = False
         self.replan_count = 0

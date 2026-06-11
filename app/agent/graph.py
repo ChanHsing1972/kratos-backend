@@ -8,7 +8,7 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from app.agent.runner import build_agent_nodes
-from app.agent.state.reasoning import TaskStatus
+from app.agent.state.reasoning import ExecutionMode, TaskStatus
 from app.agent.state.session_state import SessionState
 
 
@@ -19,6 +19,9 @@ def build_graph(llm):
     nodes = build_agent_nodes(llm)
 
     builder.add_node("intent", nodes.intent)
+    builder.add_node("router", nodes.router)
+    builder.add_node("workflow", nodes.workflow)
+    builder.add_node("multi_agent", nodes.multi_agent)
     builder.add_node("plan", nodes.plan)
     builder.add_node("reason", nodes.reason)
     builder.add_node("act", nodes.act)
@@ -29,7 +32,40 @@ def build_graph(llm):
 
     builder.set_entry_point("intent")
 
-    builder.add_edge("intent", "plan")
+    builder.add_edge("intent", "router")
+
+    def route_after_router(state: SessionState):
+        mode = state.reasoning.execution_mode
+        if mode == ExecutionMode.workflow:
+            return "workflow"
+        if mode == ExecutionMode.multi_agent:
+            return "multi_agent"
+        return "plan"
+
+    builder.add_conditional_edges(
+        "router",
+        route_after_router,
+        {
+            "workflow": "workflow",
+            "multi_agent": "multi_agent",
+            "plan": "plan",
+        }
+    )
+
+    def route_after_workflow(state: SessionState):
+        if state.result.final_answer_ready and state.result.response:
+            return "end"
+        return "plan"
+
+    builder.add_conditional_edges(
+        "workflow",
+        route_after_workflow,
+        {
+            "end": "end",
+            "plan": "plan",
+        }
+    )
+    builder.add_edge("multi_agent", "plan")
     builder.add_edge("plan", "reason")
 
     def route_after_reason(state: SessionState):
