@@ -574,7 +574,7 @@ def test_generate_node_normalizes_collapsed_markdown_table():
 
     normalized = GenerateNode._normalize_markdown_response(collapsed)
 
-    assert "今日训练安排\n| 动作 |组数 | 次数/时长 |休息 |备注 |" in normalized
+    assert "今日训练安排\n\n| 动作 |组数 | 次数/时长 |休息 |备注 |" in normalized
     assert "\n|:-------------|:------|:------------|:---------|:---------------------|" in normalized
     assert "\n| 深蹲 |4组 |12-15次 |60-90秒 | 保持背部挺直 |" in normalized
     assert "\n| 反向箭步蹲 |4组 |12次/每侧 |60秒 | 保持膝盖稳定 |" in normalized
@@ -597,7 +597,7 @@ def test_generate_node_repairs_common_markdown_format_artifacts():
 
     normalized = GenerateNode._normalize_markdown_response(broken)
 
-    assert "当前无法生成可靠训练计划的原因\n| 类别 | 缺失项 | 影响 |" in normalized
+    assert "当前无法生成可靠训练计划的原因\n\n| 类别 | 缺失项 | 影响 |" in normalized
     assert "\n| --- | --- | --- |\n" in normalized
     assert "\n|---\n" not in normalized
     assert "• •" not in normalized
@@ -665,6 +665,31 @@ def test_generate_node_preserves_bold_labels_after_list_marker():
     assert "- 恢复建议**：" not in normalized
     assert "- 营养提示**：" not in normalized
     assert "- 身高：____ cm" in normalized
+
+
+def test_generate_node_repairs_glued_heading_and_bullet_prefixed_collapsed_table():
+    broken = (
+        "- 是否有伤病史### ◆ 身体数据缺失\n"
+        "- 身高（cm）\n"
+        "- | 动作 | 组数 × 次数 | 强度建议 | 风险提示 | | --- | --- | --- | --- | "
+        "| 平板支撑 | 3×20秒 | 保持躯干中立 | 避免塌腰 | "
+        "| 深蹲 | 3×12次 | 屈髋屈膝同步 | 膝盖对准脚尖 |"
+    )
+
+    normalized = GenerateNode._normalize_markdown_response(broken)
+
+    assert any(
+        f"- 是否有伤病史\n\n{marker} 身体数据缺失" in normalized
+        for marker in ("##", "###")
+    )
+    assert "### ◆" not in normalized
+    assert "- | 动作" not in normalized
+    assert "- 身高（cm）\n\n| 动作 | 组数 × 次数 | 强度建议 | 风险提示 |" in normalized
+    assert "| 动作 | 组数 × 次数 | 强度建议 | 风险提示 |" in normalized
+    assert "| --- | --- | --- | --- |" in normalized
+    assert "| 平板支撑 | 3×20秒 | 保持躯干中立 | 避免塌腰 |" in normalized
+    assert "| 深蹲 | 3×12次 | 屈髋屈膝同步 | 膝盖对准脚尖 |" in normalized
+    assert "| | ---" not in normalized
 
 
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():
