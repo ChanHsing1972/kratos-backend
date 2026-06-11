@@ -26,7 +26,15 @@ except Exception:  # pragma: no cover - optional runtime dependency fallback
 from app.core.config import BASE_DIR, settings
 
 
-UPLOAD_DIR = BASE_DIR / "uploads"
+def _upload_dir_from_settings() -> Path:
+    configured = (settings.UPLOAD_STORAGE_DIR or "").strip()
+    if not configured:
+        return BASE_DIR / "uploads"
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+UPLOAD_DIR = _upload_dir_from_settings()
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 

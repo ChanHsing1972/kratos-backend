@@ -1,6 +1,11 @@
+import logging
+
 from app.db.session import Base, SessionLocal, engine
 from app.models import ExerciseLibraryItem  # noqa: F401 - imported so create_all sees the model.
 from app.services.exercise_library import sync_rapidapi_exercise_library
+
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -8,7 +13,7 @@ def main() -> None:
     db = SessionLocal()
     try:
         result = sync_rapidapi_exercise_library(db)
-        print(result)
+        logger.info("Exercise library sync result: %s", result)
     finally:
         db.close()
 

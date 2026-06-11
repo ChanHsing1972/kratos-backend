@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     AGENT_RUNNING_STALE_SECONDS: int = 15 * 60
     AGENT_CHAT_RATE_LIMIT_COUNT: int = 8
     AGENT_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    AGENT_STREAM_CHUNK_CHARS: int = 6
+    AGENT_STREAM_CHUNK_DELAY_SECONDS: float = 0.012
     TAVILY_API_KEY: str | None = None
 
     OPENAI_API_KEY: str | None = None
@@ -128,6 +130,7 @@ class Settings(BaseSettings):
     ALIYUN_OSS_BUCKET: str = "chanhsing"
     ALIYUN_OSS_ENDPOINT: str = "https://oss-cn-shanghai.aliyuncs.com"
     ALIYUN_OSS_PUBLIC_BASE_URL: str | None = None
+    UPLOAD_STORAGE_DIR: str | None = None
 
     # Backward compatibility for existing local .env files.
     QWEN_API_KEY: str | None = None

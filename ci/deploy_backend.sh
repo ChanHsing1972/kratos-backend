@@ -83,9 +83,19 @@ if command -v apt-get >/dev/null 2>&1; then
   fi
 fi
 
-mkdir -p "$release_dir" "$shared_dir"
+mkdir -p "$release_dir" "$shared_dir" "$shared_dir/uploads"
 tar -xzf "$REMOTE_ARCHIVE" -C "$release_dir"
 rm -f "$REMOTE_ARCHIVE"
+
+if [[ -d "$REMOTE_DIR/current/uploads" ]]; then
+  cp -a "$REMOTE_DIR/current/uploads/." "$shared_dir/uploads/" || true
+fi
+if compgen -G "$REMOTE_DIR/releases/*/uploads" >/dev/null; then
+  for legacy_upload_dir in "$REMOTE_DIR"/releases/*/uploads; do
+    [[ -d "$legacy_upload_dir" ]] || continue
+    cp -a "$legacy_upload_dir/." "$shared_dir/uploads/" || true
+  done
+fi
 
 if [[ "$ENV_UPLOADED" == "1" ]]; then
   cp "$REMOTE_ENV" "$shared_dir/.env"
@@ -126,6 +136,7 @@ Type=simple
 User=root
 WorkingDirectory=${REMOTE_DIR}/current
 Environment=PYTHONUNBUFFERED=1
+Environment=UPLOAD_STORAGE_DIR=${shared_dir}/uploads
 ExecStart=${venv_dir}/bin/uvicorn app.main:app --host 127.0.0.1 --port ${APP_PORT}
 Restart=always
 RestartSec=5

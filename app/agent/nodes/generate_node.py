@@ -88,15 +88,22 @@ class GenerateNode(BaseNode):
                 if not delta:
                     continue
                 response_text += delta
+                for display_delta in self._iter_stream_display_deltas(delta):
+                    yield {
+                        "type": "answer_delta",
+                        "delta": display_delta,
+                        "content": display_delta,
+                    }
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
             fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
             normalized_fallback_text = self._normalize_markdown_response(fallback_text)
-            if normalized_fallback_text:
+            fallback_delta = self._stream_suffix(response_text, normalized_fallback_text)
+            for display_delta in self._iter_stream_display_deltas(fallback_delta):
                 yield {
                     "type": "answer_delta",
-                    "delta": normalized_fallback_text,
-                    "content": normalized_fallback_text,
+                    "delta": display_delta,
+                    "content": display_delta,
                 }
             yield {
                 "type": "status",
@@ -119,7 +126,7 @@ class GenerateNode(BaseNode):
         if not response_text.strip() and last_chunk is not None:
             response_text = self._extract_content(last_chunk)
         normalized_response_text = self._normalize_markdown_response(response_text)
-        if normalized_response_text:
+        if normalized_response_text and not response_text.strip():
             yield {
                 "type": "answer_delta",
                 "delta": normalized_response_text,
@@ -146,6 +153,34 @@ class GenerateNode(BaseNode):
             }
 
         self.apply_response(state, AIMessage(content=normalized_response_text), normalized_response_text)
+
+    @staticmethod
+    def _stream_suffix(already_streamed: str, final_text: str) -> str:
+        """Return only the unstreamed tail when fallback text extends partial output."""
+
+        if not final_text:
+            return ""
+        if already_streamed and final_text.startswith(already_streamed):
+            return final_text[len(already_streamed) :]
+        if already_streamed:
+            return "\n\n" + final_text
+        return final_text
+
+    @staticmethod
+    def _iter_stream_display_deltas(text: str):
+        """Split provider chunks so large upstream deltas still feel live in SSE."""
+
+        if not text:
+            return
+
+        import time
+
+        chunk_chars = max(1, int(settings.AGENT_STREAM_CHUNK_CHARS or 1))
+        delay_seconds = max(0.0, float(settings.AGENT_STREAM_CHUNK_DELAY_SECONDS or 0.0))
+        for index in range(0, len(text), chunk_chars):
+            if index > 0 and delay_seconds > 0:
+                time.sleep(delay_seconds)
+            yield text[index : index + chunk_chars]
 
     def _fallback_response_text(
         self,

@@ -881,7 +881,7 @@ def test_generate_node_repairs_space_collapsed_profile_fields():
     assert "# 今日下肢训练安排\n\n由于存在腿部不适" in normalized
 
 
-def test_generate_node_stream_emits_only_normalized_markdown_delta():
+def test_generate_node_stream_emits_live_deltas_and_normalizes_result():
     class CollapsedMarkdownLLM:
         model_name = "fake-stream"
 
@@ -896,12 +896,13 @@ def test_generate_node_stream_emits_only_normalized_markdown_delta():
     events = list(GenerateNode(CollapsedMarkdownLLM()).stream_response_events(state))
     answer_events = [event for event in events if event.get("type") == "answer_delta"]
 
-    assert len(answer_events) == 1
-    emitted = answer_events[0]["delta"]
-    assert "性别：男\n年龄：21岁" in emitted
-    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in emitted
-    assert "# 今日下肢训练安排由于" not in emitted
-    assert state.result.response == emitted
+    assert len(answer_events) > 1
+    streamed = "".join(str(event["delta"]) for event in answer_events)
+    assert "性别：男 年龄：21岁" in streamed
+    assert "# 今日下肢训练安排由于" in streamed
+    assert "性别：男\n年龄：21岁" in state.result.response
+    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in state.result.response
+    assert "# 今日下肢训练安排由于" not in state.result.response
 
 
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():
