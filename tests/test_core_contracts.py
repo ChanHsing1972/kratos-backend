@@ -14,7 +14,8 @@ from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
-from app.agent.markdown_contract import finalize_markdown_response
+from app.agent.markdown_contract import finalize_markdown_response, markdown_contract_violations
+from app.agent.runner import AgentRunner
 from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
 from app.agent.state.session_state import SessionState
@@ -556,8 +557,8 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
             state.result.response = "## 回答\n\n已完成。"
             yield {
                 "type": "answer_delta",
-                "delta": ": ## 回答**\n\n已完成。",
-                "content": ": ## 回答**\n\n已完成。",
+                "delta": "## 回答\n\n已完成。",
+                "content": "## 回答\n\n已完成。",
             }
             yield {
                 "type": "final_state",
@@ -580,16 +581,15 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
 
     assert events[0]["type"] == "status"
     assert events[0]["run_id"]
-    assert any(event["type"] == "answer_delta" and event["run_id"] == events[0]["run_id"] for event in events)
-    replace_event = next(event for event in events if event["type"] == "answer_replace")
-    assert replace_event["answer"] == "## 回答\n\n已完成。"
-    assert replace_event["run_id"] == events[0]["run_id"]
+    assert not any(event["type"] == "answer_replace" for event in events)
+    streamed = "".join(str(event["delta"]) for event in events if event["type"] == "answer_delta")
     final_event = next(event for event in events if event["type"] == "final")
     done_event = events[-1]
     assert final_event["run_id"] == events[0]["run_id"]
+    assert final_event["content"] == streamed
     assert done_event["type"] == "done"
     assert done_event["content"] == "Agent 回复完成"
-    assert done_event["answer"] == "## 回答\n\n已完成。"
+    assert done_event["answer"] == streamed
     assert done_event["run_id"] == events[0]["run_id"]
 
 
@@ -815,6 +815,19 @@ def test_reflection_quality_gate_rejects_sixty_minutes_as_age():
     assert any("60 分钟" in item for item in state.result.reflection_suggestions)
 
 
+def test_unresolved_quality_issues_do_not_mutate_visible_answer():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.result.response = "## 今日训练\n\n保持标准动作。"
+    state.result.final_answer_ready = False
+    state.result.reflection_suggestions = ["内部质量提示"]
+
+    diagnostics = AgentRunner._surface_unresolved_quality_issues(state)
+
+    assert diagnostics == "- 内部质量提示"
+    assert "质量校验提示" not in state.result.response
+    assert state.result.response == "## 今日训练\n\n保持标准动作。"
+
+
 def test_health_data_is_extracted_for_confirmation():
     class FakeHealthDataLLM:
         def invoke(self, prompt):
@@ -972,7 +985,7 @@ def test_training_plan_draft_handles_glued_markdown_without_losing_exercises():
     exercises = draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"]
     assert [exercise["name"] for exercise in exercises] == ["深蹲", "罗马尼亚硬拉", "反向箭步蹲", "小腿提踵"]
     assert "每次训练约" not in draft["weekly_schedule"]
-    assert draft["summary"] == "今日训练计划：1 个训练日，4 个训练动作。"
+    assert draft["summary"] == "今日下肢训练：1 个训练日，4 个训练动作。"
 
 
 def test_training_plan_draft_parses_weekly_markdown_table_as_program():
@@ -999,6 +1012,85 @@ def test_training_plan_draft_parses_weekly_markdown_table_as_program():
     assert sessions[1]["exercises"][-1]["name"] == "面拉"
     assert sessions[2]["exercises"] == []
     assert "周六/日" in draft["weekly_schedule"]
+
+
+def test_markdown_finalizer_splits_weekly_plan_heading_and_removes_html_breaks():
+    response_text = (
+        "## 本周增肌周期训练计划根据你的档案（男，21岁，身高183cm，体重69.8kg），"
+        "以下为建议的一周训练周期安排。\n\n"
+        "| 星期 | 主题 | 动作安排 |\n"
+        "| --- | --- | --- |\n"
+        "| 周一 | 上肢推训练 | 卧推<br>哑铃肩推<br>绳索下压 |\n"
+    )
+
+    normalized = finalize_markdown_response(response_text)
+
+    assert normalized.startswith("## 本周增肌周期训练计划\n\n根据你的档案")
+    assert "<br>" not in normalized
+    assert "卧推、哑铃肩推、绳索下压" in normalized
+
+
+def test_markdown_contract_rejects_inconsistent_table_columns():
+    violations = markdown_contract_violations(
+        "| 动作 | 组数 | 次数 |\n"
+        "| --- | --- | --- |\n"
+        "| 深蹲 | 4 |\n"
+    )
+
+    assert any("列数不一致" in item for item in violations)
+
+
+def test_training_plan_draft_expands_weekly_table_cells_with_multiple_actions():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "## 本周训练计划（增肌周期）\n\n"
+        "| 星期 | 主题 | 动作安排 | 组数 | 次数/时长 | 休息 | 备注 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 周一 | 上肢推训练 | 卧推<br>哑铃肩推<br>绳索下压 | 4<br>3<br>3 | 6-8<br>8-10<br>12 | 60-90秒 | 重点胸、肩、三头肌 |\n"
+        "| 周二 | 上肢拉训练 | 引体向上或高位下拉<br>杠铃划船<br>哑铃弯举 | 4<br>4<br>3 | 8<br>8<br>12 | 60-90秒 | 重点背部、肱二头肌 |\n"
+    )
+
+    draft = build_training_plan_draft(state, response_text)
+
+    assert draft is not None
+    sessions = draft["schedule_json"]["weeks"][0]["sessions"]
+    assert [exercise["name"] for exercise in sessions[0]["exercises"]] == ["卧推", "哑铃肩推", "绳索下压"]
+    assert sessions[0]["exercises"][0]["target_sets"] == 4
+    assert sessions[0]["exercises"][1]["target_reps"] == "8-10 次"
+    assert [exercise["name"] for exercise in sessions[1]["exercises"]] == ["引体向上或高位下拉", "杠铃划船", "哑铃弯举"]
+    assert "上肢推训练 缺少动作" not in draft["summary"]
+    assert "<br>" not in draft["weekly_schedule"]
+
+
+def test_generate_node_keeps_complete_training_markdown_and_builds_draft():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="我想练腹部"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "## 腹部训练建议与安排根据你的个人资料（21岁，183cm，69.8kg，男，健身房可用，每次训练60分钟），"
+        "结合你近期训练记录和训练反馈，现为你制定腹部专项训练建议。\n\n"
+        "### 腹部训练安排（建议每周1-2次，训练日任选非下肢主力日）\n\n"
+        "| 动作 | 组数 | 次数/时长 | 休息 | 备注 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 平板支撑 | 3 | 30-40秒 | 60秒 | 保持骨盆稳定 |\n"
+        "| 死虫 | 3 | 10-12次/侧 | 45秒 | 腰背贴地 |\n"
+        "| 俄罗斯转体 | 3 | 12-15次/侧 | 45秒 | 控制转体幅度 |\n"
+    )
+
+    GenerateNode().apply_response(state, AIMessage(content=response_text), response_text)
+
+    assert state.result.response is not None
+    assert state.result.response.startswith("## 腹部训练建议与安排\n\n根据你的个人资料")
+    assert "结合你近期训练记录和训练反馈" in state.result.response
+    assert "### 腹部训练安排（建议每周1-2次，训练日任选非下肢主力日）" in state.result.response
+    assert "| 平板支撑 | 3 | 30-40秒 | 60秒 | 保持骨盆稳定 |" in state.result.response
+    assert "1\n2次" not in state.result.response
+    draft = state.result.structured_artifacts.get("training_plan_draft")
+    assert draft is not None
+    exercises = draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"]
+    assert [exercise["name"] for exercise in exercises] == ["平板支撑", "死虫", "俄罗斯转体"]
 
 
 def test_training_plan_draft_not_generated_for_training_news_query():
@@ -1068,7 +1160,7 @@ def test_generate_node_prompt_contains_standard_markdown_contract():
     assert "标准 GFM 多行表格" in prompt
 
 
-def test_generate_node_stream_emits_live_deltas_and_finalizes_result():
+def test_generate_node_stream_collects_and_finalizes_result_without_answer_delta():
     class StandardMarkdownLLM:
         model_name = "fake-stream"
 
@@ -1083,10 +1175,69 @@ def test_generate_node_stream_emits_live_deltas_and_finalizes_result():
     events = list(GenerateNode(StandardMarkdownLLM()).stream_response_events(state))
     answer_events = [event for event in events if event.get("type") == "answer_delta"]
 
-    assert len(answer_events) > 1
-    streamed = "".join(str(event["delta"]) for event in answer_events)
-    assert streamed == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。\n"
+    assert answer_events == []
     assert state.result.response == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。"
+    assert events[-1]["type"] == "status"
+
+
+def test_runner_streams_only_final_answer_after_replan():
+    class NoopNode:
+        def __call__(self, state):
+            return state
+
+    class PlanNodeFake:
+        def __call__(self, state):
+            state.reasoning.tasks = []
+            return state
+
+    class GenerateNodeFake:
+        def __init__(self):
+            self.count = 0
+
+        def stream_response_events(self, state):
+            self.count += 1
+            state.result.response = f"## 回答 {self.count}\n\n第 {self.count} 版。"
+            state.result.final_answer_ready = True
+            yield {"type": "status", "content": f"generated-{self.count}"}
+
+    class ReflectNodeFake:
+        def __init__(self):
+            self.count = 0
+
+        def __call__(self, state):
+            self.count += 1
+            if self.count == 1:
+                state.reasoning.need_replan = True
+                state.reasoning.replan_count += 1
+                state.result.final_answer_ready = False
+                state.result.reflection_suggestions = ["需要重规划"]
+            else:
+                state.reasoning.need_replan = False
+                state.result.final_answer_ready = True
+                state.result.reflection_suggestions = []
+            return state
+
+    nodes = SimpleNamespace(
+        intent=NoopNode(),
+        plan=PlanNodeFake(),
+        reason=NoopNode(),
+        act=NoopNode(),
+        finish=NoopNode(),
+        generate=GenerateNodeFake(),
+        reflect=ReflectNodeFake(),
+        end=NoopNode(),
+    )
+    state = SessionState(session_id="s1", user_id="u1")
+    state.reasoning.intent = ["健身计划"]
+    state.reasoning.max_replans = 1
+
+    events = list(AgentRunner(nodes).iter_events(state, stream_answer=True))
+    streamed = "".join(str(event["delta"]) for event in events if event.get("type") == "answer_delta")
+    final_state_event = next(event for event in events if event.get("type") == "final_state")
+
+    assert "回答 1" not in streamed
+    assert streamed == "## 回答 2\n\n第 2 版。"
+    assert final_state_event["content"] == streamed
 
 
 def test_generate_node_stream_hides_embedded_workout_json_and_builds_card():
@@ -1116,12 +1267,11 @@ def test_generate_node_stream_hides_embedded_workout_json_and_builds_card():
     state.reasoning.intent = ["健身计划"]
 
     events = list(GenerateNode(EmbeddedWorkoutPlanLLM()).stream_response_events(state))
-    streamed = "".join(str(event["delta"]) for event in events if event.get("type") == "answer_delta")
 
-    assert STRUCTURED_ARTIFACT_START not in streamed
-    assert "workout_plan" not in streamed
+    assert not any(event.get("type") == "answer_delta" for event in events)
     assert state.result.response.startswith("## 今日训练")
     assert STRUCTURED_ARTIFACT_START not in state.result.response
+    assert "workout_plan" not in state.result.response
     assert state.result.workout_plan is not None
     assert state.result.workout_plan.plan_kind == "daily"
     assert state.result.workout_plan.sessions[0].exercises[0].name == "杠铃卧推"
@@ -1189,7 +1339,7 @@ def test_generate_node_stream_timeout_emits_fallback_and_updates_result():
 
     events = list(GenerateNode(TimeoutStreamingLLM()).stream_response_events(state))
 
-    assert events[0]["type"] == "answer_delta"
+    assert not any(event.get("type") == "answer_delta" for event in events)
     status_event = next(event for event in events if event["type"] == "status")
     assert status_event["raw"]["timeout"] is True
     assert "模型服务响应超时" in state.result.response

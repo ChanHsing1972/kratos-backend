@@ -62,7 +62,8 @@ def validate_agent_result(state: SessionState) -> list[str]:
         suggestions.append("用户提到疼痛或不适，回复需要包含明确的安全边界或恢复建议。")
 
     workout_plan = state.result.workout_plan
-    if workout_plan is not None:
+    draft_has_exercises = _training_plan_draft_has_exercises(state.result.training_plan_draft)
+    if workout_plan is not None and not draft_has_exercises:
         if not workout_plan.sessions:
             suggestions.append("结构化训练计划没有训练日 sessions。")
         for session in workout_plan.sessions:
@@ -85,6 +86,33 @@ def validate_agent_result(state: SessionState) -> list[str]:
             suggestions.append("计划类回复缺少可执行的量化安排。")
 
     return _unique(suggestions)
+
+
+def _training_plan_draft_has_exercises(draft: object) -> bool:
+    if not isinstance(draft, dict):
+        return False
+    schedule_json = draft.get("schedule_json")
+    if not isinstance(schedule_json, dict):
+        return False
+    weeks = schedule_json.get("weeks")
+    if not isinstance(weeks, list):
+        return False
+    for week in weeks:
+        if not isinstance(week, dict):
+            continue
+        sessions = week.get("sessions")
+        if not isinstance(sessions, list):
+            continue
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            exercises = session.get("exercises")
+            if isinstance(exercises, list) and any(
+                isinstance(exercise, dict) and str(exercise.get("name") or "").strip()
+                for exercise in exercises
+            ):
+                return True
+    return False
 
 
 def _latest_user_text(state: SessionState) -> str:

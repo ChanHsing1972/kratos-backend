@@ -39,55 +39,6 @@ STRUCTURED_ARTIFACT_START = "<<<KRATOS_STRUCTURED_ARTIFACTS_JSON>>>"
 STRUCTURED_ARTIFACT_END = "<<<END_KRATOS_STRUCTURED_ARTIFACTS_JSON>>>"
 
 
-class _StructuredArtifactStreamFilter:
-    """Hide the internal artifact block while preserving live Markdown deltas."""
-
-    def __init__(self) -> None:
-        self._buffer = ""
-        self._inside_artifact = False
-
-    def feed(self, text: str) -> str:
-        if not text:
-            return ""
-
-        self._buffer += text
-        visible_parts: list[str] = []
-
-        while self._buffer:
-            if self._inside_artifact:
-                end_index = self._buffer.find(STRUCTURED_ARTIFACT_END)
-                if end_index < 0:
-                    keep = max(0, len(STRUCTURED_ARTIFACT_END) - 1)
-                    self._buffer = self._buffer[-keep:] if len(self._buffer) > keep else self._buffer
-                    break
-                self._buffer = self._buffer[end_index + len(STRUCTURED_ARTIFACT_END) :]
-                self._inside_artifact = False
-                continue
-
-            start_index = self._buffer.find(STRUCTURED_ARTIFACT_START)
-            if start_index < 0:
-                keep = max(0, len(STRUCTURED_ARTIFACT_START) - 1)
-                if len(self._buffer) <= keep:
-                    break
-                visible_parts.append(self._buffer[:-keep])
-                self._buffer = self._buffer[-keep:]
-                break
-
-            visible_parts.append(self._buffer[:start_index])
-            self._buffer = self._buffer[start_index + len(STRUCTURED_ARTIFACT_START) :]
-            self._inside_artifact = True
-
-        return "".join(visible_parts)
-
-    def flush(self) -> str:
-        if self._inside_artifact:
-            self._buffer = ""
-            return ""
-        visible = self._buffer
-        self._buffer = ""
-        return visible
-
-
 class GenerateNode(BaseNode):
     """生成最终回答并更新 `state.result`。"""
 
@@ -111,24 +62,15 @@ class GenerateNode(BaseNode):
         self.apply_response(state, response, response_text)
         return state
 
-    def stream_response(self, state: SessionState):
-        """只产出回答文本 delta 的兼容接口。"""
-
-        for event in self.stream_response_events(state):
-            if event.get("type") == "answer_delta":
-                yield str(event.get("delta") or "")
-
     def stream_response_events(self, state: SessionState):
-        """流式生成回答事件，并在结束后落回同一套 `apply_response` 逻辑。"""
+        """用模型流式接口收集完整回答，但不直接发送用户可见 delta。"""
 
         import time
 
         t0 = time.monotonic()
         prompt = self.build_prompt(state)
         response_text = ""
-        streamed_visible_text = ""
         last_chunk = None
-        artifact_filter = _StructuredArtifactStreamFilter()
 
         prompt_input = self.prompt_input(
             prompt,
@@ -143,32 +85,11 @@ class GenerateNode(BaseNode):
                 if not delta:
                     continue
                 response_text += delta
-                visible_delta = artifact_filter.feed(delta)
-                streamed_visible_text += visible_delta
-                for display_delta in self._iter_stream_display_deltas(visible_delta):
-                    yield {
-                        "type": "answer_delta",
-                        "delta": display_delta,
-                        "content": display_delta,
-                    }
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
-            streamed_visible_text += artifact_filter.flush()
-            fallback_text = self._fallback_response_text(state, exc, partial_response=streamed_visible_text)
-            normalized_fallback_text = self._normalize_markdown_response(fallback_text)
-            fallback_delta = self._stream_suffix(streamed_visible_text, normalized_fallback_text)
-            for display_delta in self._iter_stream_display_deltas(fallback_delta):
-                yield {
-                    "type": "answer_delta",
-                    "delta": display_delta,
-                    "content": display_delta,
-                }
-            self.apply_response(
-                state,
-                AIMessage(content=normalized_fallback_text),
-                normalized_fallback_text,
-            )
-            structured_card_requested = self._should_emit_workout_plan(state, normalized_fallback_text)
+            fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
+            self.apply_response(state, AIMessage(content=fallback_text), fallback_text)
+            structured_card_requested = self._should_emit_workout_plan(state, str(state.result.response or ""))
             draft_ready = state.result.training_plan_draft is not None
             status_raw = {
                 "answer_stream_complete": True,
@@ -192,22 +113,8 @@ class GenerateNode(BaseNode):
         # If streaming returned empty (GLM thinking model), try the collected content
         if not response_text.strip() and last_chunk is not None:
             response_text = self._extract_content(last_chunk)
-        trailing_visible_delta = artifact_filter.flush()
-        streamed_visible_text += trailing_visible_delta
-        for display_delta in self._iter_stream_display_deltas(trailing_visible_delta):
-            yield {
-                "type": "answer_delta",
-                "delta": display_delta,
-                "content": display_delta,
-            }
         visible_response_text, _embedded_artifacts = self._split_embedded_structured_artifacts(response_text)
         normalized_response_text = self._normalize_markdown_response(visible_response_text)
-        if normalized_response_text and not streamed_visible_text.strip():
-            yield {
-                "type": "answer_delta",
-                "delta": normalized_response_text,
-                "content": normalized_response_text,
-            }
 
         elapsed = time.monotonic() - t0
         self.logger.info(
@@ -218,8 +125,9 @@ class GenerateNode(BaseNode):
         )
 
         self.apply_response(state, AIMessage(content=normalized_response_text), response_text)
+        final_text = str(state.result.response or normalized_response_text)
 
-        structured_card_requested = self._should_emit_workout_plan(state, normalized_response_text)
+        structured_card_requested = self._should_emit_workout_plan(state, final_text)
         draft_ready = state.result.training_plan_draft is not None
         if normalized_response_text:
             status_raw = {"answer_stream_complete": True}
@@ -239,34 +147,6 @@ class GenerateNode(BaseNode):
                 "content": status_content,
                 "raw": status_raw,
             }
-
-    @staticmethod
-    def _stream_suffix(already_streamed: str, final_text: str) -> str:
-        """Return only the unstreamed tail when fallback text extends partial output."""
-
-        if not final_text:
-            return ""
-        if already_streamed and final_text.startswith(already_streamed):
-            return final_text[len(already_streamed) :]
-        if already_streamed:
-            return "\n\n" + final_text
-        return final_text
-
-    @staticmethod
-    def _iter_stream_display_deltas(text: str):
-        """Split provider chunks so large upstream deltas still feel live in SSE."""
-
-        if not text:
-            return
-
-        import time
-
-        chunk_chars = max(1, int(settings.AGENT_STREAM_CHUNK_CHARS or 1))
-        delay_seconds = max(0.0, float(settings.AGENT_STREAM_CHUNK_DELAY_SECONDS or 0.0))
-        for index in range(0, len(text), chunk_chars):
-            if index > 0 and delay_seconds > 0:
-                time.sleep(delay_seconds)
-            yield text[index : index + chunk_chars]
 
     def _fallback_response_text(
         self,
@@ -399,6 +279,15 @@ class GenerateNode(BaseNode):
         - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划标题或动作名称里；这些内容只能放在计划前后的说明段。
         - 今日训练只输出当天安排，不要把用户原话重复成标题；标题优先使用“上肢训练”“下肢训练”“全身训练”“恢复训练”等短主题。
         - 生成训练计划时，必须提供可直接保存的训练安排：周/周期计划和今日计划都优先使用 Markdown 表格展示动作、组数、次数/时长、休息和备注。不要在正文与训练安排中给出互相冲突的内容。
+        - 训练计划回复必须使用固定模板，不要自由发挥标题：
+          1. 第一行只能是一个短标题：`## 上肢训练计划`、`## 腹部训练计划`、`## 本周训练计划` 等。
+          2. 第二行必须为空行。
+          3. 第三行开始才允许写“根据你的资料...”等说明。
+          4. 今日/单次计划必须有 `### 训练安排` 表格，表头固定为：`| 动作 | 组数 | 次数/时长 | 休息 | 备注 |`。
+          5. 周期/本周计划必须有 `### 每周训练安排` 表格，表头固定为：`| 星期 | 主题 | 动作 | 组数 | 次数/时长 | 休息 | 备注 |`。
+          6. 同一个表格单元格内不要使用 `<br>` 或换行；多个动作必须拆成多行表格。
+          7. `1-2次`、`3-4组` 这种范围必须保留连字符，不要拆成列表或换行。
+          8. “根据你的资料”“结合近期训练”“注意事项”等说明严禁出现在标题、动作名或表格标题中。
         - 如果用户上传的是食物/餐食图片，必须直接根据图片估算可见食物，回答中包含标准 Markdown 表格，表头必须为：`| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |`。说明这是估算并需要用户确认后保存；不要声称已经保存。
         - 如果图片不是食物或无法判断食物，不要输出饮食热量估算表，直接说明无法生成饮食记录卡片的原因。
         - 如果用户询问“你有哪些工具 / 可调用 tools / 支持哪些能力”，必须基于“当前可用工具”如实列出工具名、用途和限制；不要编造未出现在清单里的工具。

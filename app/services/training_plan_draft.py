@@ -279,6 +279,10 @@ class TrainingPlanDraftBuilder:
         weekday_index = _header_index(headers, ("周几", "星期", "训练日", "日期", "时间"))
         title_index = _header_index(headers, ("训练内容", "训练主题", "主题", "内容", "部位", "计划"))
         action_index = _header_index(headers, ("主要动作", "动作", "说明", "安排", "训练安排", "细节"))
+        sets_index = _header_index(headers, ("组数", "组", "sets"))
+        reps_index = _header_index(headers, ("次数/时长", "次数", "时长", "重复", "reps"))
+        rest_index = _header_index(headers, ("休息", "间歇"))
+        notes_index = _header_index(headers, ("备注", "技术要点", "注意"))
         sessions: list[WorkoutSession] = []
         guidance: list[str] = []
 
@@ -301,12 +305,21 @@ class TrainingPlanDraftBuilder:
             details_cells.extend(
                 cell
                 for cell_index, cell in enumerate(row)
-                if cell_index not in {weekday_index, title_index, action_index} and cell.strip()
+                if cell_index not in {weekday_index, title_index, action_index, sets_index, reps_index, rest_index, notes_index} and cell.strip()
             )
             details = "；".join(cell.strip() for cell in details_cells if cell.strip())
             if not details and title:
                 details = title
-            exercises = _parse_exercises_from_text(details)
+            exercises = self._parse_weekly_row_exercises(
+                row,
+                action_index=action_index,
+                sets_index=sets_index,
+                reps_index=reps_index,
+                rest_index=rest_index,
+                notes_index=notes_index,
+            )
+            if not exercises:
+                exercises = _parse_exercises_from_text(details)
             if not exercises and _is_guidance_line(details):
                 guidance.append(f"{weekday}：{details}")
             if not exercises and not details:
@@ -321,6 +334,58 @@ class TrainingPlanDraftBuilder:
                 )
             )
         return sessions, _unique_strings(guidance)
+
+    def _parse_weekly_row_exercises(
+        self,
+        row: list[str],
+        *,
+        action_index: int | None,
+        sets_index: int | None,
+        reps_index: int | None,
+        rest_index: int | None,
+        notes_index: int | None,
+    ) -> list[WorkoutExercise]:
+        if action_index is None or action_index >= len(row):
+            return []
+
+        action_items = _split_multivalue_cell(row[action_index])
+        if not action_items:
+            return []
+
+        set_items = _split_multivalue_cell(row[sets_index]) if sets_index is not None and sets_index < len(row) else []
+        rep_items = _split_multivalue_cell(row[reps_index]) if reps_index is not None and reps_index < len(row) else []
+        rest_items = _split_multivalue_cell(row[rest_index]) if rest_index is not None and rest_index < len(row) else []
+        note_items = _split_multivalue_cell(row[notes_index]) if notes_index is not None and notes_index < len(row) else []
+        exercises: list[WorkoutExercise] = []
+
+        for item_index, raw_name in enumerate(action_items):
+            if not set_items and not rep_items:
+                parsed = _parse_exercise_segment(raw_name)
+                if parsed is not None:
+                    exercises.append(parsed)
+                    continue
+            cleaned_name = _clean_exercise_name(raw_name)
+            if _is_invalid_exercise_name(cleaned_name):
+                continue
+            sets_text = _item_or_last(set_items, item_index)
+            reps_text = _item_or_last(rep_items, item_index)
+            rest_text = _item_or_last(rest_items, item_index)
+            note_text = _item_or_last(note_items, item_index)
+            sets = _parse_sets(sets_text)
+            reps = _normalize_reps(reps_text)
+            duration_minutes = _parse_duration_minutes(reps_text)
+            if sets is not None:
+                duration_minutes = None
+            exercises.append(
+                WorkoutExercise(
+                    name=cleaned_name,
+                    sets=sets,
+                    reps=reps,
+                    duration_minutes=duration_minutes,
+                    notes=_join_notes(rest_text, note_text),
+                )
+            )
+        return exercises
 
     def _resolve_plan_kind(self, plan: WorkoutPlanResult) -> str:
         if self._explicit_program_request():
@@ -451,7 +516,7 @@ class TrainingPlanDraftBuilder:
         plan_kind: str,
     ) -> str:
         title = _clean_session_title(plan.title or "")
-        if title and title not in {"训练计划", "Kratos 生成训练计划"}:
+        if title and title not in {"训练计划", "今日训练计划", "Kratos 生成训练计划"}:
             return _clip_text(title, 120)
         if plan_kind == "program":
             return "周期训练计划"
@@ -523,6 +588,21 @@ def _split_table_cells(line: str) -> list[str]:
     if "|" not in line:
         return []
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _split_multivalue_cell(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text or text in {"-", "—", "无"}:
+        return []
+    text = re.sub(r"\s*<br\s*/?>\s*", "、", text, flags=re.IGNORECASE)
+    parts = re.split(r"\s*(?:\n|、|；|;)\s*", text)
+    return [part.strip() for part in parts if part.strip() and part.strip() not in {"-", "—", "无"}]
+
+
+def _item_or_last(items: list[str], index: int) -> str | None:
+    if not items:
+        return None
+    return items[index] if index < len(items) else items[-1]
 
 
 def _is_daily_table(headers: list[str]) -> bool:
@@ -748,7 +828,7 @@ def _infer_session_title(exercises: list[WorkoutExercise], user_text: str = "") 
         return "上肢推训练"
     if any(keyword in text for keyword in ["背", "拉", "划船", "引体", "下拉", "弯举"]):
         return "上肢拉训练"
-    if any(keyword in text for keyword in ["核心", "平板支撑", "死虫", "侧桥"]):
+    if any(keyword in text for keyword in ["腹", "核心", "卷腹", "平板支撑", "死虫", "侧桥", "俄罗斯转体"]):
         return "核心训练"
     return "今日训练"
 

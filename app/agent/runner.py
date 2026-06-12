@@ -217,26 +217,27 @@ class AgentRunner:
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("plan", state, after_node)
 
-        if final_generated:
-            appended_text = self._surface_unresolved_quality_issues(state)
-            if stream_answer and appended_text:
-                yield {
-                    "type": "answer_delta",
-                    "delta": appended_text,
-                    "content": appended_text,
-                }
-            yield {
-                "type": "final_state",
-                "content": str(state.result.response or ""),
-                "raw": state.result.model_dump(mode="json"),
-            }
-
         self._raise_if_cancelled(should_cancel)
         t_end = self.nodes.end(state)
         self._raise_if_cancelled(should_cancel)
         _log_node_time("end", time.monotonic() - 0.001, user_id, session_id)  # approximate
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("end", state, after_node)
+
+        if final_generated:
+            if stream_answer:
+                for display_delta in _iter_answer_deltas(str(state.result.response or "")):
+                    self._raise_if_cancelled(should_cancel)
+                    yield {
+                        "type": "answer_delta",
+                        "delta": display_delta,
+                        "content": display_delta,
+                    }
+            yield {
+                "type": "final_state",
+                "content": str(state.result.response or ""),
+                "raw": state.result.model_dump(mode="json"),
+            }
 
         total_elapsed = time.monotonic() - t_run_start
         _logger.info(
@@ -262,20 +263,14 @@ class AgentRunner:
 
     @staticmethod
     def _surface_unresolved_quality_issues(state: SessionState) -> str | None:
-        """反思仍未通过时把质量提示附到最终回答，避免静默吞掉风险。"""
+        """Return quality issues for diagnostics without changing user-visible text."""
 
         if state.result.final_answer_ready:
             return None
         suggestions = [item for item in state.result.reflection_suggestions if str(item).strip()]
         if not suggestions:
             return None
-        suffix = "\n\n**质量校验提示**\n" + "\n".join(f"- {item}" for item in suggestions)
-        response = str(state.result.response or "").rstrip()
-        if suffix not in response:
-            state.result.response = f"{response}{suffix}" if response else suffix.strip()
-            state.result.touch()
-            return suffix
-        return None
+        return "\n".join(f"- {item}" for item in suggestions)
 
     @staticmethod
     def _after_node(
@@ -299,3 +294,17 @@ def _log_node_time(node_name: str, start_time: float, user_id: str, session_id: 
         user_id,
         session_id,
     )
+
+
+def _iter_answer_deltas(text: str) -> Iterator[str]:
+    """Split the final canonical answer so SSE still renders progressively."""
+
+    if not text:
+        return
+
+    chunk_chars = max(1, int(settings.AGENT_STREAM_CHUNK_CHARS or 1))
+    delay_seconds = max(0.0, float(settings.AGENT_STREAM_CHUNK_DELAY_SECONDS or 0.0))
+    for index in range(0, len(text), chunk_chars):
+        if index > 0 and delay_seconds > 0:
+            time.sleep(delay_seconds)
+        yield text[index : index + chunk_chars]

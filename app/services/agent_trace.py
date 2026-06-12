@@ -129,7 +129,7 @@ def append_persistable_event(
     """
 
     event_type = str(event.get("type") or "status")
-    if event_type in {"answer_delta", "answer_replace", "done"}:
+    if event_type in {"answer_delta", "done"}:
         return
     if event_type not in {"status", "thought", "action", "observation", "reflection", "final", "error"}:
         event_type = "status"

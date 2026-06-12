@@ -24,6 +24,7 @@ def finalize_markdown_response(response_text: str) -> str:
     """Apply generic Markdown-safe finalization and repair common gluing errors."""
 
     text = str(response_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s*<br\s*/?>\s*", "、", text, flags=re.IGNORECASE)
     lines = _repair_markdown_lines([line.rstrip() for line in text.split("\n")])
     return "\n".join(lines).strip()
 
@@ -72,7 +73,7 @@ def _split_glued_heading(line: str) -> list[str] | None:
             _repair_table_row(f"| {table_tail.strip()}"),
         ]
 
-    list_match = re.match(r"^(#{1,6})\s*(.{2,48}?)-\s*(\S.*)$", line)
+    list_match = re.match(r"^(#{1,6})\s*(.{2,48}?)(?<!\d)-\s*(?!\d)(\S.*)$", line)
     if list_match:
         hashes, title, item = list_match.groups()
         return [
@@ -95,17 +96,25 @@ def _split_overlong_heading(line: str) -> list[str] | None:
     if "|" in content or content.startswith("- "):
         return None
     title_match = re.match(
-        r"^((?:今日|今天|本次|一周|每周|周期)?"
-        r"(?:上肢|下肢|全身|胸部|背部|腿部|臀腿|核心|恢复|饮食|营养)?"
-        r"(?:训练计划|训练安排|训练|饮食建议|营养建议|计划|建议))(.+)$",
+        r"^((?:今日|今天|本次|本周|一周|每周|周期)?"
+        r"(?:肩部|腹部|上肢|下肢|全身|胸部|背部|腿部|臀腿|核心|恢复|饮食|营养|增肌|减脂|力量|康复|周期|长期)*"
+        r"(?:训练建议与安排|训练计划|训练安排|训练建议|训练|饮食建议|营养建议|计划|建议|安排))(.+)$",
         content,
     )
+    if not title_match:
+        title_match = re.match(
+            r"^(.{4,48}?(?:训练建议与安排|训练计划|训练安排|训练建议|饮食建议|营养建议|计划|建议|安排))"
+            r"((?:根据|结合|下面|以下|注意[:：]?|如有).+)$",
+            content,
+        )
     if not title_match:
         return None
 
     title, suffix = title_match.groups()
     suffix = suffix.lstrip(" ，,。:：")
     if not suffix:
+        return None
+    if not re.match(r"^(根据|结合|下面|以下|注意[:：]?|如有|若|如果)", suffix):
         return None
     if len(title) < 4:
         return None
@@ -183,7 +192,62 @@ def markdown_contract_violations(response_text: str) -> list[str]:
     if open_fence is not None:
         violations.append("最终回复存在未闭合的 fenced code block。")
 
+    violations.extend(_table_contract_violations(text))
+
     return violations
+
+
+def _table_contract_violations(markdown: str) -> list[str]:
+    table_blocks = _table_blocks(markdown)
+    for block in table_blocks:
+        rows = [_table_cells(line) for line in block]
+        rows = [row for row in rows if len(row) >= 2]
+        if not rows:
+            continue
+        expected_columns = len(rows[0])
+        has_separator = len(rows) >= 2 and all(_is_table_separator_cell(cell) for cell in rows[1])
+        if not has_separator:
+            return ["最终回复包含不完整 Markdown 表格，需要表头、分隔行和数据行。"]
+        if len(rows) < 3:
+            return ["最终回复包含不完整 Markdown 表格，需要表头、分隔行和数据行。"]
+        if any(len(row) != expected_columns for row in rows):
+            return ["最终回复包含列数不一致的 Markdown 表格，需要修正为标准 GFM 表格。"]
+    return []
+
+
+def _table_blocks(markdown: str) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    in_code_fence = False
+    for raw_line in str(markdown or "").splitlines():
+        line = raw_line.strip()
+        if re.match(r"^ {0,3}(`{3,}|~{3,})", raw_line):
+            in_code_fence = not in_code_fence
+            if current:
+                blocks.append(current)
+                current = []
+            continue
+        if in_code_fence:
+            continue
+        if _is_table_line(line):
+            current.append(line)
+            continue
+        if current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _table_cells(line: str) -> list[str]:
+    if not _is_table_line(line):
+        return []
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_table_separator_cell(cell: str) -> bool:
+    return bool(re.fullmatch(r":?-{2,}:?", cell.strip()))
 
 
 def _open_code_fence(markdown: str) -> str | None:
