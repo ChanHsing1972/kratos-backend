@@ -6,6 +6,7 @@ LLM 反思适合发现语义问题，但对项目中已知的硬规则必须用�
 
 from __future__ import annotations
 
+from app.agent.markdown_contract import markdown_contract_violations
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolStatus
 
@@ -31,6 +32,8 @@ def validate_agent_result(state: SessionState) -> list[str]:
     if not response:
         suggestions.append("最终回复为空，需要重新生成。")
         return suggestions
+
+    suggestions.extend(markdown_contract_violations(response))
 
     user_message = _latest_user_text(state)
     extracted_profile = (state.reasoning.extracted_info or {}).get("profile", {})

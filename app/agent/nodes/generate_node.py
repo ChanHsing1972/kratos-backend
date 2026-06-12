@@ -11,6 +11,11 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from app.agent.markdown_contract import (
+    STANDARD_MARKDOWN_OUTPUT_PROMPT,
+    finalize_markdown_response,
+)
+from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.result import (
     DietNutritionTargets,
@@ -27,16 +32,64 @@ from app.agent.state.session_state import SessionState
 from app.core.config import settings
 from app.services.diet_image_estimator import normalize_food_estimate_payload
 from app.services.exercise_media import display_exercise_name, list_supported_exercise_names
+from app.services.training_plan_draft import build_training_plan_draft
+
+
+STRUCTURED_ARTIFACT_START = "<<<KRATOS_STRUCTURED_ARTIFACTS_JSON>>>"
+STRUCTURED_ARTIFACT_END = "<<<END_KRATOS_STRUCTURED_ARTIFACTS_JSON>>>"
+
+
+class _StructuredArtifactStreamFilter:
+    """Hide the internal artifact block while preserving live Markdown deltas."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._inside_artifact = False
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+
+        self._buffer += text
+        visible_parts: list[str] = []
+
+        while self._buffer:
+            if self._inside_artifact:
+                end_index = self._buffer.find(STRUCTURED_ARTIFACT_END)
+                if end_index < 0:
+                    keep = max(0, len(STRUCTURED_ARTIFACT_END) - 1)
+                    self._buffer = self._buffer[-keep:] if len(self._buffer) > keep else self._buffer
+                    break
+                self._buffer = self._buffer[end_index + len(STRUCTURED_ARTIFACT_END) :]
+                self._inside_artifact = False
+                continue
+
+            start_index = self._buffer.find(STRUCTURED_ARTIFACT_START)
+            if start_index < 0:
+                keep = max(0, len(STRUCTURED_ARTIFACT_START) - 1)
+                if len(self._buffer) <= keep:
+                    break
+                visible_parts.append(self._buffer[:-keep])
+                self._buffer = self._buffer[-keep:]
+                break
+
+            visible_parts.append(self._buffer[:start_index])
+            self._buffer = self._buffer[start_index + len(STRUCTURED_ARTIFACT_START) :]
+            self._inside_artifact = True
+
+        return "".join(visible_parts)
+
+    def flush(self) -> str:
+        if self._inside_artifact:
+            self._buffer = ""
+            return ""
+        visible = self._buffer
+        self._buffer = ""
+        return visible
 
 
 class GenerateNode(BaseNode):
     """生成最终回答并更新 `state.result`。"""
-
-    TABLE_HEADER_WORDS = (
-        "动作|周几|训练内容|主要动作|说明|组数|次数|次数/时长|休息|备注|餐次|项目|指标|日期|部位|食物|菜品|"
-        "估算重量|估算分量|热量|蛋白质|脂肪|碳水|置信度|类别|缺失项|影响|原因|建议|风险|边界|"
-        "可用资源|基础身份|目标导向|身体数据|训练结构|计划可行性"
-    )
 
     def __call__(self, state: SessionState):
         """非流式生成最终回答，并同步更新结构化结果。"""
@@ -73,7 +126,9 @@ class GenerateNode(BaseNode):
         t0 = time.monotonic()
         prompt = self.build_prompt(state)
         response_text = ""
+        streamed_visible_text = ""
         last_chunk = None
+        artifact_filter = _StructuredArtifactStreamFilter()
 
         prompt_input = self.prompt_input(
             prompt,
@@ -88,7 +143,9 @@ class GenerateNode(BaseNode):
                 if not delta:
                     continue
                 response_text += delta
-                for display_delta in self._iter_stream_display_deltas(delta):
+                visible_delta = artifact_filter.feed(delta)
+                streamed_visible_text += visible_delta
+                for display_delta in self._iter_stream_display_deltas(visible_delta):
                     yield {
                         "type": "answer_delta",
                         "delta": display_delta,
@@ -96,37 +153,56 @@ class GenerateNode(BaseNode):
                     }
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
-            fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
+            streamed_visible_text += artifact_filter.flush()
+            fallback_text = self._fallback_response_text(state, exc, partial_response=streamed_visible_text)
             normalized_fallback_text = self._normalize_markdown_response(fallback_text)
-            fallback_delta = self._stream_suffix(response_text, normalized_fallback_text)
+            fallback_delta = self._stream_suffix(streamed_visible_text, normalized_fallback_text)
             for display_delta in self._iter_stream_display_deltas(fallback_delta):
                 yield {
                     "type": "answer_delta",
                     "delta": display_delta,
                     "content": display_delta,
                 }
-            yield {
-                "type": "status",
-                "content": "模型服务没有及时返回完整回复，已使用保守结果收尾",
-                "raw": {
-                    "answer_stream_complete": True,
-                    "fallback": "llm_error",
-                    "error_type": type(exc).__name__,
-                    "timeout": self._looks_like_timeout(exc),
-                },
-            }
             self.apply_response(
                 state,
                 AIMessage(content=normalized_fallback_text),
                 normalized_fallback_text,
             )
+            structured_card_requested = self._should_emit_workout_plan(state, normalized_fallback_text)
+            draft_ready = state.result.training_plan_draft is not None
+            status_raw = {
+                "answer_stream_complete": True,
+                "fallback": "llm_error",
+                "error_type": type(exc).__name__,
+                "timeout": self._looks_like_timeout(exc),
+            }
+            if structured_card_requested and draft_ready:
+                status_raw["structured_card_pending"] = True
+                status_raw["training_plan_draft_ready"] = True
+            elif structured_card_requested:
+                status_raw["structured_card_pending"] = False
+                status_raw["training_plan_draft_missing"] = True
+            yield {
+                "type": "status",
+                "content": "模型服务没有及时返回完整回复，已使用保守结果收尾",
+                "raw": status_raw,
+            }
             return
 
         # If streaming returned empty (GLM thinking model), try the collected content
         if not response_text.strip() and last_chunk is not None:
             response_text = self._extract_content(last_chunk)
-        normalized_response_text = self._normalize_markdown_response(response_text)
-        if normalized_response_text and not response_text.strip():
+        trailing_visible_delta = artifact_filter.flush()
+        streamed_visible_text += trailing_visible_delta
+        for display_delta in self._iter_stream_display_deltas(trailing_visible_delta):
+            yield {
+                "type": "answer_delta",
+                "delta": display_delta,
+                "content": display_delta,
+            }
+        visible_response_text, _embedded_artifacts = self._split_embedded_structured_artifacts(response_text)
+        normalized_response_text = self._normalize_markdown_response(visible_response_text)
+        if normalized_response_text and not streamed_visible_text.strip():
             yield {
                 "type": "answer_delta",
                 "delta": normalized_response_text,
@@ -141,18 +217,28 @@ class GenerateNode(BaseNode):
             getattr(self.llm, "model_name", "") or "",
         )
 
-        structured_card_pending = self._should_emit_workout_plan(state, normalized_response_text)
+        self.apply_response(state, AIMessage(content=normalized_response_text), response_text)
+
+        structured_card_requested = self._should_emit_workout_plan(state, normalized_response_text)
+        draft_ready = state.result.training_plan_draft is not None
         if normalized_response_text:
+            status_raw = {"answer_stream_complete": True}
+            if structured_card_requested and draft_ready:
+                status_raw["structured_card_pending"] = True
+                status_raw["training_plan_draft_ready"] = True
+                status_content = "标准 Markdown 回答已生成，训练计划草稿已整理"
+            elif structured_card_requested:
+                status_raw["structured_card_pending"] = False
+                status_raw["training_plan_draft_missing"] = True
+                status_content = "标准 Markdown 回答已生成，本轮未能解析出可保存训练计划草稿"
+            else:
+                status_raw["structured_card_pending"] = False
+                status_content = "标准 Markdown 回答已生成，正在完成最终校验"
             yield {
                 "type": "status",
-                "content": ("Markdown 回答已生成，正在整理可保存的 AI 周期计划草稿" if structured_card_pending else "Markdown 回答已生成，正在完成最终校验"),
-                "raw": {
-                    "answer_stream_complete": True,
-                    "structured_card_pending": structured_card_pending,
-                },
+                "content": status_content,
+                "raw": status_raw,
             }
-
-        self.apply_response(state, AIMessage(content=normalized_response_text), normalized_response_text)
 
     @staticmethod
     def _stream_suffix(already_streamed: str, final_text: str) -> str:
@@ -286,24 +372,11 @@ class GenerateNode(BaseNode):
         return f"""
         你是 Kratos 智能健身 Agent。
         请根据用户问题、识别意图和所有子任务结果生成最终回复。
-        要求：
+
+        {STANDARD_MARKDOWN_OUTPUT_PROMPT}
+
+        业务要求：
         - 中文回答。
-        - 必须使用 Markdown 格式组织内容：用短标题、列表、表格或加粗重点提升可读性；避免整段堆叠。
-        - Markdown 块之间必须保留空行；标题、段落、列表和表格不能粘在同一行。
-        - 标题必须独占一行，前一段或上一条列表结束后先换行；不要输出 `是否有伤病史### ◆ 身体数据缺失`，应写成列表项结束后空行再写 `### 身体数据缺失`。
-        - 标题行不要使用 `◆`、`◇`、`●`、`•` 等装饰符。
-        - 标题行只允许一个连续的 Markdown 标题前缀，例如 `## 今日训练`；禁止输出 `## # 今日训练`、`## # # 今日训练`。
-        - Markdown 表格必须使用标准 GFM 多行格式：表头一行、分隔行一行、每条数据各占一行；不要把多行表格压成一行。
-        - Markdown 表格行必须直接以 `|` 开始，不能放在列表项里；不要输出 `- | 动作 | ...`。
-        - Markdown 表格分隔行必须与表头列数一致，例如 `| --- | --- | --- |`；不要输出单独的 `---`、`|---` 或把分隔行当成数据行。
-        - 表格单元格内不要输出 HTML，例如 `<br>`；如果一个单元格有多项内容，用中文分号 `；` 分隔。
-        - 个人基础信息必须使用 Markdown 表格或每行一个字段；禁止输出 `性别：男 年龄：21岁 身高：183 cm` 这种单行粘连格式。
-        - 列表项必须独占一行，使用 `- 内容`，不要写成 `标题- 内容`。
-        - 段落不要以裸冒号开头，例如不要写 `: 若您暂无法...`；标题不要用 `|` 当装饰分隔符，写 `今日训练：全身激活 · 25分钟`，不要写 `今日训练|全身激活·25分钟`。
-        - 编号列表必须独占一行，例如 `2. 目标与条件` 前必须换行；不要写成 `年龄：____ 岁2. 目标与条件`。
-        - 不要输出未闭合的 Markdown 标记或句尾裸控制符，例如孤立的 `**身体数据`、`档案**。`、`*子任务估算`；如果不加粗/斜体就不要写 `**` 或 `*`。
-        - 不要连续输出多个项目符号，例如 `• • • 身高`。
-        - 不要把 `>` 当作装饰符或行尾符号；只有真正引用段落时才可在行首使用 `>`。
         - 具体、可执行，避免空泛建议。
         - 回答前必须利用已读取的数据库上下文；如果上下文缺关键数据，先指出缺口并给出下一步引导。
         - 如果用户在消息中提到新的个人信息或身体数据，说明需由用户确认后才会保存，不得声称已经记录。
@@ -323,8 +396,7 @@ class GenerateNode(BaseNode):
         - 生成训练计划或动作安排时，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
         - 面向用户展示的动作名称必须使用中文；不要在标题、正文、表格或动作列表中输出英文动作名或英文别名。
         - 如果用户需求确实无法由可展示动作库覆盖，选择最接近的可展示动作替代，并在备注里说明替代原因。
-        - 训练计划行必须保持干净格式：`周三|训练主题：动作A 3组 x 10次；动作B 3组 x 12次`。
-        - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划行的标题或动作列表里；这些内容只能放在计划前后的说明段。
+        - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划标题或动作名称里；这些内容只能放在计划前后的说明段。
         - 今日训练只输出当天安排，不要把用户原话重复成标题；标题优先使用“上肢训练”“下肢训练”“全身训练”“恢复训练”等短主题。
         - 生成训练计划时，必须提供可直接保存的训练安排：周/周期计划和今日计划都优先使用 Markdown 表格展示动作、组数、次数/时长、休息和备注。不要在正文与训练安排中给出互相冲突的内容。
         - 如果用户上传的是食物/餐食图片，必须直接根据图片估算可见食物，回答中包含标准 Markdown 表格，表头必须为：`| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |`。说明这是估算并需要用户确认后保存；不要声称已经保存。
@@ -371,7 +443,8 @@ class GenerateNode(BaseNode):
         """
 
         tasks = state.reasoning.tasks
-        response_text = self._normalize_markdown_response(response_text)
+        visible_response_text, embedded_artifacts = self._split_embedded_structured_artifacts(response_text)
+        response_text = self._normalize_markdown_response(visible_response_text)
         state.result.response = response_text
         state.result.task_results = [
             {
@@ -398,249 +471,46 @@ class GenerateNode(BaseNode):
             for tool_call in task.tool_calls
         ]
         state.result.final_answer_ready = bool(response_text)
-        self._update_structured_artifacts(state, response_text)
+        self._update_structured_artifacts(state, response_text, embedded_artifacts=embedded_artifacts)
         state.result.touch()
-        state.conversation.messages.append(response)
+        state.conversation.messages.append(AIMessage(content=response_text))
 
     @staticmethod
     def _normalize_markdown_response(response_text: str) -> str:
-        """Repair common collapsed Markdown without rewriting the answer."""
+        """Return the final answer text without model-specific Markdown repairs."""
 
-        text = str(response_text or "").replace("\r\n", "\n").strip()
-        if not text:
-            return text
-
-        text = re.sub(r"([^\n])\s*(#{2,6})\s*(?=[◆◇▪▫●•·]?\s*\S)", r"\1\n\n\2 ", text)
-        text = re.sub(r"(?m)^(\s*#{1,6})(?!#)(?=\S)", r"\1 ", text)
-        text = re.sub(r"(?m)^(\s*#{1,6}\s+)[◆◇▪▫●•·]\s*", r"\1", text)
-        text = re.sub(r"(?m)^(\s*#{1,6})\s+(?:#\s*)+", r"\1 ", text)
-        text = re.sub(r"([^\n])\s+(#{1,6}\s+)", r"\1\n\n\2", text)
-        text = re.sub(r"([^\n])\s*(#{2,6})(?!#)(?=\S)", r"\1\n\n\2 ", text)
-        text = re.sub(
-            r"([^\n•·*+\-])\s*-\s*(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
-            r"\1\n",
-            text,
-        )
-        text = re.sub(
-            r"([^\n•·*+\-])\s+(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
-            r"\1\n",
-            text,
-        )
-        text = re.sub(r"(?m)^个人基础信息$", "## 个人基础信息", text)
-        for title in (
-            "当前状态摘要",
-            "当前无法生成可靠训练计划的原因",
-            "个人基础信息",
-            "今日训练方案",
-            "恢复训练安排",
-            "今日下肢训练安排",
-            "下肢训练安排",
-            "今日上肢训练安排",
-            "上肢训练安排",
-            "今日训练安排",
-            "今日必须完成事项",
-            "下周训练计划优化建议",
-            "执行要点",
-            "下一步需你确认的信息",
-            "下一步建议",
-            "快速填写",
-            "示例",
-        ):
-            text = re.sub(
-                rf"(?m)^(\s*#{{1,6}}\s+.*?{re.escape(title)}(?:[（(][^）)]*[）)])?)(\S[^\n]*)$",
-                lambda match: f"{match.group(1).rstrip()}\n\n{match.group(2).lstrip()}",
-                text,
-            )
-
-        text = re.sub(r"\s*<br\s*/?>\s*[-•]\s*", "；", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*<br\s*/?>\s*", "；", text, flags=re.IGNORECASE)
-        text = re.sub(r"(^|\n)\s*>\s*", r"\1", text)
-        text = re.sub(r"([\u4e00-\u9fff）)。！？!?；;：:])\s*>\s*(?=\S)", r"\1\n\n", text)
-        text = re.sub(r"([：:])\s*>\s*(?=\n|$)", r"\1", text)
-        text = re.sub(r"([\u4e00-\u9fffA-Za-z0-9）)。！？!?；;，,、])\s*>\s*(?=\n|$)", r"\1", text)
-
-        text = re.sub(r"(?m)^(\s*)[-*+•·]\s+(?=\|)", r"\1", text)
-        text = GenerateNode._split_glued_table_starts(text)
-        text = re.sub(r"\|{2,}\s*(?=:?-{3,}:?\s*(?:\||$))", "|\n|", text)
-        text = re.sub(r"\|{2,}\s*(?=[\u4e00-\u9fffA-Za-z0-9（(*_`-])", "|\n|", text)
-        text = re.sub(r"\|\s+\|", "|\n|", text)
-        text = re.sub(r"\s+(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)", r"\n\1", text)
-        text = re.sub(r"(?m)^(\s*(?:#{1,6}\s*)?(?:今日训练|今日计划|训练安排|恢复训练|示例方案|通用方案))\s*[|｜]\s*(?=\S)", r"\1：", text)
-        text = GenerateNode._repair_markdown_table_blocks(text)
-        text = re.sub(r"(?m)^(\s*)\|\s*(?!:?-{3,}:?\s*\|?\s*$)([^|\n]+?)\s*\|?\s*$", r"\1\2", text)
-        text = "\n".join(GenerateNode._split_trailing_text_after_table_row(line) for line in text.split("\n"))
-        text = re.sub(r"([。.!?！？])\s*(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
-        text = re.sub(r"([。.!?！？])\s*(#{2,6}\s+)", r"\1\n\n\2", text)
-        text = re.sub(r"([^\n])\s+(#{1,6}\s+)", r"\1\n\n\2", text)
-        text = re.sub(r"([^\n])\s*(#{2,6})(?!#)(?=\S)", r"\1\n\n\2 ", text)
-        text = re.sub(r"([^\n])\s+(#{2,6})(?=\S)", r"\1\n\n\2 ", text)
-        text = re.sub(r"([^\n])\s+(#{2,6}\s+)", r"\1\n\n\2", text)
-        text = re.sub(
-            r"([^\n•·*+\-])\s*-\s*(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
-            r"\1\n",
-            text,
-        )
-        text = re.sub(
-            r"([^\n•·*+\-])\s+(?=(?:性别|年龄|身高|体重|训练目标|训练经验|器械条件|每次训练时长|每周可训练天数|近期状态)[：:])",
-            r"\1\n",
-            text,
-        )
-        text = re.sub(r"(?m)^个人基础信息$", "## 个人基础信息", text)
-        text = re.sub(r"([。！？!?；;：:])\s*([-*+]\s+)", r"\1\n\2", text)
-        text = re.sub(r"([。！？!?；;：:])\s*(\d+[.)、]\s+)", r"\1\n\2", text)
-        text = re.sub(r"([\u4e00-\u9fffA-Za-z）)_%％])\s*(\d+[.)、]\s+)", r"\1\n\2", text)
-        text = re.sub(r"([）)])\s*([-*+]\s+)", r"\1\n\2", text)
-        text = re.sub(r"(?m)^\s*(?:[-*+•·]\s*){1,}$", "", text)
-        text = re.sub(r"(?m)^(\s*)[:：]\s+(?=\S)", r"\1", text)
-        text = re.sub(r"(?m)^(\s*)[:：](?=\S)", r"\1", text)
-        text = re.sub(r"(?m)^(\s*)(?:[-*+•·]\s+){2,}(?=\S)", r"\1- ", text)
-        text = re.sub(r"(?m)^(\s*)[•·]\s*", r"\1- ", text)
-        text = re.sub(r"([A-Za-z0-9\u4e00-\u9fff）)])\s*>\s*(?=(?:🔐|✅|⚠️?|📌|📋)|[\u4e00-\u9fff])", r"\1 ", text)
-        text = re.sub(r"([\u4e00-\u9fffA-Za-z0-9）)]{2,32})\s*[-*]\s+(?=\S)", r"\1\n- ", text)
-        text = re.sub(r"([^\n])---(?=\n|$)", r"\1\n\n---", text)
-        text = re.sub(r"(?m)^(\s*#{1,6})(?!#)(?=\S)", r"\1 ", text)
-        text = re.sub(r"(?m)^(\s*#{1,6}\s+)[◆◇▪▫●•·]\s*", r"\1", text)
-        text = re.sub(r"(?m)^(\s*#{1,6})\s+(?:#\s*)+", r"\1 ", text)
-        text = "\n".join(GenerateNode._strip_unmatched_strong_markers(line) for line in text.split("\n"))
-        text = GenerateNode._separate_markdown_table_blocks(text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text
+        return finalize_markdown_response(response_text)
 
     @staticmethod
-    def _repair_markdown_table_blocks(text: str) -> str:
-        lines = text.split("\n")
-        output: list[str] = []
-        index = 0
-        while index < len(lines):
-            line = lines[index]
-            if not GenerateNode._has_known_table_header(line):
-                output.append(line)
-                index += 1
-                continue
+    def _split_embedded_structured_artifacts(response_text: str) -> tuple[str, dict[str, Any] | None]:
+        """Return user-visible Markdown and an optional hidden artifact payload."""
 
-            column_count = max(2, len(GenerateNode._table_cells(line)))
-            output.append(line)
-            next_line = lines[index + 1] if index + 1 < len(lines) else ""
-            if GenerateNode._is_markdown_separator_row(next_line):
-                output.append(next_line)
-                index += 2
-                continue
-            if GenerateNode._is_loose_separator_line(next_line):
-                output.append(GenerateNode._separator_row(column_count))
-                index += 2
-                continue
-            if GenerateNode._is_probable_table_row(next_line):
-                output.append(GenerateNode._separator_row(column_count))
-            index += 1
-        return "\n".join(output)
+        text = str(response_text or "")
+        start = text.find(STRUCTURED_ARTIFACT_START)
+        if start < 0:
+            return text, None
 
-    @staticmethod
-    def _separate_markdown_table_blocks(text: str) -> str:
-        lines = text.split("\n")
-        output: list[str] = []
-        index = 0
-        while index < len(lines):
-            line = lines[index]
-            if not GenerateNode._has_known_table_header(line):
-                output.append(line)
-                index += 1
-                continue
+        end = text.find(STRUCTURED_ARTIFACT_END, start + len(STRUCTURED_ARTIFACT_START))
+        visible_prefix = text[:start]
+        if end < 0:
+            return visible_prefix, None
 
-            if output and output[-1].strip():
-                output.append("")
-            output.append(line)
-            index += 1
-            if index < len(lines) and GenerateNode._is_markdown_separator_row(lines[index]):
-                output.append(lines[index])
-                index += 1
-            while index < len(lines) and GenerateNode._is_probable_table_row(lines[index]):
-                output.append(lines[index])
-                index += 1
-            if index < len(lines) and lines[index].strip():
-                output.append("")
-        return "\n".join(output)
+        artifact_text = text[start + len(STRUCTURED_ARTIFACT_START) : end].strip()
+        visible_suffix = text[end + len(STRUCTURED_ARTIFACT_END) :]
+        visible_text = f"{visible_prefix}{visible_suffix}"
 
-    @staticmethod
-    def _has_known_table_header(line: str) -> bool:
-        return any(GenerateNode._is_known_table_header_cell(cell) for cell in GenerateNode._table_cells(line))
+        try:
+            return visible_text, parse_json_object(artifact_text)
+        except LLMJsonParseError:
+            return visible_text, None
 
-    @staticmethod
-    def _is_known_table_header_cell(cell: str) -> bool:
-        header_pattern = re.compile(
-            rf"^(?:{GenerateNode.TABLE_HEADER_WORDS})(?:\s*[（(][^）)]*[）)])?$",
-            re.IGNORECASE,
-        )
-        return bool(header_pattern.match(cell.strip()))
-
-    @staticmethod
-    def _split_glued_table_starts(text: str) -> str:
-        header_pattern = re.compile(rf"\|\s*(?:{GenerateNode.TABLE_HEADER_WORDS})\s*\|", re.IGNORECASE)
-        lines: list[str] = []
-        for line in text.split("\n"):
-            cells = GenerateNode._table_cells(line)
-            if len(cells) >= 2 and GenerateNode._is_known_table_header_cell(cells[0]):
-                lines.append(line)
-                continue
-            match = header_pattern.search(line)
-            if not match or match.start() == 0:
-                lines.append(line)
-                continue
-            before = line[: match.start()].rstrip()
-            if "|" in before or "｜" in before:
-                lines.append(line)
-                continue
-            table = line[match.start() :].lstrip()
-            lines.extend([before, table] if before else [table])
-        return "\n".join(lines)
-
-    @staticmethod
-    def _table_cells(line: str) -> list[str]:
-        normalized = line.replace("｜", "|").strip()
-        if "|" not in normalized:
-            return []
-        return [cell.strip() for cell in normalized.strip("|").split("|")]
-
-    @staticmethod
-    def _is_markdown_separator_row(line: str) -> bool:
-        cells = GenerateNode._table_cells(line)
-        return len(cells) >= 2 and all(re.match(r"^:?-{3,}:?$", cell) for cell in cells)
-
-    @staticmethod
-    def _is_loose_separator_line(line: str) -> bool:
-        return bool(re.match(r"^\s*\|?\s*:?-{3,}:?\s*\|?\s*$", line.replace("｜", "|")))
-
-    @staticmethod
-    def _is_probable_table_row(line: str) -> bool:
-        normalized = line.replace("｜", "|").strip()
-        return len(GenerateNode._table_cells(normalized)) >= 2
-
-    @staticmethod
-    def _separator_row(column_count: int) -> str:
-        return f"| {' | '.join('---' for _ in range(column_count))} |"
-
-    @staticmethod
-    def _strip_unmatched_strong_markers(line: str) -> str:
-        normalized = line
-        if normalized.count("**") % 2 != 0:
-            normalized = normalized.replace("**", "")
-        if len(re.findall(r"(?<!\*)\*(?!\*)", normalized)) % 2 != 0:
-            normalized = re.sub(r"(?<!\*)\*(?!\*)", "", normalized)
-        return normalized
-
-    @staticmethod
-    def _split_trailing_text_after_table_row(line: str) -> str:
-        stripped = line.lstrip()
-        if not stripped.startswith("|"):
-            return line
-        last_pipe = line.rfind("|")
-        if last_pipe < 0 or last_pipe == len(line) - 1:
-            return line
-        trailing = line[last_pipe + 1 :].strip()
-        if not trailing:
-            return line
-        return f"{line[: last_pipe + 1]}\n{trailing}"
-
-    def _update_structured_artifacts(self, state: SessionState, response_text: str) -> None:
+    def _update_structured_artifacts(
+        self,
+        state: SessionState,
+        response_text: str,
+        *,
+        embedded_artifacts: dict[str, Any] | None = None,
+    ) -> None:
         """根据工具结果和最终文本刷新训练/饮食结构化卡片。"""
 
         food_estimate = self._build_strict_food_image_estimate_from_context(state, response_text)
@@ -653,9 +523,16 @@ class GenerateNode(BaseNode):
         if structured_workout_plan is not None:
             state.result.workout_plan = structured_workout_plan
         else:
-            strict_workout_plan = self._build_strict_workout_plan_from_context(state, response_text)
-            if strict_workout_plan is not None:
-                state.result.workout_plan = strict_workout_plan
+            embedded_workout_plan = self._build_workout_plan_from_embedded_artifacts(
+                state,
+                embedded_artifacts,
+            )
+            if embedded_workout_plan is not None:
+                state.result.workout_plan = embedded_workout_plan
+            else:
+                visible_workout_plan = self._build_workout_plan_from_visible_response(state, response_text)
+                if visible_workout_plan is not None:
+                    state.result.workout_plan = visible_workout_plan
 
         for task in state.reasoning.tasks:
             task_name = (task.name or "").lower()
@@ -677,6 +554,11 @@ class GenerateNode(BaseNode):
                 if parsed_workout is not None:
                     state.result.workout_plan = parsed_workout
 
+        state.result.training_plan_draft = build_training_plan_draft(
+            state,
+            response_text,
+            state.result.workout_plan,
+        )
         state.result.sync_structured_artifacts()
 
     def _build_workout_plan_from_task_results(self, state: SessionState) -> WorkoutPlanResult | None:
@@ -694,6 +576,59 @@ class GenerateNode(BaseNode):
             if parsed_workout is not None:
                 return parsed_workout
         return None
+
+    def _build_workout_plan_from_embedded_artifacts(
+        self,
+        state: SessionState,
+        payload: dict[str, Any] | None,
+    ) -> WorkoutPlanResult | None:
+        """Build a training card from the hidden JSON emitted with the answer."""
+
+        if not isinstance(payload, dict):
+            return None
+
+        artifacts = payload.get("structured_artifacts")
+        if isinstance(artifacts, dict) and isinstance(artifacts.get("workout_plan"), dict):
+            workout_plan = artifacts["workout_plan"]
+        else:
+            workout_plan = payload.get("workout_plan")
+        if not isinstance(workout_plan, dict):
+            return None
+
+        source = ResultSource(
+            task_ids=[task.task_id for task in state.reasoning.tasks],
+            tool_names=[tool_call.name for task in state.reasoning.tasks for tool_call in task.tool_calls],
+            summary="embedded workout_plan JSON",
+        )
+        parsed = self._build_workout_plan_result(workout_plan, source, state.reasoning.intent)
+        if parsed is not None and self._is_daily_request(self.latest_user_text(state)):
+            self._coerce_daily_plan(parsed)
+        return parsed
+
+    def _build_workout_plan_from_visible_response(
+        self,
+        state: SessionState,
+        response_text: str,
+    ) -> WorkoutPlanResult | None:
+        """Fast fallback when the model omits the hidden artifact block."""
+
+        user_message = self.latest_user_text(state)
+        requested_kind = self._requested_plan_kind(user_message)
+        if requested_kind is None:
+            return None
+
+        source = ResultSource(
+            task_ids=[task.task_id for task in state.reasoning.tasks],
+            tool_names=[tool_call.name for task in state.reasoning.tasks for tool_call in task.tool_calls],
+            summary="visible Markdown workout_plan fallback",
+        )
+        return self._build_visible_workout_plan_result(
+            response_text,
+            source,
+            state.reasoning.intent,
+            requested_kind,
+            self._requested_duration_weeks(user_message),
+        )
 
     def _build_strict_workout_plan_from_context(
         self,

@@ -1,15 +1,20 @@
 from types import SimpleNamespace
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from app.agent.nodes.act_node import ActNode
 from app.agent.nodes.base_node import BaseNode
-from app.agent.nodes.generate_node import GenerateNode
+from app.agent.nodes.generate_node import (
+    GenerateNode,
+    STRUCTURED_ARTIFACT_END,
+    STRUCTURED_ARTIFACT_START,
+)
 from app.agent.nodes.intent_node import IntentNode
 from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
+from app.agent.markdown_contract import finalize_markdown_response
 from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
 from app.agent.state.session_state import SessionState
@@ -26,6 +31,7 @@ from app.services.agent_chat import enrich_workout_plan_media, stream_agent_chat
 from app.services.agent_trace import build_trace
 from app.services.exercise_library import _match_score
 from app.services.exercise_media import _pick_best_exercise, resolve_supported_exercise_name
+from app.services.training_plan_draft import build_training_plan_draft
 from app.db.session import Base
 from app.models.knowledge_base import KnowledgeBaseEntry
 from app.services.agent_state_builder import attach_knowledge_contexts
@@ -906,208 +912,224 @@ def test_agent_weekly_markdown_table_creates_program_from_visible_answer():
     assert plan.sessions[-1].weekday == "周六/日"
 
 
-def test_generate_node_normalizes_collapsed_markdown_table():
-    collapsed = (
-        "今日训练安排| 动作 |组数 | 次数/时长 |休息 |备注 | "
-        "|:-------------|:------|:------------|:---------|:---------------------| "
-        "| 深蹲 |4组 |12-15次 |60-90秒 | 保持背部挺直 | "
-        "| 反向箭步蹲 |4组 |12次/每侧 |60秒 | 保持膝盖稳定 |"
-        "风险边界与恢复建议- 强度控制：控制在45-60分钟。 ##备注- 今日安排适合户外。"
+def test_training_plan_draft_parses_daily_markdown_table_for_short_leg_request():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="我想要练腿"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "## 下肢训练\n\n"
+        "| 动作 |组数 | 次数/时长 |休息建议 | 技术要点/备注 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 深蹲 |4 |8-10 次 |60-90秒 | 下蹲时保持膝盖与脚尖方向一致 |\n"
+        "| 罗马尼亚硬拉 |3 |8-10 次 |90秒 | 保持背部中立，髋部向后推 |\n"
+        "| 臀桥 |3 |12-15 次 |60秒 | 顶峰收缩 1 秒 |\n"
+        "| 拉伸 |1 |5 分钟 |- | 训练后放松臀腿 |\n"
     )
 
-    normalized = GenerateNode._normalize_markdown_response(collapsed)
+    GenerateNode().apply_response(state, AIMessage(content=response_text), response_text)
 
-    assert "今日训练安排\n\n| 动作 |组数 | 次数/时长 |休息 |备注 |" in normalized
-    assert "\n|:-------------|:------|:------------|:---------|:---------------------|" in normalized
-    assert "\n| 深蹲 |4组 |12-15次 |60-90秒 | 保持背部挺直 |" in normalized
-    assert "\n| 反向箭步蹲 |4组 |12次/每侧 |60秒 | 保持膝盖稳定 |" in normalized
-    assert "风险边界与恢复建议\n- 强度控制" in normalized
-    assert "\n\n## 备注\n- 今日安排适合户外。" in normalized
+    draft = state.result.structured_artifacts.get("training_plan_draft")
+    assert draft is not None
+    assert draft["plan_kind"] == "daily"
+    assert draft["status"] == "draft"
+    exercises = draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"]
+    names = [exercise["name"] for exercise in exercises]
+    assert "深蹲" in names
+    assert "罗马尼亚硬拉" in names
+    assert "拉伸" not in names
+    assert exercises[0]["target_sets"] == 4
+    assert exercises[0]["target_reps"] == "8-10 次"
+    assert exercises[0]["rest_seconds"] == 60
+    assert draft["weekly_schedule"].startswith("今日|")
+    assert "拉伸" in draft["recovery_guidance"]
 
 
-def test_generate_node_repairs_common_markdown_format_artifacts():
-    broken = (
-        "⚠️ 当前无法生成可靠训练计划的原因| 类别 | 缺失项 | 影响 |\n"
-        "|---\n"
-        "| 基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界 |\n\n"
-        "• •\n"
-        "✅ 下一步建议\n"
-        ": 3步快速启动请依次提供以下信息，年龄：____ 岁2. 目标与条件 - 主要目标\n"
-        "3. **身体数据（可选但强烈推荐）\n"
-        "• • • 身高：____ cm\n"
-        "• 当前体重：____ kg> 🔐 您提供的所有数据仅用于本次计划生成；"
+def test_training_plan_draft_handles_glued_markdown_without_losing_exercises():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="我想练腿"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "## 今日下肢训练结合你当前的数据库信息（21岁，183cm，69.8kg，健身房可用，目标为增肌，每次训练约60分钟，近期无明确伤病记录），你的下肢训练计划如下。若训练过程中出现膝盖、腰部等部位不适，请立即停止相关动作并反馈。\n\n"
+        "###训练安排| 动作 |组数 | 次数/时长 |休息建议 |备注 |\n"
+        "| ------------ | ---- | ------------ | ------------ | -------------------------- |\n"
+        "| 深蹲 |4 |8-10 次 |90秒 | 保持核心收紧，控制下蹲深度 |\n"
+        "| 罗马尼亚硬拉 |3 |10-12 次 |90秒 |重点感受腿后侧发力 |\n"
+        "|反向箭步蹲 |3 |12 次（每侧）|60-90秒 | 躯干稳定，膝盖朝前 |\n"
+        "| 小腿提踵 |3 |15-20 次 |60秒 |站姿或坐姿均可 |\n\n"
+        "### 热身与恢复建议-训练前请进行8-10分钟热身，如动态拉伸、开合跳、空身深蹲等。\n"
+        "- 每组末2-3次应有明显疲劳感，但动作标准，避免借力。\n"
+        "-训练后建议进行下肢拉伸，缓解紧张。\n\n"
+        "### 风险边界与注意事项- 若训练时出现关节或腰部不适，应立即停止相关动作并反馈。"
     )
 
-    normalized = GenerateNode._normalize_markdown_response(broken)
+    normalized = finalize_markdown_response(response_text)
+    draft = build_training_plan_draft(state, response_text)
 
-    assert "当前无法生成可靠训练计划的原因\n\n| 类别 | 缺失项 | 影响 |" in normalized
-    assert "\n| --- | --- | --- |\n" in normalized
-    assert "\n|---\n" not in normalized
-    assert "• •" not in normalized
-    assert "\n: 3步" not in normalized
-    assert "岁\n2. 目标与条件" in normalized
-    assert "3. 身体数据（可选但强烈推荐）" in normalized
-    assert "- 身高：____ cm" in normalized
-    assert "kg 🔐 您提供" in normalized
+    assert "### 训练安排\n\n| 动作 | 组数 | 次数/时长 | 休息建议 | 备注 |" in normalized
+    assert "### 热身与恢复建议\n\n- 训练前请进行8-10分钟热身" in normalized
+    assert "### 风险边界与注意事项\n\n- 若训练时出现关节或腰部不适" in normalized
+    assert draft is not None
+    exercises = draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"]
+    assert [exercise["name"] for exercise in exercises] == ["深蹲", "罗马尼亚硬拉", "反向箭步蹲", "小腿提踵"]
+    assert "每次训练约" not in draft["weekly_schedule"]
+    assert draft["summary"] == "今日训练计划：1 个训练日，4 个训练动作。"
 
 
-def test_generate_node_keeps_table_header_without_leading_pipe():
-    broken = (
-        "⚠️ 当前无法生成可靠训练计划的原因\n"
-        "类别 | 缺失项 | 影响 |\n"
-        "---\n"
-        "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界\n"
-        "目标导向 | 健身目标 | 训练结构无法定向设计\n"
-        "| 🔍 *子任务估算仅为通用模板参考，不适用于实际执行。"
+def test_training_plan_draft_parses_weekly_markdown_table_as_program():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="帮我做一周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "| 周几 | 训练内容 | 主要动作/说明 |\n"
+        "| --- | --- | --- |\n"
+        "| 周一 | 下肢+核心 | 深蹲 4x8-12、平板支撑 3x40秒 |\n"
+        "| 周三 | 有氧+体态 | 快走 30分钟；面拉 3x15 |\n"
+        "| 周六/日 | 恢复 | 拉伸 15分钟，促进恢复 |\n"
     )
 
-    normalized = GenerateNode._normalize_markdown_response(broken)
+    draft = build_training_plan_draft(state, response_text)
 
-    assert "类别 | 缺失项 | 影响" in normalized
-    assert "\n| --- | --- | --- |\n" in normalized
-    assert "基础身份 | 性别、年龄、训练经验 | 无法判断动作适配性与强度边界" in normalized
-    assert "\n| 🔍" not in normalized
-    assert "\n\n🔍 子任务估算仅为通用模板参考，不适用于实际执行。" in normalized
-    assert "🔍 子任务估算仅为通用模板参考，不适用于实际执行。" in normalized
-    assert "🔍 *子任务" not in normalized
-    assert "\n类别\n| 缺失项 | 影响 |" not in normalized
+    assert draft is not None
+    assert draft["plan_kind"] == "program"
+    assert draft["duration_weeks"] == 1
+    sessions = draft["schedule_json"]["weeks"][0]["sessions"]
+    assert len(sessions) == 3
+    assert sessions[0]["weekday"] == "周一"
+    assert [exercise["name"] for exercise in sessions[0]["exercises"]] == ["深蹲", "平板支撑"]
+    assert sessions[1]["exercises"][-1]["name"] == "面拉"
+    assert sessions[2]["exercises"] == []
+    assert "周六/日" in draft["weekly_schedule"]
 
 
-def test_generate_node_removes_dangling_markdown_punctuation():
-    broken = (
-        "📋 **示例**\n"
-        ": 若您暂无法提供全部信息，可先试用「通用新手友好方案」 以下为无个人信息前提下的最低安全方案\n"
-        "- 当前体重：____ kg 🔐 您提供的所有数据仅用于本次计划生成；\n"
-        "- 未经您确认，不会保存至档案**。\n"
-        "今日训练|全身激活·25分钟（无器械）"
+def test_training_plan_draft_not_generated_for_training_news_query():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="上肢训练领域新闻"))
+    state.reasoning.intent = ["新闻搜索", "信息查询"]
+    response_text = "新闻里提到卧推可以做 3 组，但这里只是在解释资讯。"
+
+    draft = build_training_plan_draft(state, response_text)
+
+    assert draft is None
+
+
+def test_training_plan_draft_filters_non_action_prompts_from_exercises():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="今天练胸"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "| 动作 | 组数 | 次数/时长 | 休息 | 备注 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 热身 | 1 | 8 分钟 | - | 肩关节活动 |\n"
+        "| 杠铃卧推 | 4 | 6-8 次 | 90秒 | 保留 1-2 次余力 |\n"
+        "| 冷身拉伸 | 1 | 5 分钟 | - | 胸肩放松 |\n"
     )
 
-    normalized = GenerateNode._normalize_markdown_response(broken)
+    draft = build_training_plan_draft(state, response_text)
 
-    assert "\n: 若您" not in normalized
-    assert normalized.startswith("📋 **示例**\n若您")
-    assert "档案**" not in normalized
-    assert "- 未经您确认，不会保存至档案。" in normalized
-    assert "今日训练|全身激活" not in normalized
-    assert "今日训练：全身激活·25分钟（无器械）" in normalized
+    assert draft is not None
+    names = [
+        exercise["name"]
+        for exercise in draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"]
+    ]
+    assert names == ["杠铃卧推"]
+    assert "热身" in draft["recovery_guidance"]
+    assert "冷身拉伸" in draft["recovery_guidance"]
 
 
-def test_generate_node_preserves_bold_labels_after_list_marker():
-    broken = (
-        "- **恢复建议**：训练后拉伸腘绳肌与髋屈肌。\n"
-        "- **营养提示**：训练后30分钟内补充水分。\n"
-        "- 恢复建议**：这是模型缺了开头星号的坏格式。\n"
-        "• • • 身高：____ cm"
+def test_generate_node_finalizes_markdown_without_model_specific_rewrites():
+    source = (
+        "\r\n## 今日训练  \r\n\r\n"
+        "| 动作 | 组数 | 次数 |\r\n"
+        "| --- | --- | --- |\r\n"
+        "| 深蹲 | 4 | 8 |\r\n\r\n"
+        "```python\r\nprint('ok')\r\n```  \r\n"
     )
 
-    normalized = GenerateNode._normalize_markdown_response(broken)
+    finalized = GenerateNode._normalize_markdown_response(source)
 
-    assert "- **恢复建议**：训练后拉伸腘绳肌与髋屈肌。" in normalized
-    assert "- **营养提示**：训练后30分钟内补充水分。" in normalized
-    assert "- 恢复建议：这是模型缺了开头星号的坏格式。" in normalized
-    assert "- 恢复建议**：" not in normalized
-    assert "- 营养提示**：" not in normalized
-    assert "- 身高：____ cm" in normalized
-
-
-def test_generate_node_repairs_glued_heading_and_bullet_prefixed_collapsed_table():
-    broken = (
-        "- 是否有伤病史### ◆ 身体数据缺失\n"
-        "- 身高（cm）\n"
-        "- | 动作 | 组数 × 次数 | 强度建议 | 风险提示 | | --- | --- | --- | --- | "
-        "| 平板支撑 | 3×20秒 | 保持躯干中立 | 避免塌腰 | "
-        "| 深蹲 | 3×12次 | 屈髋屈膝同步 | 膝盖对准脚尖 |"
+    assert finalized == (
+        "## 今日训练\n\n"
+        "| 动作 | 组数 | 次数 |\n"
+        "| --- | --- | --- |\n"
+        "| 深蹲 | 4 | 8 |\n\n"
+        "```python\nprint('ok')\n```"
     )
 
-    normalized = GenerateNode._normalize_markdown_response(broken)
 
-    assert any(
-        f"- 是否有伤病史\n\n{marker} 身体数据缺失" in normalized
-        for marker in ("##", "###")
-    )
-    assert "### ◆" not in normalized
-    assert "- | 动作" not in normalized
-    assert "- 身高（cm）\n\n| 动作 | 组数 × 次数 | 强度建议 | 风险提示 |" in normalized
-    assert "| 动作 | 组数 × 次数 | 强度建议 | 风险提示 |" in normalized
-    assert "| --- | --- | --- | --- |" in normalized
-    assert "| 平板支撑 | 3×20秒 | 保持躯干中立 | 避免塌腰 |" in normalized
-    assert "| 深蹲 | 3×12次 | 屈髋屈膝同步 | 膝盖对准脚尖 |" in normalized
-    assert "| | ---" not in normalized
+def test_generate_node_prompt_contains_standard_markdown_contract():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="解释今天怎么练"))
+
+    prompt = GenerateNode().build_prompt(state)
+
+    assert "输出格式必须是标准 Markdown" in prompt
+    assert "不要混用 HTML" in prompt
+    assert "fenced code block" in prompt
+    assert "标准 GFM 多行表格" in prompt
 
 
-def test_generate_node_repairs_hash_heading_without_space_and_splits_body():
-    normalized = GenerateNode._normalize_markdown_response(
-        "#今日下肢训练安排由于存在腿部不适，建议本次训练以下肢激活、基础力量及康复为主。"
-    )
-
-    assert normalized.startswith("# 今日下肢训练安排\n\n由于存在腿部不适")
-    assert "#今日" not in normalized
-
-
-def test_generate_node_repairs_collapsed_profile_and_training_headings():
-    broken = (
-        "下肢训练建议###个人基础信息\n\n"
-        "性别：男- 年龄：21岁\n"
-        "身高：183 cm-体重：69.8 kg-训练目标：增肌-训练经验：中级\n"
-        "器械条件：健身房\n"
-        "每次训练时长：60分钟\n"
-        "每周可训练天数：4天-近期状态：有腿部不适（建议避免直接负荷和疼痛动作）\n"
-        "# 今日下肢训练安排由于存在腿部不适，建议本次训练以下肢激活、基础力量及康复为主。"
-    )
-
-    normalized = GenerateNode._normalize_markdown_response(broken)
-
-    assert any(
-        f"下肢训练建议\n\n{marker} 个人基础信息" in normalized
-        for marker in ("##", "###")
-    )
-    assert "性别：男\n年龄：21岁" in normalized
-    assert "身高：183 cm\n体重：69.8 kg\n训练目标：增肌\n训练经验：中级" in normalized
-    assert "每周可训练天数：4天\n近期状态：有腿部不适" in normalized
-    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in normalized
-
-
-def test_generate_node_repairs_space_collapsed_profile_fields():
-    broken = (
-        "下肢训练建议\n\n"
-        "个人基础信息\n"
-        "性别：男 年龄：21岁 身高：183 cm 体重：69.8 kg 训练目标：增肌 "
-        "训练经验：中级 器械条件：健身房 每次训练时长：60分钟 每周可训练天数：4天 "
-        "近期状态：有腿部不适（建议避免直接负荷和疼痛动作）\n\n"
-        "# 今日下肢训练安排由于存在腿部不适，建议本次训练以下肢激活、基础力量及康复为主。"
-    )
-
-    normalized = GenerateNode._normalize_markdown_response(broken)
-
-    assert "## 个人基础信息" in normalized
-    assert "性别：男\n年龄：21岁\n身高：183 cm\n体重：69.8 kg" in normalized
-    assert "训练目标：增肌\n训练经验：中级\n器械条件：健身房" in normalized
-    assert "每次训练时长：60分钟\n每周可训练天数：4天\n近期状态：有腿部不适" in normalized
-    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in normalized
-
-
-def test_generate_node_stream_emits_live_deltas_and_normalizes_result():
-    class CollapsedMarkdownLLM:
+def test_generate_node_stream_emits_live_deltas_and_finalizes_result():
+    class StandardMarkdownLLM:
         model_name = "fake-stream"
 
         def stream(self, prompt):
-            yield SimpleNamespace(content="下肢训练建议\n\n个人基础信息\n性别：男 年龄：21岁 ")
-            yield SimpleNamespace(content="# 今日下肢训练安排由于存在腿部不适，建议激活为主。")
+            yield SimpleNamespace(content="## 下肢训练建议\n\n")
+            yield SimpleNamespace(content="- 今天以激活为主，控制疼痛边界。\n")
 
     state = SessionState(session_id="s1", user_id="u1")
     state.conversation.messages.append(HumanMessage(content="解释今天怎么练"))
     state.reasoning.intent = ["信息查询"]
 
-    events = list(GenerateNode(CollapsedMarkdownLLM()).stream_response_events(state))
+    events = list(GenerateNode(StandardMarkdownLLM()).stream_response_events(state))
     answer_events = [event for event in events if event.get("type") == "answer_delta"]
 
     assert len(answer_events) > 1
     streamed = "".join(str(event["delta"]) for event in answer_events)
-    assert "性别：男 年龄：21岁" in streamed
-    assert "# 今日下肢训练安排由于" in streamed
-    assert "性别：男\n年龄：21岁" in state.result.response
-    assert "# 今日下肢训练安排\n\n由于存在腿部不适" in state.result.response
-    assert "# 今日下肢训练安排由于" not in state.result.response
+    assert streamed == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。\n"
+    assert state.result.response == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。"
+
+
+def test_generate_node_stream_hides_embedded_workout_json_and_builds_card():
+    class EmbeddedWorkoutPlanLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            assert "输出格式必须是标准 Markdown" in prompt
+            yield SimpleNamespace(content=f"{STRUCTURED_ARTIFACT_START}\n")
+            yield SimpleNamespace(
+                content=(
+                    '{"workout_plan":{"title":"今日训练计划","goal":"增肌",'
+                    '"plan_kind":"daily","duration_weeks":null,'
+                    '"sessions":[{"weekday":null,"title":"上肢推训练","focus":"上肢推",'
+                    '"exercises":[{"name":"杠铃卧推","sets":4,"reps":"8 次",'
+                    '"duration_minutes":null,"notes":"组间休息90秒"}],"notes":[]}],'
+                    '"precautions":["动作全程保持控制"]}}'
+                )
+            )
+            yield SimpleNamespace(content=f"\n{STRUCTURED_ARTIFACT_END}\n")
+            yield SimpleNamespace(content="## 今日训练\n\n")
+            yield SimpleNamespace(content="| 动作 | 组数 | 次数 |\n| --- | --- | --- |\n")
+            yield SimpleNamespace(content="| 杠铃卧推 | 4 | 8 次 |\n")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="今天安排一个训练"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(EmbeddedWorkoutPlanLLM()).stream_response_events(state))
+    streamed = "".join(str(event["delta"]) for event in events if event.get("type") == "answer_delta")
+
+    assert STRUCTURED_ARTIFACT_START not in streamed
+    assert "workout_plan" not in streamed
+    assert state.result.response.startswith("## 今日训练")
+    assert STRUCTURED_ARTIFACT_START not in state.result.response
+    assert state.result.workout_plan is not None
+    assert state.result.workout_plan.plan_kind == "daily"
+    assert state.result.workout_plan.sessions[0].exercises[0].name == "杠铃卧推"
+    assert state.result.training_plan_draft is not None
+    assert state.result.training_plan_draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"][0]["name"] == "杠铃卧推"
+    status_event = next(event for event in events if event.get("type") == "status")
+    assert status_event["raw"]["structured_card_pending"] is True
+    assert status_event["raw"]["training_plan_draft_ready"] is True
 
 
 def test_generate_node_parses_food_estimate_from_visible_markdown_table():
@@ -1184,6 +1206,26 @@ def test_workout_card_pending_requires_plan_intent_or_request():
         state,
         "新闻里提到卧推可以做 3 组，但这里只是在解释资讯。",
     ) is False
+
+
+def test_stream_status_does_not_leave_pending_without_training_plan_draft():
+    class GuidanceOnlyLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="## 今日建议\n\n")
+            yield SimpleNamespace(content="建议先明确训练目标，再安排具体动作。")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="今天怎么训练？"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(GuidanceOnlyLLM()).stream_response_events(state))
+    status_event = next(event for event in events if event.get("type") == "status")
+
+    assert state.result.training_plan_draft is None
+    assert status_event["raw"]["structured_card_pending"] is False
+    assert status_event["raw"]["training_plan_draft_missing"] is True
 
 
 def test_workout_plan_not_extracted_from_visible_guidance_text():

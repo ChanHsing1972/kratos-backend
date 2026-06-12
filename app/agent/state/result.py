@@ -135,11 +135,13 @@ class WorkoutPlanResult(BaseModel):
 class ResultState(BaseModel):
     """Agent 最终输出和中间结果快照。
 
-    `response` 是用户可见 Markdown；`workout_plan`、`diet_plan` 和
+    `response` 是用户可见 Markdown；`training_plan_draft` 是前端训练卡片
+    直接读取并保存到 `/plans` 的稳定草稿；`workout_plan`、`diet_plan` 和
     `food_image_estimate` 是从工具结果或最终回答抽取出的结构化卡片；
     `final_answer_ready` 由 ReflectNode 质量门设置。
     """
 
+    training_plan_draft: dict[str, Any] | None = None
     workout_plan: WorkoutPlanResult | None = None
     diet_plan: DietPlanResult | None = None
     food_image_estimate: FoodImageEstimateResult | None = None
@@ -165,6 +167,11 @@ class ResultState(BaseModel):
 
         artifacts = dict(self.structured_artifacts or {})
         artifacts["version"] = 1
+
+        if self.training_plan_draft is not None:
+            artifacts["training_plan_draft"] = self.training_plan_draft
+        else:
+            artifacts.pop("training_plan_draft", None)
 
         if self.workout_plan is not None:
             artifacts["workout_plan"] = self.workout_plan.model_dump(mode="json")
@@ -193,6 +200,7 @@ class ResultState(BaseModel):
         """重置所有结果字段，用于彻底开始新的 Agent 结果上下文。"""
 
         self.workout_plan = None
+        self.training_plan_draft = None
         self.diet_plan = None
         self.food_image_estimate = None
         self.structured_artifacts = {"version": 1}

@@ -38,7 +38,8 @@ autossh -M 0 -f -N \
   -o ExitOnForwardFailure=yes \
   -L 5432:localhost:5432 \
   -L 4141:localhost:4141 \
-  root@192.0.2.1
+  -R 8443:token.bayesdl.com:443 \
+  do
 
 # 启动服务器，默认端口 8000
 uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000

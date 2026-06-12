@@ -230,7 +230,6 @@ def stream_agent_chat(
     try:
         for event in _run_streaming_agent(final_state, emitted_keys, run_id=run_id, is_cancelled=is_cancelled):
             if event.get("type") == "final":
-                enrich_workout_plan_media(final_state, db)
                 final_state.result.sync_structured_artifacts()
                 event["raw"] = final_state.result.model_dump(mode="json")
             append_persistable_event(persisted_trace, event)
