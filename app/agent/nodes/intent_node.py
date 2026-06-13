@@ -5,6 +5,7 @@
 需要入库的数据由服务层生成 `pending_confirmation_updates`，等待用户确认。
 """
 
+import json
 import re
 from typing import Any
 
@@ -79,6 +80,18 @@ class IntentNode(BaseNode):
         data = self._deterministic_intent_data(user_message)
         if data is None:
             skill_context = self.describe_active_skills(state)
+            conversation_context = json.dumps(
+                self.recent_conversation_context(state),
+                ensure_ascii=False,
+                default=str,
+                indent=2,
+            )
+            conversation_summaries = json.dumps(
+                state.conversation.summaries[-3:],
+                ensure_ascii=False,
+                default=str,
+                indent=2,
+            )
             prompt = f"""
             你是健身 Agent 的意图识别器。
             请识别用户意图，可选范围包括：健身计划、饮食计划、饮食记录、调整计划、反馈、闲聊、信息查询、天气查询、新闻搜索、路线查询、普通问答。
@@ -88,6 +101,17 @@ class IntentNode(BaseNode):
 
             启用 Skill:
             {skill_context}
+
+            最近会话上下文(JSON):
+            {conversation_context}
+
+            会话摘要(JSON):
+            {conversation_summaries}
+
+            上下文理解规则：
+            - 用户可能用“继续”“这个”“上一个”“第二个”“说错了”“不是”“改成”等省略或修正表达。
+            - 必须先结合最近会话上下文判断真实指代，再识别意图和抽取信息。
+            - 如果上下文仍无法唯一确定指代，不要猜测，按普通问答或反馈处理，并让后续回复澄清。
 
             同时抽取用户输入中的关键信息：
             - 当日饮食：用户今天吃了什么；如果用户只是想开始记录但没有提供食物，返回空数组

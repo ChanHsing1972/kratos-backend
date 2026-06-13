@@ -113,13 +113,14 @@ def prepare_agent_state(
     state.result.user_attachments = attachments_for_history(attachments or [])
 
     context_snapshot = None
+    conversation_session = None
     if db is not None:
-        ensure_conversation_session(db, user_id, state.session_id)
+        conversation_session = ensure_conversation_session(db, user_id, state.session_id)
         if session_id:
             memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
             if memory_payload:
                 state.memory = MemoryState.model_validate(memory_payload)
-            hydrate_state_from_conversation_session(db, user_id, session_id, state)
+            conversation_session = hydrate_state_from_conversation_session(db, user_id, session_id, state) or conversation_session
 
         user = db.query(User).filter(User.id == user_id).first()
         state.memory.replace_long_term_memory_points(hydrate_state_long_term_memory_points(db, user_id))
@@ -131,7 +132,12 @@ def prepare_agent_state(
             context_snapshot = context_for_prompt(context)
         attach_knowledge_contexts(state, db, message)
 
-    pending_updates = extract_body_data_from_message(message, context_snapshot=context_snapshot)
+    pending_updates = extract_body_data_from_message(
+        message,
+        context_snapshot=context_snapshot,
+        pending_health_context=latest_pending_health_context(conversation_session),
+        conversation_context=conversation_context_for_extraction(state),
+    )
     state.memory.pending_confirmation_updates = pending_updates or {}
 
     content = build_agent_attachment_parts(
@@ -163,6 +169,60 @@ def attach_knowledge_contexts(
         return
     state.memory.database_context["knowledge_base"] = contexts
     state.memory.database_context["knowledge_base_text"] = format_knowledge_contexts(contexts)
+
+
+def latest_pending_health_context(conversation_session: Any | None) -> dict[str, Any] | None:
+    """Return the latest pending health card payload from the current session."""
+
+    runs = getattr(conversation_session, "runs", None)
+    if not runs:
+        return None
+    ordered_runs = sorted(
+        runs,
+        key=_run_sort_key,
+        reverse=True,
+    )
+    for run in ordered_runs:
+        result_payload = getattr(run, "result_payload", None)
+        if not isinstance(result_payload, dict):
+            continue
+        structured_artifacts = result_payload.get("structured_artifacts")
+        if isinstance(structured_artifacts, dict):
+            pending = structured_artifacts.get("pending_health_data")
+            if isinstance(pending, dict) and pending:
+                return pending
+        pending = result_payload.get("pending_health_data")
+        if isinstance(pending, dict) and pending:
+            return pending
+    return None
+
+
+def conversation_context_for_extraction(
+    state: SessionState,
+    *,
+    limit: int = 4,
+    max_chars_per_message: int = 700,
+) -> list[dict[str, str]]:
+    context: list[dict[str, str]] = []
+    for item in state.conversation.conversations[-limit:]:
+        user_text = _clip_context_text(getattr(item, "user_ask", ""), max_chars_per_message)
+        assistant_text = _clip_context_text(getattr(item, "ai_ans", ""), max_chars_per_message)
+        if user_text or assistant_text:
+            context.append({"user": user_text, "assistant": assistant_text})
+    return context
+
+
+def _clip_context_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _run_sort_key(run: Any) -> tuple[float, int]:
+    created_at = getattr(run, "created_at", None)
+    timestamp = created_at.timestamp() if hasattr(created_at, "timestamp") else 0.0
+    return (timestamp, int(getattr(run, "id", 0) or 0))
 
 
 def message_for_storage(

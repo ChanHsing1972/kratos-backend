@@ -107,6 +107,54 @@ class BaseNode:
         return ""
 
     @staticmethod
+    def recent_conversation_context(
+        state: SessionState,
+        *,
+        max_turns: int = 4,
+        max_chars_per_message: int = 700,
+    ) -> list[dict[str, str]]:
+        """Return recent completed turns for resolving contextual follow-ups."""
+
+        context: list[dict[str, str]] = []
+        for item in state.conversation.conversations[-max_turns:]:
+            user_text = BaseNode._clip_context_text(
+                getattr(item, "user_ask", ""),
+                max_chars_per_message,
+            )
+            assistant_text = BaseNode._clip_context_text(
+                getattr(item, "ai_ans", ""),
+                max_chars_per_message,
+            )
+            if user_text or assistant_text:
+                context.append({"user": user_text, "assistant": assistant_text})
+
+        if context:
+            return context
+
+        previous_messages = state.conversation.messages[:-1]
+        pending_user: str | None = None
+        for message in previous_messages[-max_turns * 2 :]:
+            text = BaseNode._clip_context_text(message, max_chars_per_message)
+            if not text:
+                continue
+            message_type = getattr(message, "type", None)
+            if message_type == "human":
+                if pending_user is not None:
+                    context.append({"user": pending_user, "assistant": ""})
+                pending_user = text
+            elif message_type == "ai":
+                if pending_user is not None:
+                    context.append({"user": pending_user, "assistant": text})
+                    pending_user = None
+                else:
+                    context.append({"user": "", "assistant": text})
+
+        if pending_user is not None:
+            context.append({"user": pending_user, "assistant": ""})
+
+        return context[-max_turns:]
+
+    @staticmethod
     def message_text(message: BaseMessage | Any) -> str:
         """把 LangChain 消息或多模态 content 转为可放入 prompt/历史的文本。"""
 
@@ -232,6 +280,13 @@ class BaseNode:
     @staticmethod
     def _clip_text(value: str, limit: int = 800) -> str:
         text = str(value).strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    @staticmethod
+    def _clip_context_text(value: Any, limit: int = 700) -> str:
+        text = BaseNode.message_text(value).strip()
         if len(text) <= limit:
             return text
         return f"{text[:limit]}..."

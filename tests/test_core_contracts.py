@@ -16,6 +16,7 @@ from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.markdown_contract import finalize_markdown_response, markdown_contract_violations
 from app.agent.runner import AgentRunner
+from app.agent.state.conversation import AskAns
 from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
 from app.agent.state.session_state import SessionState
@@ -321,6 +322,66 @@ def test_intent_node_does_not_mutate_confirmed_memory():
     assert state.memory.ephemeral_turn_info["profile"]["height_cm"] == 180
     assert state.memory.long_term_memory.physical_profile.weight_kg is None
     assert state.memory.long_term_memory.lifestyle_profile.goal is None
+
+
+def test_intent_node_prompt_includes_recent_conversation_context_for_followups():
+    class FakeIntentLLM:
+        def invoke(self, prompt):
+            assert "最近会话上下文" in prompt
+            assert "杠铃卧推" in prompt
+            assert "第二个动作换成深蹲" in prompt
+            return SimpleNamespace(
+                content=(
+                    '{"intent":["调整计划"],"daily_diet":[],"training_feedback":["第二个动作换成深蹲"],'
+                    '"name":null,"job":null,"gender":null,"age":null,'
+                    '"height_cm":null,"weight_kg":null,"body_condition":null,'
+                    '"goal":null,"activity_level":null,"exercise_intensity":null,'
+                    '"available_time_minutes":null,"diet":null,"intolerances":[],'
+                    '"preferred_ingredients":[],"disliked_ingredients":[],"preferred_cuisines":[]}'
+                )
+            )
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.conversations.append(
+        AskAns(
+            user_ask="给我一个上肢训练计划",
+            ai_ans="### 训练安排\n\n| 动作 | 组数 | 次数/时长 |\n| --- | --- | --- |\n| 杠铃卧推 | 3 | 8次 |",
+        )
+    )
+    state.conversation.messages.append(HumanMessage(content="第二个动作换成深蹲"))
+
+    IntentNode(FakeIntentLLM())(state)
+
+    assert state.reasoning.intent == ["调整计划"]
+
+
+def test_plan_node_prompt_includes_recent_conversation_context_for_followups():
+    class FakePlanLLM:
+        def invoke(self, prompt):
+            assert "最近会话上下文" in prompt
+            assert "杠铃卧推" in prompt
+            assert "第二个动作换成深蹲" in prompt
+            return SimpleNamespace(
+                content=(
+                    '{"tasks":[{"task_id":0,"name":"调整上一轮训练计划",'
+                    '"description":"把上一轮计划中用户指定的动作替换为深蹲，并说明安全边界。"}]}'
+                )
+            )
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.reasoning.intent = ["调整计划"]
+    state.reasoning.reflection = {"force_llm": True}
+    state.conversation.conversations.append(
+        AskAns(
+            user_ask="给我一个上肢训练计划",
+            ai_ans="### 训练安排\n\n| 动作 | 组数 | 次数/时长 |\n| --- | --- | --- |\n| 杠铃卧推 | 3 | 8次 |",
+        )
+    )
+    state.conversation.messages.append(HumanMessage(content="第二个动作换成深蹲"))
+
+    PlanNode(FakePlanLLM())(state)
+
+    assert state.reasoning.tasks[0].name == "调整上一轮训练计划"
 
 
 def test_training_plan_fast_path_skips_planning_and_reasoning_llm():
@@ -1015,6 +1076,52 @@ def test_health_data_extraction_handles_colloquial_weight_update():
     assert pending == {"body_metric": {"weight_kg": 68.5}}
 
 
+def test_health_data_correction_uses_previous_pending_weight():
+    pending = extract_body_data_from_message(
+        "说错了，67",
+        pending_health_context={"body_metric": {"weight_kg": 68}},
+    )
+
+    assert pending == {"body_metric": {"weight_kg": 67.0}}
+
+
+def test_health_data_correction_without_context_is_ignored():
+    pending = extract_body_data_from_message("说错了，67")
+
+    assert pending is None
+
+
+def test_health_data_correction_ambiguous_pending_fields_is_ignored():
+    pending = extract_body_data_from_message(
+        "说错了，67",
+        pending_health_context={"body_metric": {"weight_kg": 68, "height_cm": 180}},
+    )
+
+    assert pending is None
+
+
+def test_health_data_extraction_receives_recent_context_for_contextual_corrections():
+    class FakeHealthDataLLM:
+        def invoke(self, prompt):
+            assert "最近会话上下文" in prompt
+            assert "更新体重为 68kg" in prompt
+            assert "改成 67" in prompt
+            return SimpleNamespace(content='{"pending_health_data": {"body_metric": {"weight_kg": 67}, "profile": {}}}')
+
+    pending = extract_body_data_from_message(
+        "改成 67",
+        conversation_context=[
+            {
+                "user": "更新体重为 68kg",
+                "assistant": "我识别到体重 68kg，请确认后保存。",
+            }
+        ],
+        llm=FakeHealthDataLLM(),
+    )
+
+    assert pending == {"body_metric": {"weight_kg": 67.0}}
+
+
 def test_legacy_weekly_schedule_is_converted_to_structured_sessions():
     schedule = _schedule_json_from_text(
         "周一|上肢推：卧推 4 组 x 8 次；肩推 3 组 x 10 次\n"
@@ -1591,6 +1698,12 @@ def test_generate_node_finalizes_markdown_without_model_specific_rewrites():
 
 def test_generate_node_prompt_contains_standard_markdown_contract():
     state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.conversations.append(
+        AskAns(
+            user_ask="给我一个上肢训练计划",
+            ai_ans="### 训练安排\n\n| 动作 | 组数 | 次数/时长 |\n| --- | --- | --- |\n| 杠铃卧推 | 3 | 8次 |",
+        )
+    )
     state.conversation.messages.append(HumanMessage(content="解释今天怎么练"))
 
     prompt = GenerateNode().build_prompt(state)
@@ -1599,6 +1712,8 @@ def test_generate_node_prompt_contains_standard_markdown_contract():
     assert "不要混用 HTML" in prompt
     assert "fenced code block" in prompt
     assert "标准 GFM 多行表格" in prompt
+    assert "最近会话上下文" in prompt
+    assert "杠铃卧推" in prompt
 
 
 def test_generate_node_stream_emits_visible_answer_delta_and_finalizes_result():

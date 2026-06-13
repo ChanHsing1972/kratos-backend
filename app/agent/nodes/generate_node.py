@@ -481,6 +481,18 @@ class GenerateNode(BaseNode):
             "knowledge_base_text",
             "未检索到外部知识库上下文。",
         )
+        conversation_context = json.dumps(
+            self.recent_conversation_context(state),
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
+        conversation_summaries = json.dumps(
+            state.conversation.summaries[-3:],
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
 
         return f"""
         你是 Kratos 智能健身 Agent。
@@ -501,6 +513,7 @@ class GenerateNode(BaseNode):
         - 如果年龄未知，不要输出高龄、老年、60岁等表述；如果只知道训练时长为 60 分钟，只能写“每次60分钟”。
         - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
         - 如果某些工具失败或信息不足，明确说明不确定性。
+        - 如果用户使用“继续”“这个”“上一个”“第二个”“说错了”“不是”“改成”等省略或修正表达，必须先结合最近会话上下文消解指代；无法唯一确定时先澄清，不要假装理解。
         - 如果使用“外部知识库检索结果”中的事实、数字或安全边界，必须在对应句子后标注来源，引用格式为 [知识库:标题#编号]。
         - 面向用户展示出处时，优先给出知识来源的文章/网页标题或机构指南名；若上下文提供网页 URL，也要在“参考来源”或对应句子中展示该网页 URL。
         - 不得编造外部知识库来源；只能使用已给出的 [知识库:标题#编号] 标记、文章/网页标题和网页 URL。
@@ -541,6 +554,12 @@ class GenerateNode(BaseNode):
 
         用户问题:
         {user_message}
+
+        最近会话上下文(JSON):
+        {conversation_context}
+
+        会话摘要(JSON):
+        {conversation_summaries}
 
         用户意图:
         {intents}

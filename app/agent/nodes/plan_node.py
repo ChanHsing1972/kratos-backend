@@ -4,6 +4,8 @@ PlanNode 把意图、用户消息、数据库上下文和反思建议拆成 1-5 
 它不调用工具，只产出任务队列；工具选择由 ReasonNode 负责。
 """
 
+import json
+
 from app.agent.nodes.base_node import BaseNode
 from app.agent.intent_policy import (
     INFO_INTENTS,
@@ -27,6 +29,18 @@ class PlanNode(BaseNode):
         reflection = state.reasoning.reflection or {}
         extracted_info = state.reasoning.extracted_info or {}
         skill_context = self.describe_active_skills(state)
+        conversation_context = json.dumps(
+            self.recent_conversation_context(state),
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
+        conversation_summaries = json.dumps(
+            state.conversation.summaries[-3:],
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
         deterministic_tasks = self._deterministic_tasks(intent, user_msg, extracted_info)
         if deterministic_tasks is not None and not reflection:
             state.reasoning.tasks = deterministic_tasks
@@ -50,6 +64,17 @@ class PlanNode(BaseNode):
 
         启用 Skill:
         {skill_context}
+
+        最近会话上下文(JSON):
+        {conversation_context}
+
+        会话摘要(JSON):
+        {conversation_summaries}
+
+        上下文理解规则：
+        - 如果用户使用“继续”“这个”“上一个”“第二个”“说错了”“不是”“改成”等省略或修正表达，先结合最近会话上下文消解指代。
+        - 如果用户要求替换、修改或继续上一轮计划，任务描述必须保留被修改对象和新要求。
+        - 如果上下文无法唯一确定对象，任务应以澄清问题为目标，不要编造对象。
 
         用户意图: {intent}
         用户消息: {user_msg}

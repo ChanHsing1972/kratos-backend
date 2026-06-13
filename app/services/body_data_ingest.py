@@ -133,6 +133,8 @@ def extract_body_data_from_message(
     message: str,
     *,
     context_snapshot: dict[str, Any] | None = None,
+    pending_health_context: dict[str, Any] | None = None,
+    conversation_context: list[dict[str, Any]] | None = None,
     llm: Any | None = None,
 ) -> dict[str, Any] | None:
     """Extract possible health updates for user confirmation without writing them.
@@ -142,7 +144,16 @@ def extract_body_data_from_message(
     """
     if not message.strip():
         return None
-    if not _looks_like_explicit_health_update(message):
+    correction = _parse_contextual_health_correction(
+        message,
+        pending_health_context,
+    )
+    if correction:
+        return correction
+    if not _looks_like_explicit_health_update(message) and not _looks_like_contextual_health_update(
+        message,
+        conversation_context,
+    ):
         return None
 
     parsed = _parse_user_data(message)
@@ -156,11 +167,156 @@ def extract_body_data_from_message(
         raw_payload = _extract_user_health_data_with_llm(
             message=message,
             context_snapshot=context_snapshot,
+            pending_health_context=pending_health_context,
+            conversation_context=conversation_context,
             llm=llm,
         )
     except Exception:
         return None
     return _normalize_pending_health_data(raw_payload)
+
+
+NUMERIC_FIELDS_BY_SECTION = {
+    "profile": {"age", "available_days_per_week", "workout_minutes_per_session"},
+    "body_metric": BODY_METRIC_FIELDS,
+    "health_metric": HEALTH_METRIC_FIELDS - {"notes"},
+    "checkin": CHECKIN_FIELDS - {"mood", "pain_notes"},
+}
+
+
+def _parse_contextual_health_correction(
+    message: str,
+    pending_health_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Resolve short corrections like "说错了，67" against the last pending card."""
+
+    if not isinstance(pending_health_context, dict):
+        return None
+
+    text = message.strip()
+    number = _single_numeric_value(text)
+    if number is None:
+        return None
+    if not (_has_correction_marker(text) or _is_short_numeric_reply(text)):
+        return None
+
+    candidates = _pending_numeric_fields(pending_health_context)
+    if not candidates:
+        return None
+
+    target = _select_correction_target(text, candidates)
+    if target is None:
+        return None
+
+    section, key = target
+    return _normalize_pending_health_data(
+        {"pending_health_data": {section: {key: number}}}
+    )
+
+
+def _pending_numeric_fields(
+    pending_health_context: dict[str, Any],
+) -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
+    for section, allowed_fields in NUMERIC_FIELDS_BY_SECTION.items():
+        values = pending_health_context.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if key not in allowed_fields:
+                continue
+            if _clean_health_value(section, key, value) is not None:
+                candidates.append((section, key))
+    return candidates
+
+
+def _select_correction_target(
+    text: str,
+    candidates: list[tuple[str, str]],
+) -> tuple[str, str] | None:
+    if len(candidates) == 1:
+        return candidates[0]
+
+    field_markers = {
+        ("body_metric", "weight_kg"): ["体重", "称重", "kg", "公斤", "千克"],
+        ("body_metric", "height_cm"): ["身高", "cm", "厘米"],
+        ("body_metric", "body_fat_percentage"): ["体脂", "%"],
+        ("profile", "age"): ["年龄", "岁"],
+        ("profile", "available_days_per_week"): ["每周", "一周", "天", "次"],
+        ("profile", "workout_minutes_per_session"): ["每次", "单次", "分钟"],
+        ("health_metric", "sleep_hours"): ["睡眠", "睡了", "小时", "h"],
+        ("checkin", "sleep_hours"): ["睡眠", "睡了", "小时", "h"],
+        ("checkin", "sleep_quality"): ["睡眠质量"],
+        ("checkin", "energy_level"): ["精力", "能量"],
+        ("checkin", "soreness_level"): ["酸痛", "疲劳"],
+    }
+    for candidate in candidates:
+        if any(marker in text for marker in field_markers.get(candidate, [])):
+            return candidate
+    return None
+
+
+def _single_numeric_value(text: str) -> float | None:
+    values = re.findall(r"(?<!\d)(\d+(?:\.\d+)?)(?!\d)", text)
+    if len(values) != 1:
+        return None
+    return float(values[0])
+
+
+def _has_correction_marker(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in ["说错", "错了", "不对", "不是", "应该是", "应为", "改成", "更正", "纠正", "修正", "弄错"]
+    )
+
+
+def _is_short_numeric_reply(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*\d+(?:\.\d+)?\s*(?:kg|公斤|千克|cm|厘米|小时|h|岁|%|bpm|ms|kcal|千卡)?\s*",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _looks_like_contextual_health_update(
+    message: str,
+    conversation_context: list[dict[str, Any]] | None,
+) -> bool:
+    if not conversation_context:
+        return False
+    text = message.strip()
+    if not text:
+        return False
+    has_correction_or_confirmation = _has_correction_marker(text) or any(
+        marker in text
+        for marker in ["确认", "保存", "就这个", "用这个", "按这个", "是的", "对的", "换成"]
+    )
+    has_value_hint = bool(
+        re.search(r"\d", text)
+        or any(
+            marker in text
+            for marker in [
+                "男",
+                "女",
+                "新手",
+                "中级",
+                "高级",
+                "减脂",
+                "增肌",
+                "塑形",
+                "维持",
+                "久坐",
+                "健身房",
+                "哑铃",
+                "杠铃",
+                "弹力带",
+                "无器械",
+            ]
+        )
+    )
+    return has_correction_or_confirmation and has_value_hint
 
 
 def _looks_like_explicit_health_update(message: str) -> bool:
@@ -258,6 +414,8 @@ def _extract_user_health_data_with_llm(
     *,
     message: str,
     context_snapshot: dict[str, Any] | None,
+    pending_health_context: dict[str, Any] | None,
+    conversation_context: list[dict[str, Any]] | None,
     llm: Any | None,
 ) -> dict[str, Any]:
     resolved_llm = llm or build_chat_openai(
@@ -267,6 +425,8 @@ def _extract_user_health_data_with_llm(
         max_retries=1,
     )
     context_json = json.dumps(context_snapshot or {}, ensure_ascii=False, default=str)
+    pending_context_json = json.dumps(pending_health_context or {}, ensure_ascii=False, default=str)
+    conversation_context_json = json.dumps(conversation_context or [], ensure_ascii=False, default=str)
     prompt = f"""
     你是健康数据抽取器。请只从用户这条消息中抽取用户明确提供、请求更新或可由上下文消解的健康/训练档案数据。
 
@@ -274,6 +434,9 @@ def _extract_user_health_data_with_llm(
     - 只返回 JSON，不要 Markdown，不要解释。
     - 不要因为用户询问训练计划就推测年龄、身高、体重、目标或伤病。
     - 已知上下文只用于理解“和上次一样”“目标不变”这类引用；不要主动把上下文已有值重复返回。
+    - 最近会话上下文和上一轮待确认健康数据只用于消解“说错了”“不是”“改成”“就这个”等省略表达。
+    - 只有当前用户消息明确给出新值、修正值或确认保存时才返回数据；不要把历史值原样重复为本轮更新。
+    - 如果无法唯一确定用户在修正哪个字段，返回 null。
     - 用户只是问问题、请求建议、上传附件但没有表达要更新资料时，返回 null。
     - “60分钟”只能是训练时长，绝不能抽成年龄。
     - 数值字段必须是数字；无法确定就填 null。
@@ -303,6 +466,12 @@ def _extract_user_health_data_with_llm(
 
     已知上下文：
     {context_json}
+
+    最近会话上下文(JSON):
+    {conversation_context_json}
+
+    上一轮待确认健康数据(JSON):
+    {pending_context_json}
 
     用户消息：
     {message}
