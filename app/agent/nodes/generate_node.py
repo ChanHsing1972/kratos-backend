@@ -39,6 +39,87 @@ STRUCTURED_ARTIFACT_START = "<<<KRATOS_STRUCTURED_ARTIFACTS_JSON>>>"
 STRUCTURED_ARTIFACT_END = "<<<END_KRATOS_STRUCTURED_ARTIFACTS_JSON>>>"
 
 
+class _VisibleMarkdownStreamer:
+    """Incrementally strips hidden structured artifacts from visible deltas."""
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.in_artifact = False
+        self.emitted_text = ""
+
+    def feed(self, text: str) -> str:
+        self.buffer += text
+        output: list[str] = []
+
+        while self.buffer:
+            if self.in_artifact:
+                end = self.buffer.find(STRUCTURED_ARTIFACT_END)
+                if end < 0:
+                    keep = max(0, len(STRUCTURED_ARTIFACT_END) - 1)
+                    self.buffer = self.buffer[-keep:] if keep else ""
+                    break
+                self.buffer = self.buffer[end + len(STRUCTURED_ARTIFACT_END) :]
+                self.in_artifact = False
+                continue
+
+            start = self.buffer.find(STRUCTURED_ARTIFACT_START)
+            if start >= 0:
+                output.append(self.buffer[:start])
+                self.buffer = self.buffer[start + len(STRUCTURED_ARTIFACT_START) :]
+                self.in_artifact = True
+                continue
+
+            keep = _longest_marker_prefix_suffix(self.buffer, STRUCTURED_ARTIFACT_START)
+            if keep:
+                output.append(self.buffer[:-keep])
+                self.buffer = self.buffer[-keep:]
+                break
+
+            output.append(self.buffer)
+            self.buffer = ""
+            break
+
+        delta = "".join(output)
+        if not self.emitted_text and delta:
+            delta = delta.lstrip()
+        self.emitted_text += delta
+        return delta
+
+    def finish(self) -> str:
+        if self.in_artifact:
+            self.buffer = ""
+            self.in_artifact = False
+            return ""
+        delta = self.buffer
+        self.buffer = ""
+        if not self.emitted_text and delta:
+            delta = delta.lstrip()
+        self.emitted_text += delta
+        return delta
+
+
+def _longest_marker_prefix_suffix(text: str, marker: str) -> int:
+    max_len = min(len(text), len(marker) - 1)
+    for length in range(max_len, 0, -1):
+        if marker.startswith(text[-length:]):
+            return length
+    return 0
+
+
+def _suffix_after_streamed_text(final_text: str, streamed_text: str) -> str:
+    """Return only the final normalized suffix not already shown to the user."""
+
+    if not final_text:
+        return ""
+    if not streamed_text:
+        return final_text
+    if final_text.startswith(streamed_text):
+        return final_text[len(streamed_text) :]
+    if final_text.strip() == streamed_text.strip():
+        return ""
+    return ""
+
+
 class GenerateNode(BaseNode):
     """生成最终回答并更新 `state.result`。"""
 
@@ -63,13 +144,14 @@ class GenerateNode(BaseNode):
         return state
 
     def stream_response_events(self, state: SessionState):
-        """用模型流式接口收集完整回答，但不直接发送用户可见 delta。"""
+        """流式生成最终回答，并把用户可见正文 delta 即时发出。"""
 
         import time
 
         t0 = time.monotonic()
         prompt = self.build_prompt(state)
         response_text = ""
+        visible_streamer = _VisibleMarkdownStreamer()
         last_chunk = None
 
         prompt_input = self.prompt_input(
@@ -85,10 +167,29 @@ class GenerateNode(BaseNode):
                 if not delta:
                     continue
                 response_text += delta
+                visible_delta = visible_streamer.feed(delta)
+                if visible_delta:
+                    yield {
+                        "type": "answer_delta",
+                        "delta": visible_delta,
+                        "content": visible_delta,
+                        "raw": {"node": "generate", "phase": "stream"},
+                    }
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
             fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
             self.apply_response(state, AIMessage(content=fallback_text), fallback_text)
+            fallback_visible, _embedded_artifacts = self._split_embedded_structured_artifacts(fallback_text)
+            fallback_visible = self._normalize_markdown_response(fallback_visible)
+            flushed = visible_streamer.finish()
+            missing_suffix = _suffix_after_streamed_text(fallback_visible, visible_streamer.emitted_text + flushed)
+            if flushed or missing_suffix:
+                yield {
+                    "type": "answer_delta",
+                    "delta": f"{flushed}{missing_suffix}",
+                    "content": f"{flushed}{missing_suffix}",
+                    "raw": {"node": "generate", "phase": "fallback"},
+                }
             structured_card_requested = self._should_emit_workout_plan(state, str(state.result.response or ""))
             draft_ready = state.result.training_plan_draft is not None
             status_raw = {
@@ -115,6 +216,23 @@ class GenerateNode(BaseNode):
             response_text = self._extract_content(last_chunk)
         visible_response_text, _embedded_artifacts = self._split_embedded_structured_artifacts(response_text)
         normalized_response_text = self._normalize_markdown_response(visible_response_text)
+        flushed = visible_streamer.finish()
+        if flushed:
+            yield {
+                "type": "answer_delta",
+                "delta": flushed,
+                "content": flushed,
+                "raw": {"node": "generate", "phase": "stream_flush"},
+            }
+        streamed_text = visible_streamer.emitted_text
+        missing_suffix = _suffix_after_streamed_text(normalized_response_text, streamed_text)
+        if missing_suffix:
+            yield {
+                "type": "answer_delta",
+                "delta": missing_suffix,
+                "content": missing_suffix,
+                "raw": {"node": "generate", "phase": "normalize"},
+            }
 
         elapsed = time.monotonic() - t0
         self.logger.info(
@@ -131,6 +249,9 @@ class GenerateNode(BaseNode):
         draft_ready = state.result.training_plan_draft is not None
         if normalized_response_text:
             status_raw = {"answer_stream_complete": True}
+            status_raw["node"] = "generate"
+            status_raw["phase"] = "end"
+            status_raw["elapsed_ms"] = int(elapsed * 1000)
             if structured_card_requested and draft_ready:
                 status_raw["structured_card_pending"] = True
                 status_raw["training_plan_draft_ready"] = True

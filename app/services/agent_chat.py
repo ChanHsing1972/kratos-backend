@@ -286,7 +286,12 @@ def _run_streaming_agent(
     """运行 AgentRunner 的流式接口，并把 final_state 转为 final 事件。"""
 
     def emit_trace(_node_name: str, current_state: SessionState) -> Iterator[dict[str, Any]]:
-        yield from emit_new_trace(current_state, emitted_keys, include_final=False)
+        yield from emit_new_trace(
+            current_state,
+            emitted_keys,
+            include_final=False,
+            include_tool_events=False,
+        )
 
     for raw_event in get_agent_runner().iter_events(
         state,
@@ -314,6 +319,10 @@ def _run_streaming_agent(
                     final_event["run_id"] = run_id
                 yield final_event
             continue
+        if event.get("type") in {"status", "thought", "action", "observation", "reflection", "error"}:
+            content = event.get("content")
+            if content is not None:
+                emitted_keys.add((str(event.get("type")), str(content)))
         yield event
 
 

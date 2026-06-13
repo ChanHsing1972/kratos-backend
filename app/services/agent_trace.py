@@ -104,10 +104,13 @@ def emit_new_trace(
     state: SessionState,
     emitted_keys: set[tuple[str, str]],
     include_final: bool,
+    include_tool_events: bool = True,
 ) -> Iterator[dict[str, Any]]:
     """流式执行期间只发新增 trace，避免 after_node 回调重复推送历史步骤。"""
 
     for step in build_trace(state, include_final=include_final):
+        if not include_tool_events and _is_tool_trace_step(step):
+            continue
         key = trace_key(step)
         if key in emitted_keys:
             continue
@@ -116,6 +119,19 @@ def emit_new_trace(
         event = step.model_dump(mode="json")
         event["session_id"] = state.session_id
         yield event
+
+
+def _is_tool_trace_step(step: AgentTraceStep) -> bool:
+    if step.type == "action":
+        return True
+    if step.type != "observation":
+        return False
+    raw = step.raw
+    if not isinstance(raw, dict):
+        return False
+    if "tool" in raw:
+        return True
+    return {"name", "args", "status"}.issubset(raw.keys())
 
 
 def append_persistable_event(
@@ -129,7 +145,7 @@ def append_persistable_event(
     """
 
     event_type = str(event.get("type") or "status")
-    if event_type in {"answer_delta", "done"}:
+    if event_type in {"answer_delta", "answer_replace", "done"}:
         return
     if event_type not in {"status", "thought", "action", "observation", "reflection", "final", "error"}:
         event_type = "status"

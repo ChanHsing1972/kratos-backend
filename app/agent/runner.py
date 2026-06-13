@@ -116,30 +116,40 @@ class AgentRunner:
         session_id = state.session_id
 
         self._raise_if_cancelled(should_cancel)
+        yield self._node_event("intent", "start")
         t0 = time.monotonic()
         state = self.nodes.intent(state)
         self._raise_if_cancelled(should_cancel)
+        elapsed = time.monotonic() - t0
         _log_node_time("intent", t0, user_id, session_id)
+        yield self._node_event("intent", "end", elapsed)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("intent", state, after_node)
 
         self._raise_if_cancelled(should_cancel)
+        yield self._node_event("plan", "start")
         t0 = time.monotonic()
         state = self.nodes.plan(state)
         self._raise_if_cancelled(should_cancel)
+        elapsed = time.monotonic() - t0
         _log_node_time("plan", t0, user_id, session_id)
+        yield self._node_event("plan", "end", elapsed)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("plan", state, after_node)
 
         final_generated = False
+        streamed_answer = ""
 
         while state.reasoning.replan_count <= state.reasoning.max_replans:
             while True:
                 self._raise_if_cancelled(should_cancel)
+                yield self._node_event("reason", "start")
                 t0 = time.monotonic()
                 state = self.nodes.reason(state)
                 self._raise_if_cancelled(should_cancel)
+                elapsed = time.monotonic() - t0
                 _log_node_time("reason", t0, user_id, session_id)
+                yield self._node_event("reason", "end", elapsed)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("reason", state, after_node)
 
@@ -149,19 +159,30 @@ class AgentRunner:
 
                 if task.status == TaskStatus.waiting_for_tool:
                     self._raise_if_cancelled(should_cancel)
+                    yield self._node_event("act", "start")
                     t0 = time.monotonic()
-                    state = self.nodes.act(state)
+                    if hasattr(self.nodes.act, "iter_events"):
+                        for act_event in self.nodes.act.iter_events(state):
+                            self._raise_if_cancelled(should_cancel)
+                            yield act_event
+                    else:
+                        state = self.nodes.act(state)
                     self._raise_if_cancelled(should_cancel)
+                    elapsed = time.monotonic() - t0
                     _log_node_time("act", t0, user_id, session_id)
+                    yield self._node_event("act", "end", elapsed)
                     step_count = self._check_step_budget(step_count)
                     yield from self._after_node("act", state, after_node)
                     continue
 
                 self._raise_if_cancelled(should_cancel)
+                yield self._node_event("finish", "start")
                 t0 = time.monotonic()
                 state = self.nodes.finish(state)
                 self._raise_if_cancelled(should_cancel)
+                elapsed = time.monotonic() - t0
                 _log_node_time("finish", t0, user_id, session_id)
+                yield self._node_event("finish", "end", elapsed)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("finish", state, after_node)
 
@@ -173,25 +194,38 @@ class AgentRunner:
             state.result.response = ""
 
             if stream_answer:
+                yield self._node_event("generate", "start")
+                t0 = time.monotonic()
                 for generated_event in self.nodes.generate.stream_response_events(state):
                     self._raise_if_cancelled(should_cancel)
+                    if generated_event.get("type") == "answer_delta":
+                        streamed_answer += str(generated_event.get("delta") or generated_event.get("content") or "")
                     yield generated_event
+                elapsed = time.monotonic() - t0
+                _log_node_time("generate", t0, user_id, session_id)
+                yield self._node_event("generate", "end", elapsed)
             else:
                 self._raise_if_cancelled(should_cancel)
+                yield self._node_event("generate", "start")
                 t0 = time.monotonic()
                 state = self.nodes.generate(state)
                 self._raise_if_cancelled(should_cancel)
+                elapsed = time.monotonic() - t0
                 _log_node_time("generate", t0, user_id, session_id)
+                yield self._node_event("generate", "end", elapsed)
             step_count = self._check_step_budget(step_count)
             final_generated = True
             yield from self._after_node("generate", state, after_node)
 
             if should_run_reflection(state):
                 self._raise_if_cancelled(should_cancel)
+                yield self._node_event("reflect", "start")
                 t0 = time.monotonic()
                 state = self.nodes.reflect(state)
                 self._raise_if_cancelled(should_cancel)
+                elapsed = time.monotonic() - t0
                 _log_node_time("reflect", t0, user_id, session_id)
+                yield self._node_event("reflect", "end", elapsed)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("reflect", state, after_node)
             else:
@@ -207,25 +241,54 @@ class AgentRunner:
             if not state.reasoning.need_replan:
                 break
 
+            if streamed_answer:
+                streamed_answer = ""
+                yield {
+                    "type": "answer_replace",
+                    "answer": "",
+                    "content": "",
+                    "raw": {
+                        "node": "reflect",
+                        "phase": "replan",
+                        "reason": "reflection_failed",
+                    },
+                }
             yield {
                 "type": "status",
                 "content": "反思发现需要补充推理，正在重新规划",
                 "raw": {"node": "plan", "reason": "reflection_failed"},
             }
+            yield self._node_event("plan", "start")
+            t0 = time.monotonic()
             state = self.nodes.plan(state)
             self._raise_if_cancelled(should_cancel)
+            elapsed = time.monotonic() - t0
+            _log_node_time("plan", t0, user_id, session_id)
+            yield self._node_event("plan", "end", elapsed)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("plan", state, after_node)
 
         self._raise_if_cancelled(should_cancel)
-        t_end = self.nodes.end(state)
+        yield self._node_event("end", "start")
+        t0 = time.monotonic()
+        state = self.nodes.end(state)
         self._raise_if_cancelled(should_cancel)
-        _log_node_time("end", time.monotonic() - 0.001, user_id, session_id)  # approximate
+        elapsed = time.monotonic() - t0
+        _log_node_time("end", t0, user_id, session_id)
+        yield self._node_event("end", "end", elapsed)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("end", state, after_node)
 
         if final_generated:
-            if stream_answer:
+            final_answer = str(state.result.response or "")
+            if stream_answer and final_answer and not final_answer.startswith(streamed_answer):
+                yield {
+                    "type": "answer_replace",
+                    "answer": final_answer,
+                    "content": final_answer,
+                    "raw": {"node": "generate", "phase": "final_replace"},
+                }
+            elif stream_answer and not final_answer:
                 for display_delta in _iter_answer_deltas(str(state.result.response or "")):
                     self._raise_if_cancelled(should_cancel)
                     yield {
@@ -290,6 +353,27 @@ class AgentRunner:
         if after_node is None:
             return
         yield from after_node(node_name, state)
+
+    @staticmethod
+    def _node_event(node_name: str, phase: str, elapsed: float | None = None) -> dict[str, Any]:
+        labels = {
+            "intent": "理解用户问题",
+            "plan": "规划任务",
+            "reason": "推理并选择工具",
+            "act": "执行工具",
+            "finish": "整理子任务结果",
+            "generate": "生成最终回答",
+            "reflect": "反思校验",
+            "end": "收尾保存上下文",
+        }
+        if phase == "start":
+            content = f"开始{labels.get(node_name, node_name)}"
+        else:
+            content = f"完成{labels.get(node_name, node_name)}"
+        raw: dict[str, Any] = {"node": node_name, "phase": phase}
+        if elapsed is not None:
+            raw["elapsed_ms"] = int(elapsed * 1000)
+        return {"type": "status", "content": content, "raw": raw}
 
 
 def _log_node_time(node_name: str, start_time: float, user_id: str, session_id: str) -> None:

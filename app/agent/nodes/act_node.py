@@ -1,5 +1,9 @@
 """工具执行节点。"""
 
+import time
+from collections.abc import Iterator
+from typing import Any
+
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.state.session_state import SessionState
@@ -29,9 +33,19 @@ class ActNode(BaseNode):
     def __call__(self, state: SessionState):
         """执行当前任务中尚未完成的工具调用，并追加到工具历史。"""
 
+        for _event in self.iter_events(state):
+            pass
+        return state
+
+    def iter_events(
+        self,
+        state: SessionState,
+    ) -> Iterator[dict[str, Any]]:
+        """执行工具调用，并在每个工具开始/结束时即时产出事件。"""
+
         task = state.reasoning.current_task()
         if task is None:
-            return state
+            return
 
         for tool_call in task.tool_calls:
             if tool_call.status in {ToolStatus.success, ToolStatus.failed}:
@@ -47,6 +61,11 @@ class ActNode(BaseNode):
 
             is_valid, validated_args, validation_error = validate_tool_args(tool, tool_call.args)
             if not is_valid:
+                started = time.monotonic()
+                tool_call.status = ToolStatus.running
+                start_event = self._tool_action_event(task, tool_call, "start")
+                yield start_event
+
                 fallback_result = build_validation_fallback(
                     tool_call.name,
                     tool_call.args,
@@ -58,13 +77,19 @@ class ActNode(BaseNode):
                 task.tool_results.append(fallback_result)
                 state.reasoning.errors.append(f"{task.name}: {tool_call.error}")
                 state.tools.history.append(tool_call.model_copy(deep=True))
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                observation = self._tool_observation_event(task, tool_call, elapsed_ms)
+                yield observation
                 continue
 
             tool_call.args = validated_args
             max_attempts = self.max_retries + 1
+            started = time.monotonic()
+            tool_call.status = ToolStatus.running
+            start_event = self._tool_action_event(task, tool_call, "start")
+            yield start_event
             for attempt in range(max_attempts):
                 try:
-                    tool_call.status = ToolStatus.running
                     tool_result = tool.invoke(tool_call.args)
                     tool_call.status = ToolStatus.success
                     tool_call.result = tool_result
@@ -83,7 +108,49 @@ class ActNode(BaseNode):
                             f"{task.name}: tool {tool_call.name} failed: {tool_call.error}"
                         )
             state.tools.history.append(tool_call.model_copy(deep=True))
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            observation = self._tool_observation_event(task, tool_call, elapsed_ms)
+            yield observation
 
         task.status = TaskStatus.running
 
-        return state
+    @staticmethod
+    def _tool_action_event(task, tool_call, phase: str) -> dict[str, Any]:
+        raw = tool_call.model_dump(mode="json")
+        raw.update(
+            {
+                "node": "act",
+                "phase": phase,
+                "task_id": task.task_id,
+                "task_name": task.name,
+            }
+        )
+        return {
+            "type": "action",
+            "content": f"调用工具 {tool_call.name}",
+            "raw": raw,
+        }
+
+    @staticmethod
+    def _tool_observation_event(task, tool_call, elapsed_ms: int) -> dict[str, Any]:
+        raw = tool_call.model_dump(mode="json")
+        raw.update(
+            {
+                "node": "act",
+                "phase": "end",
+                "elapsed_ms": elapsed_ms,
+                "task_id": task.task_id,
+                "task_name": task.name,
+            }
+        )
+        if tool_call.error:
+            content = f"工具调用失败：{tool_call.error}"
+        elif tool_call.result is not None:
+            content = "工具返回结果已收到，原始数据已折叠。"
+        else:
+            content = "工具调用结束，但未返回结果。"
+        return {
+            "type": "observation",
+            "content": content,
+            "raw": raw,
+        }
