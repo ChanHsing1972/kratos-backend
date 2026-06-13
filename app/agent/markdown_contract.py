@@ -20,6 +20,24 @@ STANDARD_MARKDOWN_OUTPUT_PROMPT = """
 """.strip()
 
 
+_COMMON_SECTION_TITLES = (
+    "恢复与风险边界",
+    "风险边界与注意事项",
+    "热身与恢复建议",
+    "基础营养建议",
+    "本周营养建议",
+    "需要补充的关键信息",
+    "需补充信息",
+    "恢复建议",
+    "营养建议",
+    "饮食建议",
+    "注意事项",
+    "风险边界",
+    "训练安排",
+)
+_COMMON_SECTION_TITLE_PATTERN = "|".join(re.escape(title) for title in _COMMON_SECTION_TITLES)
+
+
 def finalize_markdown_response(response_text: str) -> str:
     """Apply generic Markdown-safe finalization and repair common gluing errors."""
 
@@ -43,16 +61,31 @@ def _repair_markdown_lines(lines: list[str]) -> list[str]:
             repaired.append(line)
             continue
 
-        split_heading = _split_glued_heading(line)
-        normalized_lines = (
-            split_heading
-            if split_heading is not None
-            else [_repair_markdown_line(line)]
-        )
+        normalized_lines = _split_markdown_line(line)
         for normalized in normalized_lines:
             _append_with_markdown_spacing(repaired, normalized)
 
     return _collapse_blank_lines(repaired)
+
+
+def _split_markdown_line(line: str) -> list[str]:
+    split_heading = _split_glued_heading(line)
+    source_lines = split_heading if split_heading is not None else [line]
+    normalized: list[str] = []
+    for source in source_lines:
+        for separated in _split_glued_thematic_break(source):
+            for list_line in _split_glued_list_items(separated):
+                heading_body = _split_heading_body(list_line)
+                if heading_body is not None:
+                    normalized.extend(_repair_markdown_line(part) for part in heading_body)
+                    continue
+
+                plain_heading_body = _split_plain_heading_body(list_line)
+                if plain_heading_body is not None:
+                    normalized.extend(_repair_markdown_line(part) for part in plain_heading_body)
+                else:
+                    normalized.append(_repair_markdown_line(list_line))
+    return normalized
 
 
 def _repair_markdown_line(line: str) -> str:
@@ -85,6 +118,84 @@ def _split_glued_heading(line: str) -> list[str] | None:
     if overlong_heading is not None:
         return overlong_heading
     return None
+
+
+def _split_glued_thematic_break(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped in {"---", "***", "___"}:
+        return [line]
+    match = re.search(r"(?<!^)(?<![-*_])\s*(---|\*\*\*|___)\s*$", line)
+    if not match:
+        return [line]
+    before = line[: match.start()].rstrip()
+    marker = match.group(1)
+    return [part for part in [before, marker] if part]
+
+
+def _split_glued_list_items(line: str) -> list[str]:
+    if _is_table_line(line) or not line.strip():
+        return [line]
+    parts = re.split(r"(?<!^)(?<!\d)-\s+(?=\*\*)", line)
+    if len(parts) == 1:
+        return [line]
+    repaired: list[str] = []
+    for index, part in enumerate(parts):
+        item = part.strip()
+        if not item:
+            continue
+        if index == 0 and line.lstrip().startswith("- "):
+            repaired.append(f"- {item.removeprefix('-').strip()}")
+        elif index == 0:
+            repaired.append(item)
+        else:
+            repaired.append(f"- {item}")
+    return repaired
+
+
+def _split_heading_body(line: str) -> list[str] | None:
+    fixed_title_match = re.match(
+        rf"^(#{{1,6}})\s+({_COMMON_SECTION_TITLE_PATTERN})(?:[：:，,。]\s*)?(.{{4,}})$",
+        line.strip(),
+    )
+    if fixed_title_match:
+        hashes, title, body = fixed_title_match.groups()
+        body = body.strip()
+        if body and not body.startswith(("（", "(", ")", "）", "与")):
+            return [f"{hashes} {title}", "", body]
+
+    match = re.match(
+        r"^(#{1,6})\s+(.{2,32}?)(?<![，,。；;：:])"
+        r"((?:你的|你目前|建议|请|若|如|如果|任何|本周|近期|训练|训练前|训练后|训练中|保证|每天|每日|每次|每周).{4,})$",
+        line,
+    )
+    if not match:
+        return None
+    hashes, title, body = match.groups()
+    if title.count("（") > title.count("）") or title.count("(") > title.count(")"):
+        return None
+    if any(token in title for token in ("计划", "安排", "建议", "信息", "边界", "补充")):
+        return [f"{hashes} {title.strip()}", "", body.strip()]
+    return None
+
+
+def _split_plain_heading_body(line: str) -> list[str] | None:
+    if _is_table_line(line) or not line.strip():
+        return None
+    stripped = line.strip()
+    if re.match(r"^(#{1,6}|\s*[-*+]|\s*\d+\.)\s+", stripped):
+        return None
+
+    match = re.match(rf"^({_COMMON_SECTION_TITLE_PATTERN})(?:[：:，,。]\s*)?(.{{4,}})$", stripped)
+    if not match:
+        return None
+
+    title, body = match.groups()
+    body = body.strip()
+    if not body:
+        return None
+    if body.startswith(("（", "(", ")", "）", "与")):
+        return None
+    return [f"### {title}", "", body]
 
 
 def _split_overlong_heading(line: str) -> list[str] | None:

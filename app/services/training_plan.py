@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.agent.llm import get_agent_llm
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.services.exercise_media import list_supported_exercise_names
+from app.services.training_plan_media import embed_schedule_json_media
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
 from app.schemas.training_plan import TrainingPlanCreate, TrainingPlanUpdate
@@ -32,7 +33,7 @@ def create_training_plan(
     user: User,
     plan_in: TrainingPlanCreate,
 ) -> TrainingPlan:
-    data = _normalize_plan_payload(plan_in.model_dump())
+    data = _normalize_plan_payload(plan_in.model_dump(), db=db)
     plan = TrainingPlan(user_id=user.id, **data)
     db.add(plan)
     db.commit()
@@ -45,7 +46,7 @@ def update_training_plan(
     plan: TrainingPlan,
     plan_in: TrainingPlanUpdate,
 ) -> TrainingPlan:
-    for field, value in _normalize_plan_payload(plan_in.to_update_dict(), existing_plan_kind=plan.plan_kind).items():
+    for field, value in _normalize_plan_payload(plan_in.to_update_dict(), existing_plan_kind=plan.plan_kind, db=db).items():
         setattr(plan, field, value)
     if plan.status == "active":
         return activate_training_plan(db, plan)
@@ -75,13 +76,20 @@ def activate_training_plan(
     return plan
 
 
-def _normalize_plan_payload(data: dict, *, existing_plan_kind: str | None = None) -> dict:
+def _normalize_plan_payload(
+    data: dict,
+    *,
+    existing_plan_kind: str | None = None,
+    db: Session | None = None,
+) -> dict:
     normalized = dict(data)
     schedule_text = normalized.get("weekly_schedule")
     if normalized.get("schedule_json") is None and schedule_text:
         schedule_json = _schedule_json_from_text(schedule_text)
         if schedule_json:
             normalized["schedule_json"] = schedule_json
+    if normalized.get("schedule_json") is not None:
+        normalized["schedule_json"] = embed_schedule_json_media(normalized["schedule_json"], db)
     if "plan_kind" not in normalized and schedule_text and existing_plan_kind is None:
         normalized["plan_kind"] = "daily" if len([line for line in schedule_text.splitlines() if line.strip()]) == 1 else "program"
     return normalized

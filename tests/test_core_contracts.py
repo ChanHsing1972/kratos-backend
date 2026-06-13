@@ -45,7 +45,14 @@ from app.services.conversation_session import (
     _normalize_session_title,
     list_shared_conversation_knowledge,
 )
-from app.services.training_plan import _schedule_json_from_text, progression_guidance_from_history
+from app.models.user import User
+from app.schemas.training_plan import TrainingPlanCreate, TrainingPlanUpdate
+from app.services.training_plan import (
+    _schedule_json_from_text,
+    create_training_plan,
+    progression_guidance_from_history,
+    update_training_plan,
+)
 
 
 def test_tool_descriptions_include_usage_and_fallback_metadata():
@@ -480,6 +487,61 @@ def test_enrich_workout_plan_media_replaces_action_with_supported_name(monkeypat
     assert state.result.structured_artifacts["workout_plan"]["sessions"][0]["exercises"][0]["name"] == "卧推"
 
 
+def test_enrich_workout_plan_media_updates_training_plan_draft(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan_media.resolve_supported_exercise_name",
+        lambda action_name, db=None: "卧推" if action_name == "胸部推举" else action_name,
+    )
+    monkeypatch.setattr(
+        "app.services.training_plan_media.get_exercise_media",
+        lambda action_name, db=None: {
+            "action_name": action_name,
+            "query": "bench press",
+            "exercise_id": "bench-1",
+            "exercise_name": "bench press",
+            "media_url": "https://example.com/bench.mp4",
+            "image_url": None,
+            "video_url": "https://example.com/bench.mp4",
+            "source": "exercise_library",
+        },
+    )
+    state = SessionState(session_id="s1", user_id="u1")
+    state.result.training_plan_draft = {
+        "schedule_json": {
+            "version": 1,
+            "weeks": [
+                {
+                    "week": 1,
+                    "sessions": [
+                        {
+                            "id": "agent-session-0",
+                            "weekday": "今日",
+                            "title": "推训练",
+                            "exercises": [
+                                {
+                                    "id": "agent-exercise-0-0",
+                                    "name": "胸部推举",
+                                    "media": None,
+                                    "notes": None,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+
+    enrich_workout_plan_media(state, db=None)
+
+    exercise = state.result.training_plan_draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"][0]
+    assert exercise["name"] == "卧推"
+    assert exercise["media"]["media_url"] == "https://example.com/bench.mp4"
+    assert "替代原动作 胸部推举" in exercise["notes"]
+    structured_exercise = state.result.structured_artifacts["training_plan_draft"]["schedule_json"]["weeks"][0]["sessions"][0]["exercises"][0]
+    assert structured_exercise["media"]["video_url"] == "https://example.com/bench.mp4"
+
+
 def test_enrich_workout_plan_media_keeps_unknown_action_when_no_match(monkeypatch):
     monkeypatch.setattr(
         "app.services.agent_chat.resolve_supported_exercise_name",
@@ -555,6 +617,32 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
         def iter_events(self, state, *, stream_answer, after_node=None, should_cancel=None):
             assert stream_answer is True
             state.result.response = "## 回答\n\n已完成。"
+            state.result.training_plan_draft = {
+                "schedule_json": {
+                    "version": 1,
+                    "weeks": [
+                        {
+                            "week": 1,
+                            "sessions": [
+                                {
+                                    "id": "agent-session-0",
+                                    "weekday": "今日",
+                                    "title": "推训练",
+                                    "exercises": [
+                                        {
+                                            "id": "agent-exercise-0-0",
+                                            "name": "胸部推举",
+                                            "media": None,
+                                            "notes": None,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+            state.result.sync_structured_artifacts()
             yield {
                 "type": "answer_delta",
                 "delta": "## 回答\n\n已完成。",
@@ -567,6 +655,23 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
             }
 
     monkeypatch.setattr("app.services.agent_chat.get_agent_runner", lambda: FakeRunner())
+    monkeypatch.setattr(
+        "app.services.training_plan_media.resolve_supported_exercise_name",
+        lambda action_name, db=None: "卧推" if action_name == "胸部推举" else action_name,
+    )
+    monkeypatch.setattr(
+        "app.services.training_plan_media.get_exercise_media",
+        lambda action_name, db=None: {
+            "action_name": action_name,
+            "query": "bench press",
+            "exercise_id": "bench-1",
+            "exercise_name": "bench press",
+            "media_url": "https://example.com/bench.mp4",
+            "image_url": None,
+            "video_url": "https://example.com/bench.mp4",
+            "source": "exercise_library",
+        },
+    )
 
     events = list(
         stream_agent_chat(
@@ -585,8 +690,11 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
     streamed = "".join(str(event["delta"]) for event in events if event["type"] == "answer_delta")
     final_event = next(event for event in events if event["type"] == "final")
     done_event = events[-1]
+    final_exercise = final_event["raw"]["structured_artifacts"]["training_plan_draft"]["schedule_json"]["weeks"][0]["sessions"][0]["exercises"][0]
     assert final_event["run_id"] == events[0]["run_id"]
     assert final_event["content"] == streamed
+    assert final_exercise["name"] == "卧推"
+    assert final_exercise["media"]["media_url"] == "https://example.com/bench.mp4"
     assert done_event["type"] == "done"
     assert done_event["content"] == "Agent 回复完成"
     assert done_event["answer"] == streamed
@@ -891,6 +999,143 @@ def test_legacy_weekly_schedule_is_converted_to_structured_sessions():
     assert sessions[0]["exercises"][0]["name"] == "卧推 4 组 x 8 次"
 
 
+def test_create_training_plan_embeds_exercise_media(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setattr(
+        "app.services.training_plan_media.resolve_supported_exercise_name",
+        lambda action_name, db=None: "卧推" if action_name == "胸部推举" else action_name,
+    )
+    monkeypatch.setattr(
+        "app.services.training_plan_media.get_exercise_media",
+        lambda action_name, db=None: {
+            "action_name": action_name,
+            "query": "bench press",
+            "exercise_id": "bench-1",
+            "exercise_name": "bench press",
+            "media_url": "https://example.com/bench.mp4",
+            "image_url": None,
+            "video_url": "https://example.com/bench.mp4",
+            "source": "exercise_library",
+            "teaching_videos": [
+                {
+                    "title": "卧推教学",
+                    "url": "https://example.com/tutorial",
+                    "source": "bilibili",
+                }
+            ],
+        },
+    )
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = session_factory()
+    try:
+        user = User(username="media-user", password_hash="hash")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        plan = create_training_plan(
+            db,
+            user,
+            TrainingPlanCreate(
+                title="推训练",
+                weekly_schedule="今日|推训练：胸部推举 4 组 x 8 次",
+                schedule_json={
+                    "version": 1,
+                    "weeks": [
+                        {
+                            "week": 1,
+                            "sessions": [
+                                {
+                                    "id": "s1",
+                                    "weekday": "今日",
+                                    "title": "推训练",
+                                    "exercises": [
+                                        {
+                                            "id": "e1",
+                                            "name": "胸部推举",
+                                            "media": None,
+                                            "target_sets": 4,
+                                            "target_reps": "8 次",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+        )
+
+        exercise = plan.schedule_json["weeks"][0]["sessions"][0]["exercises"][0]
+        assert exercise["name"] == "卧推"
+        assert exercise["media"]["media_url"] == "https://example.com/bench.mp4"
+        assert exercise["media"]["teaching_videos"][0]["title"] == "卧推教学"
+        assert "替代原动作 胸部推举" in exercise["notes"]
+    finally:
+        db.close()
+
+
+def test_update_training_plan_embeds_media_from_weekly_schedule(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setattr(
+        "app.services.training_plan_media.resolve_supported_exercise_name",
+        lambda action_name, db=None: "杠铃深蹲" if "深蹲" in action_name else action_name,
+    )
+    monkeypatch.setattr(
+        "app.services.training_plan_media.get_exercise_media",
+        lambda action_name, db=None: {
+            "action_name": action_name,
+            "query": "barbell squat",
+            "exercise_id": "squat-1",
+            "exercise_name": "barbell squat",
+            "media_url": "https://example.com/squat.mp4",
+            "image_url": None,
+            "video_url": "https://example.com/squat.mp4",
+            "source": "exercise_library",
+            "teaching_videos": [],
+        },
+    )
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = session_factory()
+    try:
+        user = User(username="update-media-user", password_hash="hash")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        plan = create_training_plan(
+            db,
+            user,
+            TrainingPlanCreate(
+                title="旧计划",
+                weekly_schedule="周一|推训练：卧推 4 组 x 8 次",
+            ),
+        )
+
+        updated = update_training_plan(
+            db,
+            plan,
+            TrainingPlanUpdate(
+                weekly_schedule="周三|下肢：深蹲 4 组 x 8 次",
+                schedule_json=None,
+            ),
+        )
+
+        exercise = updated.schedule_json["weeks"][0]["sessions"][0]["exercises"][0]
+        assert exercise["name"] == "杠铃深蹲"
+        assert exercise["media"]["video_url"] == "https://example.com/squat.mp4"
+    finally:
+        db.close()
+
+
 def test_agent_weekly_text_creates_multiple_editable_sessions():
     sessions = GenerateNode._parse_weekly_sessions_from_text(
         "周一|上肢推：卧推 4 组 x 8 次；肩推 3 组 x 10 次\n"
@@ -1030,6 +1275,45 @@ def test_markdown_finalizer_splits_weekly_plan_heading_and_removes_html_breaks()
     assert "卧推、哑铃肩推、绳索下压" in normalized
 
 
+def test_markdown_finalizer_splits_glued_lists_breaks_and_heading_body():
+    response_text = (
+        "### 本周营养建议\n\n"
+        "- **蛋白质**：每日约140-160g，优先从酱牛肉、虾仁、鸡蛋等来源获取- **碳水**："
+        "训练日每公斤体重3-4g，约210-280g；休息日可适当降低- **脂肪**："
+        "每日约60-70g，避免过度限制- **水分**：训练日额外补充500-800ml---\n\n"
+        "### 需补充信息你的伤病史尚未记录，如有既往肩、腰、膝等关节问题，请告知。"
+    )
+
+    normalized = finalize_markdown_response(response_text)
+
+    assert "获取- **碳水**" not in normalized
+    assert "500-800ml---" not in normalized
+    assert "3-4g" in normalized
+    assert "210-280g" in normalized
+    assert "500-800ml" in normalized
+    assert "- **蛋白质**：每日约140-160g，优先从酱牛肉、虾仁、鸡蛋等来源获取" in normalized
+    assert "- **碳水**：训练日每公斤体重3-4g，约210-280g；休息日可适当降低" in normalized
+    assert "- **脂肪**：每日约60-70g，避免过度限制" in normalized
+    assert "- **水分**：训练日额外补充500-800ml" in normalized
+    assert "\n---\n" in normalized
+    assert "### 需补充信息\n\n你的伤病史尚未记录" in normalized
+
+
+def test_markdown_finalizer_splits_plain_recovery_heading_body():
+    response_text = "恢复建议训练结束后建议补充蛋白质和适量碳水，促进肌肉修复。保证充足睡眠和适度休息。"
+
+    normalized = finalize_markdown_response(response_text)
+
+    assert "恢复建议训练结束后" not in normalized
+    assert normalized == (
+        "### 恢复建议\n\n"
+        "训练结束后建议补充蛋白质和适量碳水，促进肌肉修复。保证充足睡眠和适度休息。"
+    )
+
+    heading_normalized = finalize_markdown_response(f"### {response_text}")
+    assert heading_normalized == normalized
+
+
 def test_markdown_contract_rejects_inconsistent_table_columns():
     violations = markdown_contract_violations(
         "| 动作 | 组数 | 次数 |\n"
@@ -1062,6 +1346,120 @@ def test_training_plan_draft_expands_weekly_table_cells_with_multiple_actions():
     assert [exercise["name"] for exercise in sessions[1]["exercises"]] == ["引体向上或高位下拉", "杠铃划船", "哑铃弯举"]
     assert "上肢推训练 缺少动作" not in draft["summary"]
     assert "<br>" not in draft["weekly_schedule"]
+
+
+def test_training_plan_draft_inherits_blank_weekday_rows():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "## 本周训练计划\n\n"
+        "| 星期 | 主题 | 动作 | 组数 | 次数/时长 | 休息 | 备注 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 周一 | 上肢推 | 卧推 | 4 | 6-8 次 | 90秒 | 可用杠铃或哑铃 |\n"
+        "|  |  | 哑铃肩推 | 3 | 8-10 次 | 60-90秒 | 保持核心稳定 |\n"
+        "|  |  | 绳索下压 | 3 | 12 次 | 60秒 | 肱三头肌 |\n"
+        "| 周二 | 上肢拉 | 引体向上或高位下拉 | 4 | 8 次 | 90秒 | 选择适合自身强度 |\n"
+        "|  |  | 杠铃划船 | 4 | 8 次 | 90秒 | 保持背部收紧 |\n"
+        "|  |  | 哑铃弯举 | 3 | 12 次 | 60秒 | 肱二头肌 |\n"
+    )
+
+    draft = build_training_plan_draft(state, response_text)
+
+    assert draft is not None
+    sessions = draft["schedule_json"]["weeks"][0]["sessions"]
+    assert len(sessions) == 2
+    monday = next(session for session in sessions if session["weekday"] == "周一")
+    tuesday = next(session for session in sessions if session["weekday"] == "周二")
+    assert monday["title"] == "上肢推"
+    assert [exercise["name"] for exercise in monday["exercises"]] == ["卧推", "哑铃肩推", "绳索下压"]
+    assert [exercise["name"] for exercise in tuesday["exercises"]] == ["引体向上或高位下拉", "杠铃划船", "哑铃弯举"]
+    assert draft["summary"] == "本周训练计划：2 个训练日，6 个训练动作。"
+    assert draft["weekly_schedule"].count("周一|上肢推") == 1
+
+
+def test_generate_node_training_plan_draft_ignores_lossy_visible_workout_fallback():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+    response_text = (
+        "## 本周训练计划\n\n"
+        "| 星期 | 主题 | 动作 | 组数 | 次数/时长 | 休息 | 备注 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 周一 | 上肢推 | 卧推 | 4 | 6-8 次 | 90秒 | 可用杠铃或哑铃 |\n"
+        "|  |  | 哑铃肩推 | 3 | 8-10 次 | 60-90秒 | 保持核心稳定 |\n"
+        "|  |  | 绳索下压 | 3 | 12 次 | 60秒 | 肱三头肌 |\n"
+        "| 周二 | 上肢拉 | 引体向上或高位下拉 | 4 | 8 次 | 90秒 | 选择适合自身强度 |\n"
+        "|  |  | 杠铃划船 | 4 | 8 次 | 90秒 | 保持背部收紧 |\n"
+        "|  |  | 哑铃弯举 | 3 | 12 次 | 60秒 | 肱二头肌 |\n"
+    )
+
+    GenerateNode().apply_response(state, AIMessage(content=response_text), response_text)
+
+    draft = state.result.training_plan_draft
+    assert draft is not None
+    sessions = draft["schedule_json"]["weeks"][0]["sessions"]
+    monday = next(session for session in sessions if session["weekday"] == "周一")
+    tuesday = next(session for session in sessions if session["weekday"] == "周二")
+    assert [exercise["name"] for exercise in monday["exercises"]] == ["卧推", "哑铃肩推", "绳索下压"]
+    assert [exercise["name"] for exercise in tuesday["exercises"]] == ["引体向上或高位下拉", "杠铃划船", "哑铃弯举"]
+    assert draft["summary"] == "本周训练计划：2 个训练日，6 个训练动作。"
+
+
+def test_training_plan_draft_groups_weekly_rows_by_training_day_and_cleans_guidance():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请根据我的目标、身体数据、训练偏好和恢复情况，为我生成本周训练计划。"))
+    state.reasoning.intent = ["信息查询", "健身计划"]
+    response_text = (
+        "## 本周训练计划\n\n"
+        "近期健康数据显示：静息心率84bpm略偏高，HRV43.69ms偏低，睡眠7小时。建议本周训练以中等强度为主。\n\n"
+        "### 每周训练安排\n\n"
+        "| 星期 | 主题 | 动作 | 组数 | 次数/时长 | 休息 | 备注 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 周一 | 上肢推 | 卧推 | 4组 | 6-8次 | 90秒 | 胸部主导，控制离心 |\n"
+        "| 周一 | 上肢推 | 哑铃肩推 | 3组 | 8-10次 | 75秒 | 坐姿，避免腰部反弓 |\n"
+        "| 周一 | 上肢推 | 绳索下压 | 3组 | 12次 | 60秒 | 三头肌，肘部固定 |\n"
+        "| 周二 | 上肢拉 | 引体向上或高位下拉 | 4组 | 8次 | 90秒 | 背部宽度，肩胛下沉 |\n"
+        "| 周二 | 上肢拉 | 杠铃划船 | 4组 | 8次 | 90秒 | 背部厚度，躯干稳定 |\n"
+        "| 周二 | 上肢拉 | 哑铃弯举 | 3组 | 12次 | 60秒 | 二头肌，避免借力 |\n"
+        "| 周三 | 恢复 | 步行或椭圆机 | 1组 | 20-30分钟 | - | 低强度有氧，肩颈髋部活动度 |\n"
+        "| 周四 | 下肢 | 深蹲 | 4组 | 6-8次 | 120秒 | 核心收紧，控制下蹲深度 |\n"
+        "| 周四 | 下肢 | 罗马尼亚硬拉 | 3组 | 8-10次 | 90秒 | 腘绳肌主导，感受拉伸 |\n"
+        "| 周四 | 下肢 | 腿弯举 | 3组 | 12次 | 60秒 | 器械，控制动作节奏 |\n"
+        "| 周五 | 全身辅助 | 上斜卧推 | 3组 | 10次 | 75秒 | 上胸发展 |\n"
+        "| 周五 | 全身辅助 | 坐姿划船 | 3组 | 10次 | 75秒 | 背部厚度，肩胛后收 |\n"
+        "| 周五 | 全身辅助 | 臀桥 | 3组 | 12次 | 60秒 | 臀大肌，顶峰收缩 |\n"
+        "| 周五 | 全身辅助 | 核心 | 1组 | 8分钟 | - | 平板支撑、俄罗斯转体、死虫循环 |\n"
+        "| 周六-日 | 休息 | - | - | - | - | 主动恢复或完全休息 |\n\n"
+        "### 本周营养建议\n\n"
+        "- **蛋白质**：每日约140-160g，优先从酱牛肉、虾仁、鸡蛋等来源获取- **碳水**：训练日每公斤体重3-4g，约210-280g；休息日可适当降低\n\n"
+        "### 恢复与风险边界\n\n"
+        "- **热身**：每次训练前8-10分钟动态拉伸+轻重量激活组- **监控指标**：若静息心率持续>90bpm或HRV进一步下降，建议减少一组训练量\n\n"
+        "### 需补充信息你的伤病史尚未记录，如有既往肩、腰、膝等关节问题，请告知。"
+    )
+
+    draft = build_training_plan_draft(state, response_text)
+
+    assert draft is not None
+    sessions = draft["schedule_json"]["weeks"][0]["sessions"]
+    assert len(sessions) == 6
+    monday = next(session for session in sessions if session["weekday"] == "周一")
+    assert monday["title"] == "上肢推"
+    assert [exercise["name"] for exercise in monday["exercises"]] == ["卧推", "哑铃肩推", "绳索下压"]
+    tuesday = next(session for session in sessions if session["weekday"] == "周二")
+    assert [exercise["name"] for exercise in tuesday["exercises"]] == ["引体向上或高位下拉", "杠铃划船", "哑铃弯举"]
+    rest = next(session for session in sessions if session["weekday"] == "周六/日")
+    assert rest["exercises"] == []
+    assert draft["summary"] == "本周训练计划：6 个训练日，14 个训练动作。"
+    assert draft["weekly_schedule"].count("周一|上肢推") == 1
+    assert "卧推 4 组 x 6-8次；哑铃肩推 3 组 x 8-10次；绳索下压 3 组 x 12次" in draft["weekly_schedule"]
+    assert "蛋白质" in (draft["nutrition_guidance"] or "")
+    assert "碳水" in (draft["nutrition_guidance"] or "")
+    recovery = draft["recovery_guidance"]
+    assert "|" not in recovery
+    assert "蛋白质" not in recovery
+    assert "卧推\n" not in recovery
+    assert "###" not in recovery
 
 
 def test_generate_node_keeps_complete_training_markdown_and_builds_draft():
@@ -1180,7 +1578,13 @@ def test_generate_node_stream_collects_and_finalizes_result_without_answer_delta
     assert events[-1]["type"] == "status"
 
 
-def test_runner_streams_only_final_answer_after_replan():
+def test_runner_streams_only_final_answer_after_replan(monkeypatch):
+    sleep_calls = []
+    monkeypatch.setattr("app.agent.runner.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("app.agent.runner.settings.AGENT_STREAM_CHUNK_CHARS", 100)
+    monkeypatch.setattr("app.agent.runner.settings.AGENT_STREAM_CHUNK_DELAY_SECONDS", 0)
+    monkeypatch.setattr("app.agent.runner.settings.AGENT_STREAM_FINAL_EVENT_DELAY_SECONDS", 0.42)
+
     class NoopNode:
         def __call__(self, state):
             return state
@@ -1234,10 +1638,14 @@ def test_runner_streams_only_final_answer_after_replan():
     events = list(AgentRunner(nodes).iter_events(state, stream_answer=True))
     streamed = "".join(str(event["delta"]) for event in events if event.get("type") == "answer_delta")
     final_state_event = next(event for event in events if event.get("type") == "final_state")
+    first_answer_index = next(index for index, event in enumerate(events) if event.get("type") == "answer_delta")
+    final_state_index = next(index for index, event in enumerate(events) if event.get("type") == "final_state")
 
     assert "回答 1" not in streamed
     assert streamed == "## 回答 2\n\n第 2 版。"
     assert final_state_event["content"] == streamed
+    assert first_answer_index < final_state_index
+    assert sleep_calls == [0.42]
 
 
 def test_generate_node_stream_hides_embedded_workout_json_and_builds_card():

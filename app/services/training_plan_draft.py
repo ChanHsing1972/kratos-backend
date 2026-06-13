@@ -47,6 +47,16 @@ GUIDANCE_KEYWORDS = (
     "立即停止",
     "休息日",
 )
+NUTRITION_KEYWORDS = (
+    "蛋白质",
+    "碳水",
+    "脂肪",
+    "热量",
+    "水分",
+    "饮食",
+    "营养",
+    "餐",
+)
 WEEKDAY_FALLBACKS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 PLAN_INTENTS = {"健身计划", "调整计划"}
 PROGRAM_REQUEST_RE = re.compile(r"一周|周计划|每周|长期|周期|多周|月度|(?:\d+|[一二三四五六七八九十])\s*周")
@@ -134,6 +144,7 @@ class TrainingPlanDraftBuilder:
         if not schedule_json or not weekly_schedule:
             return None
 
+        nutrition_guidance = _nutrition_guidance_from_markdown(self.response_text)
         recovery_guidance = self._recovery_guidance(source_plan, sessions, parsed_guidance)
         exercise_count = sum(len(session.exercises) for session in sessions)
         summary = f"{title}：{len(sessions)} 个训练日，{exercise_count} 个训练动作。"
@@ -148,7 +159,7 @@ class TrainingPlanDraftBuilder:
             "end_date": end_date,
             "summary": summary,
             "weekly_schedule": weekly_schedule,
-            "nutrition_guidance": None,
+            "nutrition_guidance": "\n".join(nutrition_guidance) if nutrition_guidance else None,
             "recovery_guidance": recovery_guidance,
         }
 
@@ -283,22 +294,37 @@ class TrainingPlanDraftBuilder:
         reps_index = _header_index(headers, ("次数/时长", "次数", "时长", "重复", "reps"))
         rest_index = _header_index(headers, ("休息", "间歇"))
         notes_index = _header_index(headers, ("备注", "技术要点", "注意"))
-        sessions: list[WorkoutSession] = []
+        sessions_by_weekday: dict[str, WorkoutSession] = {}
+        session_order: list[str] = []
         guidance: list[str] = []
+        current_weekday: str | None = None
+        current_title: str | None = None
 
         for index, raw_row in enumerate(rows):
             row = _pad_row(raw_row, len(headers))
             row_text = " ".join(cell for cell in row if cell).strip()
             if not row_text:
                 continue
-            weekday = _normalize_weekday(
-                row[weekday_index] if weekday_index is not None and weekday_index < len(row) else ""
-            ) or WEEKDAY_FALLBACKS[index % len(WEEKDAY_FALLBACKS)]
-            title = (
-                _clean_session_title(row[title_index])
+            raw_weekday = row[weekday_index] if weekday_index is not None and weekday_index < len(row) else ""
+            normalized_weekday = _normalize_weekday(raw_weekday)
+            is_continuation_row = not normalized_weekday and current_weekday is not None
+            if normalized_weekday:
+                weekday = normalized_weekday
+                current_weekday = weekday
+            else:
+                weekday = current_weekday or WEEKDAY_FALLBACKS[index % len(WEEKDAY_FALLBACKS)]
+
+            raw_title = (
+                row[title_index]
                 if title_index is not None and title_index < len(row)
-                else None
+                else ""
             )
+            title = _clean_session_title(raw_title)
+            if title:
+                current_title = title
+            elif is_continuation_row:
+                title = current_title
+
             details_cells: list[str] = []
             if action_index is not None and action_index < len(row):
                 details_cells.append(row[action_index])
@@ -320,20 +346,32 @@ class TrainingPlanDraftBuilder:
             )
             if not exercises:
                 exercises = _parse_exercises_from_text(details)
-            if not exercises and _is_guidance_line(details):
-                guidance.append(f"{weekday}：{details}")
-            if not exercises and not details:
+            row_notes = _weekly_row_notes(row, action_index=action_index, notes_index=notes_index)
+            if not exercises:
+                for note in row_notes:
+                    if _is_guidance_line(note):
+                        guidance.append(f"{weekday}：{note}")
+            if not exercises and not details and not row_notes:
                 continue
-            sessions.append(
-                WorkoutSession(
-                    title=title or _infer_session_title(exercises, details),
+            key = weekday
+            session = sessions_by_weekday.get(key)
+            if session is None:
+                session = WorkoutSession(
+                    title=title or _infer_session_title(exercises, details or row_text),
                     weekday=weekday,
                     focus=title,
-                    exercises=exercises,
-                    notes=[details] if details else [],
+                    exercises=[],
+                    notes=[],
                 )
-            )
-        return sessions, _unique_strings(guidance)
+                sessions_by_weekday[key] = session
+                session_order.append(key)
+            elif title and title != session.title:
+                session.title = _merge_session_titles(session.title, title)
+                session.focus = _merge_session_titles(session.focus, title)
+            session.exercises.extend(exercises)
+            if not exercises:
+                session.notes.extend(row_notes or ([details] if details and details not in {"-", "—"} else []))
+        return [sessions_by_weekday[key] for key in session_order], _unique_strings(guidance)
 
     def _parse_weekly_row_exercises(
         self,
@@ -504,7 +542,15 @@ class TrainingPlanDraftBuilder:
                 if exercise.notes and _is_guidance_line(exercise.notes):
                     lines.append(exercise.notes)
         guidance = _unique_strings(_clean_optional_text(line) or "" for line in lines)
-        guidance = [line for line in guidance if line and not _looks_like_table_separator(line)]
+        guidance = [
+            line
+            for line in guidance
+            if line
+            and not line.startswith("#")
+            and "|" not in line
+            and not _looks_like_table_separator(line)
+            and not _is_nutrition_line(line)
+        ]
         if guidance:
             return "\n".join(guidance[:8])
         return "训练前充分热身，训练后完成拉伸；如出现疼痛或明显疲劳，及时降低强度。"
@@ -636,6 +682,36 @@ def _pad_row(row: list[str], length: int) -> list[str]:
     if len(row) >= length:
         return row
     return [*row, *([""] * (length - len(row)))]
+
+
+def _weekly_row_notes(
+    row: list[str],
+    *,
+    action_index: int | None,
+    notes_index: int | None,
+) -> list[str]:
+    notes: list[str] = []
+    for index in (notes_index, action_index):
+        if index is None or index >= len(row):
+            continue
+        text = _clean_optional_text(row[index])
+        if not text or text in {"-", "—", "无"}:
+            continue
+        if index == action_index and not _is_guidance_line(text):
+            continue
+        notes.append(text)
+    return _unique_strings(notes)
+
+
+def _merge_session_titles(current: str | None, incoming: str | None) -> str | None:
+    titles = []
+    for value in (current, incoming):
+        title = _clean_session_title(value)
+        if title and title not in titles:
+            titles.append(title)
+    if not titles:
+        return current or incoming
+    return "/".join(titles)
 
 
 def _parse_exercises_from_text(content: str) -> list[WorkoutExercise]:
@@ -839,6 +915,8 @@ def _normalize_weekday(value: str) -> str | None:
         return None
     text = text.replace("星期", "周")
     text = text.replace("周天", "周日")
+    text = re.sub(r"(周[一二三四五六])\s*[-~至]\s*(?:周)?([日一二三四五六])", r"\1/\2", text)
+    text = re.sub(r"(周[一二三四五六])\s*/\s*(?:周)?([日一二三四五六])", r"\1/\2", text)
     match = re.search(r"周[一二三四五六日](?:/[日一二三四五六])?", text)
     return match.group(0) if match else text[:12]
 
@@ -883,11 +961,39 @@ def _guidance_from_markdown(content: str) -> list[str]:
     lines = []
     for raw_line in str(content or "").splitlines():
         line = raw_line.strip(" -•|\t")
-        if not line or _looks_like_table_separator(line) or "|" in raw_line:
+        if (
+            not line
+            or line.startswith("#")
+            or line in {"---", "***", "___"}
+            or _looks_like_table_separator(line)
+            or "|" in raw_line
+            or _is_nutrition_line(line)
+        ):
             continue
         if _is_guidance_line(line):
             lines.append(line)
     return _unique_strings(lines)
+
+
+def _nutrition_guidance_from_markdown(content: str) -> list[str]:
+    lines: list[str] = []
+    in_nutrition_section = False
+    for raw_line in str(content or "").splitlines():
+        stripped = raw_line.strip()
+        plain = stripped.strip(" -•|\t")
+        if not plain or _looks_like_table_separator(plain) or "|" in raw_line:
+            continue
+        if re.match(r"^#{1,6}\s+", stripped):
+            in_nutrition_section = _is_nutrition_line(stripped)
+            continue
+        if in_nutrition_section or _is_nutrition_line(plain):
+            lines.append(plain)
+    return _unique_strings(lines)
+
+
+def _is_nutrition_line(value: str | None) -> bool:
+    text = str(value or "")
+    return any(keyword in text for keyword in NUTRITION_KEYWORDS)
 
 
 def _is_guidance_line(value: str | None) -> bool:

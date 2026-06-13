@@ -38,6 +38,7 @@ from app.services.conversation_session import (
     persist_session_turn_artifacts,
 )
 from app.services.exercise_media import get_exercise_media, resolve_supported_exercise_name
+from app.services.training_plan_media import embed_schedule_json_media
 
 
 @lru_cache(maxsize=1)
@@ -226,10 +227,14 @@ def stream_agent_chat(
 
     emitted_keys: set[tuple[str, str]] = set()
     final_state = state
+    media_enriched_for_final = False
 
     try:
         for event in _run_streaming_agent(final_state, emitted_keys, run_id=run_id, is_cancelled=is_cancelled):
             if event.get("type") == "final":
+                if not media_enriched_for_final:
+                    enrich_workout_plan_media(final_state, db)
+                    media_enriched_for_final = True
                 final_state.result.sync_structured_artifacts()
                 event["raw"] = final_state.result.model_dump(mode="json")
             append_persistable_event(persisted_trace, event)
@@ -316,32 +321,61 @@ def enrich_workout_plan_media(state: SessionState, db: Session | None = None) ->
     """为结构化训练计划中的动作补齐图片/视频资源。
 
     副作用：
-        原地修改 `state.result.workout_plan.sessions[*].exercises[*].media`。
+        原地修改 workout_plan 与 training_plan_draft 中的 exercise media。
     """
 
     workout_plan = state.result.workout_plan
-    if workout_plan is None:
-        return
+    if workout_plan is not None:
+        for session in workout_plan.sessions:
+            for exercise in session.exercises:
+                if exercise.media is not None and exercise.media.media_url:
+                    continue
+                resolved_name, media, replacement_note = _resolve_exercise_media(exercise.name, db)
+                if resolved_name and resolved_name != exercise.name:
+                    exercise.name = resolved_name
+                if replacement_note:
+                    exercise.notes = _append_note(exercise.notes, replacement_note)
+                if media is not None:
+                    exercise.media = media
 
-    for session in workout_plan.sessions:
-        for exercise in session.exercises:
-            if exercise.media is not None and exercise.media.media_url:
-                continue
-            original_name = exercise.name
-            resolved_name = resolve_supported_exercise_name(original_name, db)
-            if resolved_name and resolved_name != original_name:
-                exercise.name = resolved_name
-                replacement_note = f"已用库内可展示动作 {resolved_name} 替代原动作 {original_name}。"
-                if exercise.notes:
-                    if replacement_note not in exercise.notes:
-                        exercise.notes = f"{exercise.notes}；{replacement_note}"
-                else:
-                    exercise.notes = replacement_note
-            media = get_exercise_media(exercise.name, db)
-            if media.get("source") == "skipped":
-                continue
-            exercise.media = ExerciseMedia(**media)
+    _enrich_training_plan_draft_media(state.result.training_plan_draft, db)
     state.result.sync_structured_artifacts()
+
+
+def _enrich_training_plan_draft_media(draft: dict[str, Any] | None, db: Session | None) -> None:
+    if not isinstance(draft, dict):
+        return
+    schedule_json = draft.get("schedule_json")
+    enriched_schedule_json = embed_schedule_json_media(schedule_json, db)
+    if enriched_schedule_json is not None:
+        draft["schedule_json"] = enriched_schedule_json
+
+
+def _resolve_exercise_media(
+    exercise_name: str,
+    db: Session | None,
+) -> tuple[str | None, ExerciseMedia | None, str | None]:
+    original_name = str(exercise_name or "").strip()
+    if not original_name:
+        return None, None, None
+
+    resolved_name = resolve_supported_exercise_name(original_name, db) or original_name
+    replacement_note = None
+    if resolved_name != original_name:
+        replacement_note = f"已用库内可展示动作 {resolved_name} 替代原动作 {original_name}。"
+
+    media = get_exercise_media(resolved_name, db)
+    if media.get("source") == "skipped":
+        return resolved_name, None, replacement_note
+    return resolved_name, ExerciseMedia(**media), replacement_note
+
+
+def _append_note(existing: str | None, note: str) -> str:
+    if not existing:
+        return note
+    if note in existing:
+        return existing
+    return f"{existing}；{note}"
 
 
 def attach_pending_health_artifact(

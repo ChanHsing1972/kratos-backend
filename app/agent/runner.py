@@ -233,6 +233,13 @@ class AgentRunner:
                         "delta": display_delta,
                         "content": display_delta,
                     }
+                final_event_delay_seconds = max(
+                    0.0,
+                    float(settings.AGENT_STREAM_FINAL_EVENT_DELAY_SECONDS or 0.0),
+                )
+                if final_event_delay_seconds > 0:
+                    time.sleep(final_event_delay_seconds)
+                    self._raise_if_cancelled(should_cancel)
             yield {
                 "type": "final_state",
                 "content": str(state.result.response or ""),

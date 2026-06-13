@@ -443,10 +443,16 @@ class GenerateNode(BaseNode):
                 if parsed_workout is not None:
                     state.result.workout_plan = parsed_workout
 
+        draft_source_plan = state.result.workout_plan
+        if (
+            draft_source_plan is not None
+            and draft_source_plan.source.summary == "visible Markdown workout_plan fallback"
+        ):
+            draft_source_plan = None
         state.result.training_plan_draft = build_training_plan_draft(
             state,
             response_text,
-            state.result.workout_plan,
+            draft_source_plan,
         )
         state.result.sync_structured_artifacts()
 
