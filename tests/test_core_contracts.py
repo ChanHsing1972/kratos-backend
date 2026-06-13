@@ -1304,6 +1304,20 @@ def test_markdown_finalizer_splits_weekly_plan_heading_and_removes_html_breaks()
     assert "卧推、哑铃肩推、绳索下压" in normalized
 
 
+def test_markdown_finalizer_repairs_plain_title_and_concatenated_table_rows():
+    response_text = (
+        "###本周训练计划（2026-06-12 至2026-06-18）\n\n"
+        "每周训练安排| 星期 | 主题 | 动作 | 组数 |\n"
+        "|------|------|------|------|| 周一 | 全身力量 A | 深蹲 |4 |"
+    )
+
+    normalized = finalize_markdown_response(response_text)
+
+    assert normalized.startswith("### 本周训练计划（2026-06-12 至2026-06-18）")
+    assert "### 每周训练安排\n\n| 星期 | 主题 | 动作 | 组数 |" in normalized
+    assert "| --- | --- | --- | --- |\n| 周一 | 全身力量 A | 深蹲 | 4 |" in normalized
+
+
 def test_markdown_finalizer_splits_glued_lists_breaks_and_heading_body():
     response_text = (
         "### 本周营养建议\n\n"
@@ -1600,13 +1614,83 @@ def test_generate_node_stream_emits_visible_answer_delta_and_finalizes_result():
     state.reasoning.intent = ["信息查询"]
 
     events = list(GenerateNode(StandardMarkdownLLM()).stream_response_events(state))
-    answer_events = [event for event in events if event.get("type") == "answer_delta"]
+    streamed = ""
+    for event in events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
 
-    assert "".join(event["delta"] for event in answer_events) == (
-        "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。\n"
-    )
+    assert streamed == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。"
     assert state.result.response == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。"
     assert events[-1]["type"] == "status"
+
+
+def test_generate_node_stream_repairs_glued_markdown_before_completion():
+    class GluedMarkdownLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="###本周训练计划（2026-06-12 至2026-06-18）\n\n")
+            yield SimpleNamespace(content="每周训练安排| 星期 | 主题 | 动作 | 组数 |\n")
+            yield SimpleNamespace(
+                content="|------|------|------|------|| 周一 | 全身力量 A | 深蹲 |4 |"
+            )
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(GluedMarkdownLLM()).stream_response_events(state))
+    streamed = ""
+    snapshots = []
+    for event in events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+            snapshots.append(streamed)
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+            snapshots.append(streamed)
+
+    assert streamed == state.result.response
+    assert "### 本周训练计划" in streamed
+    assert "### 每周训练安排\n\n| 星期 | 主题 | 动作 | 组数 |" in streamed
+    assert "| --- | --- | --- | --- |\n| 周一 | 全身力量 A | 深蹲 | 4 |" in streamed
+    assert snapshots
+    assert all("###本周训练计划" not in snapshot for snapshot in snapshots)
+    assert all("每周训练安排|" not in snapshot for snapshot in snapshots)
+
+
+def test_generate_node_stream_holds_incomplete_table_until_it_can_render():
+    class DelayedTableLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="每周训练安排| 星期 |")
+            yield SimpleNamespace(
+                content=" 主题 | 动作 | 组数 |\n|------|------|------|------|| 周一 | 全身力量 A | 深蹲 |4 |"
+            )
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(DelayedTableLLM()).stream_response_events(state))
+    streamed = ""
+    for event in events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+
+    assert streamed == state.result.response
+    assert streamed.startswith("### 每周训练安排\n\n| 星期 | 主题 | 动作 | 组数 |")
+    assert "| --- | --- | --- | --- |\n| 周一 | 全身力量 A | 深蹲 | 4 |" in streamed
+    answer_events = [
+        event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
+    ]
+    assert answer_events
+    assert "每周训练安排|" not in str(answer_events[0].get("content") or "")
 
 
 def test_runner_streams_only_final_answer_after_replan(monkeypatch):

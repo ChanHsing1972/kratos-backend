@@ -200,6 +200,12 @@ class AgentRunner:
                     self._raise_if_cancelled(should_cancel)
                     if generated_event.get("type") == "answer_delta":
                         streamed_answer += str(generated_event.get("delta") or generated_event.get("content") or "")
+                    elif generated_event.get("type") == "answer_replace":
+                        streamed_answer = str(
+                            generated_event.get("answer")
+                            or generated_event.get("content")
+                            or ""
+                        )
                     yield generated_event
                 elapsed = time.monotonic() - t0
                 _log_node_time("generate", t0, user_id, session_id)
@@ -281,7 +287,7 @@ class AgentRunner:
 
         if final_generated:
             final_answer = str(state.result.response or "")
-            if stream_answer and final_answer and not final_answer.startswith(streamed_answer):
+            if stream_answer and final_answer and final_answer != streamed_answer:
                 yield {
                     "type": "answer_replace",
                     "answer": final_answer,

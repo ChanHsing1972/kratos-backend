@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage
 from app.agent.markdown_contract import (
     STANDARD_MARKDOWN_OUTPUT_PROMPT,
     finalize_markdown_response,
+    markdown_contract_violations,
 )
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.agent.nodes.base_node import BaseNode
@@ -98,26 +99,148 @@ class _VisibleMarkdownStreamer:
         return delta
 
 
+class _StreamingMarkdownRepairer:
+    """Keep the visible stream aligned with the final Markdown repair contract."""
+
+    def __init__(self) -> None:
+        self.source_text = ""
+        self.emitted_text = ""
+
+    def feed(self, text: str, *, phase: str = "stream") -> dict[str, Any] | None:
+        if not text:
+            return None
+        self.source_text += text
+        repairable_source = _repairable_stream_source(self.source_text)
+        return self._event_for(finalize_markdown_response(repairable_source), phase=phase)
+
+    def reconcile(self, source_text: str, *, phase: str) -> dict[str, Any] | None:
+        self.source_text = source_text
+        return self._event_for(finalize_markdown_response(source_text), phase=phase)
+
+    def _event_for(self, repaired_text: str, *, phase: str) -> dict[str, Any] | None:
+        if repaired_text == self.emitted_text:
+            return None
+
+        raw = {"node": "generate", "phase": phase}
+        if repaired_text.startswith(self.emitted_text):
+            delta = repaired_text[len(self.emitted_text) :]
+            self.emitted_text = repaired_text
+            return {
+                "type": "answer_delta",
+                "delta": delta,
+                "content": delta,
+                "raw": raw,
+            }
+
+        self.emitted_text = repaired_text
+        return {
+            "type": "answer_replace",
+            "answer": repaired_text,
+            "content": repaired_text,
+            "raw": raw,
+        }
+
+
+def _repairable_stream_source(text: str) -> str:
+    """Return the visible prefix that is stable enough to repair and display."""
+
+    source = str(text or "")
+    hold_from = _trailing_unstable_markdown_start(source)
+    if hold_from is None:
+        return source
+    return source[:hold_from]
+
+
+def _trailing_unstable_markdown_start(text: str) -> int | None:
+    if not text or _has_open_code_fence(text):
+        return None
+
+    candidate = text
+    lines = _line_infos(candidate)
+    if not lines:
+        return None
+
+    last_nonempty = len(lines) - 1
+    while last_nonempty >= 0 and not lines[last_nonempty][1].strip():
+        last_nonempty -= 1
+    if last_nonempty < 0:
+        return None
+
+    last_start, last_line = lines[last_nonempty]
+    if (
+        last_nonempty == len(lines) - 1
+        and not candidate.endswith("\n")
+        and _looks_like_unstable_table_fragment(last_line)
+        and not last_line.rstrip().endswith("|")
+    ):
+        candidate = candidate[:last_start]
+        lines = _line_infos(candidate)
+        last_nonempty = len(lines) - 1
+        while last_nonempty >= 0 and not lines[last_nonempty][1].strip():
+            last_nonempty -= 1
+        if last_nonempty < 0:
+            return 0
+        last_start, last_line = lines[last_nonempty]
+
+    if not _looks_like_unstable_table_fragment(last_line):
+        return None
+
+    block_start = last_nonempty
+    while block_start > 0 and _looks_like_unstable_table_fragment(lines[block_start - 1][1]):
+        block_start -= 1
+
+    if last_nonempty - block_start + 1 <= 1:
+        return lines[block_start][0]
+
+    repaired_candidate = finalize_markdown_response(candidate)
+    if any("表格" in violation for violation in markdown_contract_violations(repaired_candidate)):
+        return lines[block_start][0]
+    return None
+
+
+def _line_infos(text: str) -> list[tuple[int, str]]:
+    infos: list[tuple[int, str]] = []
+    position = 0
+    for raw_line in text.splitlines(keepends=True):
+        infos.append((position, raw_line.rstrip("\r\n")))
+        position += len(raw_line)
+    return infos
+
+
+def _looks_like_unstable_table_fragment(line: str) -> bool:
+    stripped = line.strip()
+    if stripped.count("|") < 2:
+        return False
+    if stripped.startswith("|"):
+        return True
+    return bool(
+        re.match(
+            r"^[^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果)\s*\|",
+            stripped,
+        )
+    )
+
+
+def _has_open_code_fence(markdown: str) -> bool:
+    open_marker: str | None = None
+    for line in markdown.splitlines():
+        match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if not match:
+            continue
+        marker = match.group(1)
+        if open_marker is None:
+            open_marker = marker
+        elif marker[0] == open_marker[0] and len(marker) >= len(open_marker):
+            open_marker = None
+    return open_marker is not None
+
+
 def _longest_marker_prefix_suffix(text: str, marker: str) -> int:
     max_len = min(len(text), len(marker) - 1)
     for length in range(max_len, 0, -1):
         if marker.startswith(text[-length:]):
             return length
     return 0
-
-
-def _suffix_after_streamed_text(final_text: str, streamed_text: str) -> str:
-    """Return only the final normalized suffix not already shown to the user."""
-
-    if not final_text:
-        return ""
-    if not streamed_text:
-        return final_text
-    if final_text.startswith(streamed_text):
-        return final_text[len(streamed_text) :]
-    if final_text.strip() == streamed_text.strip():
-        return ""
-    return ""
 
 
 class GenerateNode(BaseNode):
@@ -152,6 +275,7 @@ class GenerateNode(BaseNode):
         prompt = self.build_prompt(state)
         response_text = ""
         visible_streamer = _VisibleMarkdownStreamer()
+        markdown_repairer = _StreamingMarkdownRepairer()
         last_chunk = None
 
         prompt_input = self.prompt_input(
@@ -169,12 +293,9 @@ class GenerateNode(BaseNode):
                 response_text += delta
                 visible_delta = visible_streamer.feed(delta)
                 if visible_delta:
-                    yield {
-                        "type": "answer_delta",
-                        "delta": visible_delta,
-                        "content": visible_delta,
-                        "raw": {"node": "generate", "phase": "stream"},
-                    }
+                    repaired_event = markdown_repairer.feed(visible_delta)
+                    if repaired_event is not None:
+                        yield repaired_event
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("GenerateNode stream failed, using fallback answer: %s", exc)
             fallback_text = self._fallback_response_text(state, exc, partial_response=response_text)
@@ -182,14 +303,12 @@ class GenerateNode(BaseNode):
             fallback_visible, _embedded_artifacts = self._split_embedded_structured_artifacts(fallback_text)
             fallback_visible = self._normalize_markdown_response(fallback_visible)
             flushed = visible_streamer.finish()
-            missing_suffix = _suffix_after_streamed_text(fallback_visible, visible_streamer.emitted_text + flushed)
-            if flushed or missing_suffix:
-                yield {
-                    "type": "answer_delta",
-                    "delta": f"{flushed}{missing_suffix}",
-                    "content": f"{flushed}{missing_suffix}",
-                    "raw": {"node": "generate", "phase": "fallback"},
-                }
+            flushed_event = markdown_repairer.feed(flushed, phase="stream_flush")
+            if flushed_event is not None:
+                yield flushed_event
+            fallback_event = markdown_repairer.reconcile(fallback_visible, phase="fallback")
+            if fallback_event is not None:
+                yield fallback_event
             structured_card_requested = self._should_emit_workout_plan(state, str(state.result.response or ""))
             draft_ready = state.result.training_plan_draft is not None
             status_raw = {
@@ -217,22 +336,15 @@ class GenerateNode(BaseNode):
         visible_response_text, _embedded_artifacts = self._split_embedded_structured_artifacts(response_text)
         normalized_response_text = self._normalize_markdown_response(visible_response_text)
         flushed = visible_streamer.finish()
-        if flushed:
-            yield {
-                "type": "answer_delta",
-                "delta": flushed,
-                "content": flushed,
-                "raw": {"node": "generate", "phase": "stream_flush"},
-            }
-        streamed_text = visible_streamer.emitted_text
-        missing_suffix = _suffix_after_streamed_text(normalized_response_text, streamed_text)
-        if missing_suffix:
-            yield {
-                "type": "answer_delta",
-                "delta": missing_suffix,
-                "content": missing_suffix,
-                "raw": {"node": "generate", "phase": "normalize"},
-            }
+        flushed_event = markdown_repairer.feed(flushed, phase="stream_flush")
+        if flushed_event is not None:
+            yield flushed_event
+        normalized_event = markdown_repairer.reconcile(
+            visible_response_text,
+            phase="normalize",
+        )
+        if normalized_event is not None:
+            yield normalized_event
 
         elapsed = time.monotonic() - t0
         self.logger.info(

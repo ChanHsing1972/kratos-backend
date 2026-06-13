@@ -50,20 +50,34 @@ def finalize_markdown_response(response_text: str) -> str:
 def _repair_markdown_lines(lines: list[str]) -> list[str]:
     repaired: list[str] = []
     in_code_fence = False
+    table_column_count: int | None = None
 
     for raw_line in lines:
         line = raw_line.rstrip()
         if re.match(r"^ {0,3}(`{3,}|~{3,})", line):
             in_code_fence = not in_code_fence
             repaired.append(line)
+            table_column_count = None
             continue
         if in_code_fence:
             repaired.append(line)
             continue
 
-        normalized_lines = _split_markdown_line(line)
-        for normalized in normalized_lines:
-            _append_with_markdown_spacing(repaired, normalized)
+        source_lines = _split_plain_title_from_table(line)
+        expanded_lines: list[str] = []
+        for source_line in source_lines:
+            table_rows = _split_concatenated_table_rows(source_line, table_column_count)
+            expanded_lines.extend(table_rows)
+
+            if table_rows and _is_table_line(table_rows[-1]):
+                table_column_count = len(_table_cells(table_rows[-1]))
+            elif source_line.strip():
+                table_column_count = None
+
+        for source_line in expanded_lines:
+            normalized_lines = _split_markdown_line(source_line)
+            for normalized in normalized_lines:
+                _append_with_markdown_spacing(repaired, normalized)
 
     return _collapse_blank_lines(repaired)
 
@@ -118,6 +132,51 @@ def _split_glued_heading(line: str) -> list[str] | None:
     if overlong_heading is not None:
         return overlong_heading
     return None
+
+
+def _split_plain_title_from_table(line: str) -> list[str]:
+    """Split a section title glued directly to a Markdown table header."""
+
+    if re.match(r"^\s*#{1,6}", line):
+        return [line]
+
+    match = re.match(
+        r"^\s*([^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果))\s*(\|.+)$",
+        line,
+    )
+    if not match or match.group(2).count("|") < 3:
+        return [line]
+
+    title, table = match.groups()
+    return [f"### {title.strip()}", "", table]
+
+
+def _split_concatenated_table_rows(line: str, column_count: int | None) -> list[str]:
+    """Split multiple table rows that the model emitted on one physical line."""
+
+    if not column_count or column_count < 2 or not _is_table_line(line):
+        return [line]
+
+    pipe_indexes = [index for index, char in enumerate(line) if char == "|"]
+    pipes_per_row = column_count + 1
+    if len(pipe_indexes) < pipes_per_row * 2:
+        return [line]
+
+    rows: list[str] = []
+    cursor = 0
+    while cursor + pipes_per_row <= len(pipe_indexes):
+        start_pipe = pipe_indexes[cursor]
+        end_pipe = pipe_indexes[cursor + pipes_per_row - 1]
+        prefix = line[:start_pipe].strip() if cursor == 0 else ""
+        if prefix:
+            return [line]
+        rows.append(line[start_pipe : end_pipe + 1])
+        cursor += pipes_per_row
+
+    suffix_start = pipe_indexes[cursor] if cursor < len(pipe_indexes) else len(line)
+    if line[suffix_start:].strip():
+        return [line]
+    return rows or [line]
 
 
 def _split_glued_thematic_break(line: str) -> list[str]:
