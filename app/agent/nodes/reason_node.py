@@ -176,9 +176,7 @@ class ReasonNode(BaseNode):
                 data = self.invoke_json(prompt_reason, state)
             except Exception as exc:  # noqa: BLE001
                 data = build_fallback_reason_data(state, task, user_message, str(exc))
-            task.tool_calls = parse_tool_calls(
-                data.get("tool_calls"), available_tools, user_message, task, state
-            )
+            task.tool_calls = parse_tool_calls(data.get("tool_calls"), available_tools, user_message, task, state)
             task.result = data.get("result")
 
             if task.tool_calls and not task.result:
@@ -191,9 +189,7 @@ class ReasonNode(BaseNode):
             try:
                 data = self.invoke_json(prompt_observation, state)
             except Exception as exc:  # noqa: BLE001
-                data = {
-                    "result": f"工具结果已获取，但模型解析工具观察结果时失败：{exc}。请根据已有工具结果保守生成回答。"
-                }
+                data = {"result": f"工具结果已获取，但模型解析工具观察结果时失败：{exc}。请根据已有工具结果保守生成回答。"}
             task.result = data.get("result")
 
         if task.result:
@@ -221,9 +217,7 @@ class ReasonNode(BaseNode):
         user_message: str,
     ):
         if not task.tool_calls:
-            task.tool_calls = parse_tool_calls(
-                data.get("tool_calls"), available_tools, user_message, task, state
-            )
+            task.tool_calls = parse_tool_calls(data.get("tool_calls"), available_tools, user_message, task, state)
             task.result = data.get("result")
             if task.tool_calls and not task.result:
                 task.status = TaskStatus.waiting_for_tool
@@ -314,7 +308,7 @@ class ReasonNode(BaseNode):
                 return {"tool_calls": tool_calls, "result": None}
             return {
                 "tool_calls": [],
-                "result": "未找到可用的查询工具，请基于已有上下文回答，并说明实时信息可能无法获取。",
+                "result": "本次请求无需调用工具，请基于已有上下文回答，并说明实时信息可能无法获取。",
             }
 
         if is_fitness_plan:
@@ -351,11 +345,7 @@ class ReasonNode(BaseNode):
         has_attachment = ReasonNode._has_latest_attachment(state)
 
         if daily_items:
-            return (
-                "用户提供了待记录餐食："
-                + "；".join(daily_items)
-                + "。请整理为可确认的饮食记录；如缺少热量或三大营养素，明确说明需要用户补充分量或图片。"
-            )
+            return "用户提供了待记录餐食：" + "；".join(daily_items) + "。请整理为可确认的饮食记录；如缺少热量或三大营养素，明确说明需要用户补充分量或图片。"
         if has_attachment:
             return "用户上传了餐食附件。请基于可见食物估算热量和三大营养素，并生成需要用户确认后保存的饮食记录。"
         return "用户想记录饮食，但尚未提供具体食物、份量或图片。请先请用户补充餐食明细，暂不生成可保存记录。"
@@ -368,10 +358,7 @@ class ReasonNode(BaseNode):
             if getattr(message, "type", None) != "human":
                 continue
             content = getattr(message, "content", None)
-            return isinstance(content, list) and any(
-                isinstance(item, dict) and item.get("type") in {"image_url", "file"}
-                for item in content
-            )
+            return isinstance(content, list) and any(isinstance(item, dict) and item.get("type") in {"image_url", "file"} for item in content)
         return False
 
     @staticmethod
@@ -387,18 +374,9 @@ class ReasonNode(BaseNode):
             "physical_profile": long_term.physical_profile.model_dump(),
             "lifestyle_profile": long_term.lifestyle_profile.model_dump(),
             "dietary_profile": long_term.dietary_profile.model_dump(),
-            "long_term_memory_points": [
-                item.model_dump(mode="json")
-                for item in state.memory.long_term_memory_points
-            ],
-            "short_term_memory_points": [
-                item.model_dump(mode="json")
-                for item in state.memory.short_term_memory_points
-            ],
-            "working_memory_points": [
-                item.model_dump(mode="json")
-                for item in state.memory.working_memory_points
-            ],
+            "long_term_memory_points": [item.model_dump(mode="json") for item in state.memory.long_term_memory_points],
+            "short_term_memory_points": [item.model_dump(mode="json") for item in state.memory.short_term_memory_points],
+            "working_memory_points": [item.model_dump(mode="json") for item in state.memory.working_memory_points],
             "daily_diet": state.memory.mid_term_memory.daily_diet,
             "training_feedbacks": state.memory.mid_term_memory.training_feedbacks,
             "database_context": state.memory.database_context,
@@ -435,9 +413,7 @@ class ReasonNode(BaseNode):
                 return f"你叫{long_term.name}。"
             return None
 
-        if "身高" in user_message and any(
-            keyword in user_message for keyword in ["是多少", "多高", "记得", "记录"]
-        ):
+        if "身高" in user_message and any(keyword in user_message for keyword in ["是多少", "多高", "记得", "记录"]):
             if physical.height_cm is not None:
                 return f"你之前记录的身高是{physical.height_cm}厘米。"
             return None
