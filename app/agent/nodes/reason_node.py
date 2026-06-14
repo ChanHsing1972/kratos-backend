@@ -7,6 +7,7 @@ ReasonNode 面向当前子任务判断是否需要工具：可直接回答则写
 
 import json
 import re
+from typing import Any
 
 from app.agent.intent_policy import (
     INFO_INTENTS,
@@ -408,6 +409,10 @@ class ReasonNode(BaseNode):
         dietary = long_term.dietary_profile
         mid_term = state.memory.mid_term_memory
 
+        cross_memory_answer = ReasonNode._answer_from_cross_conversation_memory(user_message, state)
+        if cross_memory_answer:
+            return cross_memory_answer
+
         if any(keyword in user_message for keyword in ["我叫什么", "我的名字", "我叫啥"]):
             if long_term.name:
                 return f"你叫{long_term.name}。"
@@ -453,4 +458,255 @@ class ReasonNode(BaseNode):
                 return f"你当前记录的饮食限制有：{'；'.join(parts)}。"
             return None
 
+        return None
+
+    @staticmethod
+    def _answer_from_cross_conversation_memory(user_message: str, state) -> str | None:
+        if not ReasonNode._looks_like_memory_lookup(user_message):
+            return None
+
+        materials = ReasonNode._cross_conversation_memory_materials(state)
+        if not materials:
+            return None
+
+        food_candidate = ReasonNode._extract_food_query_candidate(user_message)
+        matches = ReasonNode._rank_cross_memory_matches(user_message, materials)
+        if food_candidate:
+            food_answer = ReasonNode._answer_food_question_from_materials(food_candidate, matches or materials)
+            if food_answer:
+                return food_answer
+        if not matches:
+            return None
+
+        lines = []
+        seen: set[str] = set()
+        for item in matches[:4]:
+            text = str(item.get("text") or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            source = str(item.get("source") or "跨对话记忆")
+            lines.append(f"- {source}：{text}")
+        if not lines:
+            return None
+        return "我找到这些跨对话记忆，可作为本次回答依据：\n" + "\n".join(lines)
+
+    @staticmethod
+    def _cross_conversation_memory_materials(state) -> list[dict[str, str]]:
+        materials: list[dict[str, str]] = []
+        for item in state.memory.long_term_memory_points:
+            if item.content.strip():
+                materials.append({"source": "长期记忆", "text": item.content.strip()})
+        for item in state.memory.short_term_memory_points:
+            if item.content.strip():
+                materials.append({"source": "短期记忆", "text": item.content.strip()})
+        for item in state.memory.working_memory_points:
+            if item.content.strip():
+                materials.append({"source": "工作记忆", "text": item.content.strip()})
+        for item in state.memory.turn_summaries[-5:]:
+            if item.summary and item.summary.strip():
+                materials.append({"source": "近期轮次摘要", "text": item.summary.strip()})
+        for summary in state.conversation.summaries:
+            text = str(summary or "").strip()
+            if text:
+                source = "共享会话摘要" if text.startswith("共享对话《") else "当前会话摘要"
+                materials.append({"source": source, "text": text})
+        return materials
+
+    @staticmethod
+    def _looks_like_memory_lookup(user_message: str) -> bool:
+        return any(
+            marker in user_message
+            for marker in [
+                "我",
+                "我的",
+                "记得",
+                "记录",
+                "之前",
+                "说过",
+                "提到过",
+                "偏好",
+                "喜欢",
+                "不喜欢",
+                "忌口",
+                "不能吃",
+                "能不能吃",
+                "吃不吃",
+                "限制",
+                "目标",
+                "计划",
+                "器械",
+                "伤病",
+                "最近",
+            ]
+        )
+
+    @staticmethod
+    def _rank_cross_memory_matches(
+        user_message: str,
+        materials: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        query_terms = ReasonNode._memory_query_terms(user_message)
+        categories = ReasonNode._memory_query_categories(user_message)
+        scored: list[tuple[int, int, dict[str, str]]] = []
+
+        for index, item in enumerate(materials):
+            text = str(item.get("text") or "")
+            score = 0
+            for term in query_terms:
+                if term and term in text:
+                    score += 6 if len(term) >= 2 else 2
+            for category in categories:
+                score += ReasonNode._memory_category_score(category, text)
+            if "共享对话《" in text:
+                score += 1
+            if score > 0:
+                scored.append((score, -index, item))
+
+        scored.sort(reverse=True)
+        return [item for _, _, item in scored]
+
+    @staticmethod
+    def _memory_query_terms(user_message: str) -> list[str]:
+        terms: list[str] = []
+        food_candidate = ReasonNode._extract_food_query_candidate(user_message)
+        if food_candidate:
+            terms.append(food_candidate)
+        activity_candidate = ReasonNode._extract_activity_query_candidate(user_message)
+        if activity_candidate:
+            terms.append(activity_candidate)
+
+        patterns = [
+            r"我的([\u4e00-\u9fffA-Za-z0-9]{2,12})(?:是什么|有哪些|是多少|吗|么|\?|？|$)",
+            r"我(?:有什么|有哪些)([\u4e00-\u9fffA-Za-z0-9]{2,12})",
+            r"(?:记得|记录|说过|提到过).{0,6}([\u4e00-\u9fffA-Za-z0-9]{2,12})",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, user_message):
+                terms.append(match.group(1).strip())
+
+        for token in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,}", user_message):
+            cleaned = token.strip()
+            if cleaned and cleaned not in ReasonNode._MEMORY_STOP_TERMS:
+                terms.append(cleaned)
+        return list(dict.fromkeys(terms))
+
+    _MEMORY_STOP_TERMS = {
+        "我的",
+        "我有",
+        "我想",
+        "我能",
+        "能不能",
+        "可不可以",
+        "是不是",
+        "有没有",
+        "是什么",
+        "有哪些",
+        "多少",
+        "之前",
+        "说过",
+        "提到过",
+        "记得",
+        "记录",
+        "最近",
+    }
+
+    @staticmethod
+    def _memory_query_categories(user_message: str) -> set[str]:
+        categories: set[str] = set()
+        category_markers = {
+            "diet": ["吃", "忌口", "过敏", "不耐受", "食物", "食材", "饮食", "喜欢吃", "不喜欢吃"],
+            "training_limit": ["限制", "伤病", "疼", "痛", "膝盖", "腰", "肩", "手腕", "脚踝", "低冲击", "禁忌", "能不能做", "可不可以做", "适合做"],
+            "goal": ["目标", "减脂", "增肌", "塑形", "提升体能", "康复", "计划"],
+            "resource": ["器械", "设备", "健身房", "哑铃", "杠铃", "弹力带", "无器械", "家里"],
+            "schedule": ["时间", "每周", "几天", "多久", "分钟", "安排", "周期", "近期"],
+            "identity": ["名字", "职业", "身份", "位置", "城市", "哪里"],
+        }
+        for category, markers in category_markers.items():
+            if any(marker in user_message for marker in markers):
+                categories.add(category)
+        return categories
+
+    @staticmethod
+    def _memory_category_score(category: str, memory_text: str) -> int:
+        memory_markers = {
+            "diet": ["吃", "忌口", "过敏", "不耐受", "食物", "食材", "饮食", "喜欢", "不喜欢", "避免"],
+            "training_limit": ["限制", "伤病", "疼", "痛", "膝盖", "腰", "肩", "手腕", "脚踝", "低冲击", "禁忌", "风险"],
+            "goal": ["目标", "减脂", "增肌", "塑形", "提升体能", "康复", "计划"],
+            "resource": ["器械", "设备", "健身房", "哑铃", "杠铃", "弹力带", "无器械", "家里"],
+            "schedule": ["时间", "每周", "几天", "多久", "分钟", "安排", "周期", "近期"],
+            "identity": ["名字", "职业", "身份", "位置", "城市", "在"],
+        }
+        return 3 if any(marker in memory_text for marker in memory_markers.get(category, [])) else 0
+
+    @staticmethod
+    def _answer_food_question_from_materials(
+        candidate: str,
+        materials: list[dict[str, Any]],
+    ) -> str | None:
+        related = [str(item.get("text") or "").strip() for item in materials if candidate in str(item.get("text") or "")]
+        if not related:
+            return None
+
+        combined = "\n".join(related)
+        negative_markers = [
+            f"不吃{candidate}",
+            f"不能吃{candidate}",
+            f"不喜欢{candidate}",
+            f"不喜欢吃{candidate}",
+            f"讨厌{candidate}",
+            f"忌口{candidate}",
+            f"避免{candidate}",
+            f"不碰{candidate}",
+            f"少吃{candidate}",
+        ]
+        if any(marker in combined for marker in negative_markers):
+            return f"你之前的跨对话记忆里提到过不吃或不喜欢{candidate}，我会把{candidate}作为需要避开的食材。"
+
+        allergy_markers = [f"{candidate}过敏", f"对{candidate}过敏", f"{candidate}不耐受"]
+        if any(marker in combined for marker in allergy_markers):
+            return f"你之前的跨对话记忆里提到过{candidate}相关过敏或不耐受，建议避免{candidate}。"
+
+        positive_markers = [f"喜欢{candidate}", f"喜欢吃{candidate}", f"常吃{candidate}", f"可以吃{candidate}"]
+        if any(marker in combined for marker in positive_markers):
+            return f"跨对话记忆里提到过你可以吃或喜欢{candidate}。"
+
+        return f"我在跨对话记忆里看到之前提到过{candidate}，但没有足够信息判断你是否要避免它；相关记忆是：{combined[:160]}。"
+
+    @staticmethod
+    def _extract_food_query_candidate(user_message: str) -> str | None:
+        text = user_message.strip()
+        if not any(marker in text for marker in ["吃不吃", "能不能吃", "可不可以吃", "可以吃", "能吃", "吃吗", "吃么", "吃？", "吃?"]):
+            return None
+
+        patterns = [
+            r"吃不吃\s*([\u4e00-\u9fffA-Za-z0-9]{1,20})",
+            r"(?:能不能|可不可以|可以|能)吃\s*([\u4e00-\u9fffA-Za-z0-9]{1,20})",
+            r"吃\s*([\u4e00-\u9fffA-Za-z0-9]{1,20})(?:吗|么|\?|？|$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            candidate = match.group(1).strip("，。！？? 吗么")
+            if candidate:
+                return candidate
+        return None
+
+    @staticmethod
+    def _extract_activity_query_candidate(user_message: str) -> str | None:
+        text = user_message.strip()
+        if not any(marker in text for marker in ["能不能做", "可不可以做", "可以做", "适合做", "能不能练", "可不可以练", "可以练", "适合练"]):
+            return None
+
+        patterns = [
+            r"(?:能不能|可不可以|可以|适合)(?:做|练)\s*([\u4e00-\u9fffA-Za-z0-9]{1,20})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            candidate = match.group(1).strip("，。！？? 吗么")
+            if candidate:
+                return candidate
         return None

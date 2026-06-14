@@ -315,8 +315,7 @@ def persist_session_turn_artifacts(
     if session is None:
         return None
 
-    snapshot = (state.conversation.session_summary_snapshot or "").strip()
-    summary_chunks = [chunk.strip() for chunk in state.conversation.summaries if chunk and chunk.strip() and chunk.strip() != snapshot]
+    summary_chunks = _summary_chunks_for_persistence(state)
     if summary_chunks:
         combined_summary = "\n".join(filter(None, [session.summary.strip(), *summary_chunks]))
         session.summary = compress_session_summary(combined_summary)
@@ -393,6 +392,26 @@ def persist_session_turn_artifacts(
         memory_points=extracted_working_points,
     )
     return session
+
+
+def _summary_chunks_for_persistence(state: SessionState) -> list[str]:
+    snapshot = (state.conversation.session_summary_snapshot or "").strip()
+    seen = {snapshot} if snapshot else set()
+    chunks: list[str] = []
+
+    for chunk in state.conversation.summaries:
+        text = str(chunk or "").strip()
+        if not text or text in seen or text.startswith("共享对话《"):
+            continue
+        chunks.append(text)
+        seen.add(text)
+
+    if state.memory.turn_summaries:
+        latest_summary = str(state.memory.turn_summaries[-1].summary or "").strip()
+        if latest_summary and latest_summary not in seen:
+            chunks.append(latest_summary)
+
+    return chunks
 
 
 def backfill_conversation_sessions_from_agent_runs(db: Session) -> int:

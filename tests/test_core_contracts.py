@@ -16,7 +16,10 @@ from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.markdown_contract import finalize_markdown_response, markdown_contract_violations
 from app.agent.runner import AgentRunner
+from app.agent.state.long_term_memory_point import LongTermMemoryPoint
+from app.agent.state.short_term_memory_point import ShortTermMemoryPoint
 from app.agent.state.conversation import AskAns
+from app.agent.state.memory import TurnMemory
 from app.agent.state.reasoning import Task, TaskStatus
 from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
 from app.agent.state.session_state import SessionState
@@ -44,6 +47,7 @@ from app.services.fitness_context import build_onboarding_status, hydrate_agent_
 from app.services.conversation_session import (
     _build_title_from_message,
     _normalize_session_title,
+    _summary_chunks_for_persistence,
     list_shared_conversation_knowledge,
 )
 from app.models.user import User
@@ -2243,3 +2247,81 @@ def test_shared_conversation_filter_is_applied_before_limit():
     )
 
     assert summaries == ["共享对话《共享训练总结》：用户偏好晨练，膝盖需要低冲击安排。"]
+
+
+def test_session_summary_persistence_uses_latest_turn_summary_without_shared_pollution():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.session_summary_snapshot = "旧摘要"
+    state.conversation.summaries = [
+        "旧摘要",
+        "共享对话《饮食偏好》：用户最近不吃菠菜。",
+        "当前会话新增摘要",
+    ]
+    state.memory.add_turn_summary(
+        TurnMemory(
+            turn_id=1,
+            user_message="我最近不吃菠菜",
+            ai_message="我会记住这个近期偏好。",
+            summary="用户最近不吃菠菜。",
+        )
+    )
+
+    chunks = _summary_chunks_for_persistence(state)
+
+    assert chunks == ["当前会话新增摘要", "用户最近不吃菠菜。"]
+
+
+def test_reason_node_answers_food_question_from_shared_conversation_summary():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.summaries = ["共享对话《饮食偏好》：用户最近不吃菠菜。"]
+    state.conversation.messages.append(HumanMessage(content="我吃不吃菠菜？"))
+
+    answer = ReasonNode._answer_from_memory(state)
+
+    assert answer is not None
+    assert "不吃或不喜欢菠菜" in answer
+
+
+def test_cross_conversation_memory_answers_food_preference_from_short_term_points():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.memory.short_term_memory_points.append(
+        ShortTermMemoryPoint(
+            content="用户最近不喜欢吃香菜，点餐时需要避开。",
+            memory_type="temporary_constraint",
+        )
+    )
+    state.conversation.messages.append(HumanMessage(content="我能不能吃香菜？"))
+
+    answer = ReasonNode._answer_from_memory(state)
+
+    assert answer is not None
+    assert "不吃或不喜欢香菜" in answer
+
+
+def test_cross_conversation_memory_answers_training_limits_from_shared_summary():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.summaries = ["共享对话《训练限制》：用户膝盖不适，近期训练需要低冲击安排，避免跳跃。"]
+    state.conversation.messages.append(HumanMessage(content="我有什么训练限制？"))
+
+    answer = ReasonNode._answer_from_memory(state)
+
+    assert answer is not None
+    assert "跨对话记忆" in answer
+    assert "低冲击" in answer
+
+
+def test_cross_conversation_memory_answers_goal_from_long_term_points():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.memory.long_term_memory_points.append(
+        LongTermMemoryPoint(
+            content="用户长期训练目标是减脂，同时提升耐力。",
+            memory_type="goal",
+        )
+    )
+    state.conversation.messages.append(HumanMessage(content="我的训练目标是什么？"))
+
+    answer = ReasonNode._answer_from_memory(state)
+
+    assert answer is not None
+    assert "减脂" in answer
+    assert "提升耐力" in answer
