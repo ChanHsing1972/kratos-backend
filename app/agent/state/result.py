@@ -191,19 +191,9 @@ class ResultState(BaseModel):
         self.structured_artifacts = artifacts
 
     def reset_runtime_for_new_turn(self) -> None:
-        """清理跨轮不应继承的运行态字段。"""
+        """清理跨轮不应继承的运行态字段，保留本轮最终可见结果。"""
 
-        self.training_plan_draft = None
-        self.workout_plan = None
-        self.diet_plan = None
-        self.food_image_estimate = None
-        self.structured_artifacts = {"version": 1}
         self.first_response = None
-        self.response = None
-        self.reflection_suggestions = []
-        self.task_results = []
-        self.tool_results = []
-        self.final_answer_ready = False
         self.touch()
 
     def reset_all(self) -> None:
