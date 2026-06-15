@@ -2043,6 +2043,88 @@ def test_generate_node_stream_holds_incomplete_table_until_it_can_render():
     assert "每周训练安排|" not in str(answer_events[0].get("content") or "")
 
 
+def test_generate_node_stream_emits_stable_table_prefix_before_final_row():
+    class RowByRowTableLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(
+                content="### 每周训练安排\n\n| 星期 | 主题 | 动作 | 组数 |\n| --- | --- | --- | --- |\n"
+            )
+            yield SimpleNamespace(content="| 周一 | 全身")
+            yield SimpleNamespace(content="力量 A | 深蹲 | 4 |\n")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(RowByRowTableLLM()).stream_response_events(state))
+    answer_events = [
+        event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
+    ]
+    streamed = ""
+    snapshots = []
+    for event in answer_events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+        snapshots.append(streamed)
+
+    assert answer_events
+    table_event_index = next(
+        index
+        for index, event in enumerate(answer_events)
+        if "| 星期 | 主题 | 动作 | 组数 |" in str(event.get("content") or "")
+    )
+    assert answer_events[table_event_index]["type"] == "answer_delta"
+    assert "| --- | --- | --- | --- |" in str(answer_events[table_event_index].get("content") or "")
+    assert not any("| 周一 | 全身 |" in snapshot for snapshot in snapshots[:-1])
+    assert "| 周一 | 全身力量 A | 深蹲 | 4 |" in streamed
+    assert streamed == state.result.response
+    assert not any(event.get("type") == "answer_replace" for event in answer_events)
+
+
+def test_generate_node_stream_keeps_completed_table_rows_visible_while_next_row_streams():
+    class MultiRowTableLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(
+                content=(
+                    "### 每周训练安排\n\n"
+                    "| 星期 | 主题 | 动作 | 组数 |\n"
+                    "| --- | --- | --- | --- |\n"
+                    "| 周一 | 全身力量 A | 深蹲 | 4 |\n"
+                )
+            )
+            yield SimpleNamespace(content="| 周二 | 上肢")
+            yield SimpleNamespace(content="力量 | 卧推 | 3 |\n")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(MultiRowTableLLM()).stream_response_events(state))
+    answer_events = [
+        event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
+    ]
+    streamed = ""
+    snapshots = []
+    for event in answer_events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+        snapshots.append(streamed)
+
+    first_table_snapshot = next(snapshot for snapshot in snapshots if "| 周一 | 全身力量 A | 深蹲 | 4 |" in snapshot)
+    assert "| 周二 |" not in first_table_snapshot
+    assert "| 周二 | 上肢力量 | 卧推 | 3 |" in streamed
+    assert streamed == state.result.response
+    assert not any(event.get("type") == "answer_replace" for event in answer_events)
+
+
 def test_runner_streams_only_final_answer_after_replan(monkeypatch):
     sleep_calls = []
     monkeypatch.setattr("app.agent.runner.time.sleep", lambda seconds: sleep_calls.append(seconds))

@@ -172,12 +172,14 @@ def _trailing_unstable_markdown_start(text: str) -> int | None:
         return None
 
     last_start, last_line = lines[last_nonempty]
+    forced_hold_from: int | None = None
     if (
         last_nonempty == len(lines) - 1
         and not candidate.endswith("\n")
         and _looks_like_unstable_table_fragment(last_line)
         and not last_line.rstrip().endswith("|")
     ):
+        forced_hold_from = last_start
         candidate = candidate[:last_start]
         lines = _line_infos(candidate)
         last_nonempty = len(lines) - 1
@@ -188,19 +190,58 @@ def _trailing_unstable_markdown_start(text: str) -> int | None:
         last_start, last_line = lines[last_nonempty]
 
     if not _looks_like_unstable_table_fragment(last_line):
-        return None
+        return forced_hold_from
 
     block_start = last_nonempty
     while block_start > 0 and _looks_like_unstable_table_fragment(lines[block_start - 1][1]):
         block_start -= 1
 
-    if last_nonempty - block_start + 1 <= 1:
+    stable_end = _stable_table_prefix_end(candidate, lines, block_start, last_nonempty)
+    if stable_end is None:
         return lines[block_start][0]
+    if stable_end >= len(candidate):
+        return forced_hold_from
+    return stable_end
 
-    repaired_candidate = finalize_markdown_response(candidate)
-    if any("表格" in violation for violation in markdown_contract_violations(repaired_candidate)):
-        return lines[block_start][0]
-    return None
+
+def _stable_table_prefix_end(
+    text: str,
+    lines: list[tuple[int, str]],
+    block_start: int,
+    last_nonempty: int,
+) -> int | None:
+    """Return the end offset of the stable visible part of a trailing table."""
+
+    best_end: int | None = None
+    for index in range(block_start, last_nonempty + 1):
+        if index + 1 < len(lines):
+            end = lines[index + 1][0]
+        else:
+            end = len(text)
+        prefix = text[:end]
+        repaired_prefix = finalize_markdown_response(prefix)
+        if any("表格" in violation for violation in markdown_contract_violations(repaired_prefix)):
+            continue
+        if not _contains_valid_markdown_table(repaired_prefix):
+            continue
+        best_end = end
+    return best_end
+
+
+def _contains_valid_markdown_table(markdown: str) -> bool:
+    lines = [line.strip() for line in markdown.splitlines()]
+    for index, line in enumerate(lines[:-1]):
+        if not _looks_like_unstable_table_fragment(line):
+            continue
+        separator = lines[index + 1]
+        if _is_markdown_table_separator(separator):
+            return True
+    return False
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return len(cells) >= 2 and all(re.match(r"^:?-{2,}:?$", cell) for cell in cells)
 
 
 def _line_infos(text: str) -> list[tuple[int, str]]:
