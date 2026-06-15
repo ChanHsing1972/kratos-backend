@@ -378,12 +378,6 @@ def _model_route_events(
             "session_id": session_id,
             "raw": raw,
         },
-        {
-            "type": "status",
-            "content": "完成选择执行路径",
-            "session_id": session_id,
-            "raw": {"node": "router", "phase": "end", "elapsed_ms": 0, **raw},
-        },
     ]
     for event in events:
         if run_id is not None:

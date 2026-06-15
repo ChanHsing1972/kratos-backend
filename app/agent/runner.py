@@ -10,6 +10,8 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.agent.intent_policy import should_run_reflection
 from app.agent.nodes.act_node import ActNode
 from app.agent.nodes.end_node import EndNode
@@ -131,7 +133,7 @@ class AgentRunner:
         self._raise_if_cancelled(should_cancel)
         elapsed = time.monotonic() - t0
         _log_node_time("intent", t0, user_id, session_id)
-        yield self._node_event("intent", "end", elapsed)
+        yield self._node_event("intent", "end", elapsed, state)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("intent", state, after_node)
 
@@ -141,13 +143,11 @@ class AgentRunner:
         router_node = getattr(self.nodes, "router", None)
         if router_node is not None:
             self._raise_if_cancelled(should_cancel)
-            yield self._node_event("router", "start")
             t0 = time.monotonic()
             state = router_node(state)
             self._raise_if_cancelled(should_cancel)
             elapsed = time.monotonic() - t0
             _log_node_time("router", t0, user_id, session_id)
-            yield self._node_event("router", "end", elapsed)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("router", state, after_node)
         else:
@@ -162,7 +162,7 @@ class AgentRunner:
             self._raise_if_cancelled(should_cancel)
             elapsed = time.monotonic() - t0
             _log_node_time("workflow", t0, user_id, session_id)
-            yield self._node_event("workflow", "end", elapsed)
+            yield self._node_event("workflow", "end", elapsed, state)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("workflow", state, after_node)
 
@@ -191,7 +191,7 @@ class AgentRunner:
             self._raise_if_cancelled(should_cancel)
             elapsed = time.monotonic() - t0
             _log_node_time("multi_agent", t0, user_id, session_id)
-            yield self._node_event("multi_agent", "end", elapsed)
+            yield self._node_event("multi_agent", "end", elapsed, state)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("multi_agent", state, after_node)
 
@@ -203,7 +203,7 @@ class AgentRunner:
             self._raise_if_cancelled(should_cancel)
             elapsed = time.monotonic() - t0
             _log_node_time("plan", t0, user_id, session_id)
-            yield self._node_event("plan", "end", elapsed)
+            yield self._node_event("plan", "end", elapsed, state)
             step_count = self._check_step_budget(step_count)
             yield from self._after_node("plan", state, after_node)
 
@@ -216,7 +216,7 @@ class AgentRunner:
                     self._raise_if_cancelled(should_cancel)
                     elapsed = time.monotonic() - t0
                     _log_node_time("reason", t0, user_id, session_id)
-                    yield self._node_event("reason", "end", elapsed)
+                    yield self._node_event("reason", "end", elapsed, state)
                     step_count = self._check_step_budget(step_count)
                     yield from self._after_node("reason", state, after_node)
 
@@ -237,7 +237,7 @@ class AgentRunner:
                         self._raise_if_cancelled(should_cancel)
                         elapsed = time.monotonic() - t0
                         _log_node_time("act", t0, user_id, session_id)
-                        yield self._node_event("act", "end", elapsed)
+                        yield self._node_event("act", "end", elapsed, state)
                         step_count = self._check_step_budget(step_count)
                         yield from self._after_node("act", state, after_node)
                         continue
@@ -249,7 +249,7 @@ class AgentRunner:
                     self._raise_if_cancelled(should_cancel)
                     elapsed = time.monotonic() - t0
                     _log_node_time("finish", t0, user_id, session_id)
-                    yield self._node_event("finish", "end", elapsed)
+                    yield self._node_event("finish", "end", elapsed, state)
                     step_count = self._check_step_budget(step_count)
                     yield from self._after_node("finish", state, after_node)
 
@@ -276,7 +276,7 @@ class AgentRunner:
                         yield generated_event
                     elapsed = time.monotonic() - t0
                     _log_node_time("generate", t0, user_id, session_id)
-                    yield self._node_event("generate", "end", elapsed)
+                    yield self._node_event("generate", "end", elapsed, state)
                 else:
                     self._raise_if_cancelled(should_cancel)
                     yield self._node_event("generate", "start")
@@ -285,7 +285,7 @@ class AgentRunner:
                     self._raise_if_cancelled(should_cancel)
                     elapsed = time.monotonic() - t0
                     _log_node_time("generate", t0, user_id, session_id)
-                    yield self._node_event("generate", "end", elapsed)
+                    yield self._node_event("generate", "end", elapsed, state)
                 step_count = self._check_step_budget(step_count)
                 final_generated = True
                 yield from self._after_node("generate", state, after_node)
@@ -298,7 +298,7 @@ class AgentRunner:
                     self._raise_if_cancelled(should_cancel)
                     elapsed = time.monotonic() - t0
                     _log_node_time("reflect", t0, user_id, session_id)
-                    yield self._node_event("reflect", "end", elapsed)
+                    yield self._node_event("reflect", "end", elapsed, state)
                     step_count = self._check_step_budget(step_count)
                     yield from self._after_node("reflect", state, after_node)
                 else:
@@ -337,7 +337,7 @@ class AgentRunner:
                 self._raise_if_cancelled(should_cancel)
                 elapsed = time.monotonic() - t0
                 _log_node_time("plan", t0, user_id, session_id)
-                yield self._node_event("plan", "end", elapsed)
+                yield self._node_event("plan", "end", elapsed, state)
                 step_count = self._check_step_budget(step_count)
                 yield from self._after_node("plan", state, after_node)
 
@@ -348,7 +348,7 @@ class AgentRunner:
         self._raise_if_cancelled(should_cancel)
         elapsed = time.monotonic() - t0
         _log_node_time("end", t0, user_id, session_id)
-        yield self._node_event("end", "end", elapsed)
+        yield self._node_event("end", "end", elapsed, state)
         step_count = self._check_step_budget(step_count)
         yield from self._after_node("end", state, after_node)
 
@@ -428,12 +428,17 @@ class AgentRunner:
         yield from after_node(node_name, state)
 
     @staticmethod
-    def _node_event(node_name: str, phase: str, elapsed: float | None = None) -> dict[str, Any]:
+    def _node_event(
+        node_name: str,
+        phase: str,
+        elapsed: float | None = None,
+        state: SessionState | None = None,
+    ) -> dict[str, Any]:
         labels = {
             "intent": "理解用户问题",
             "router": "选择执行路径",
             "workflow": "执行轻量流程",
-            "multi_agent": "协调多专家任务",
+            "multi_agent": "协调专项能力",
             "plan": "规划任务",
             "reason": "推理并选择工具",
             "act": "执行工具",
@@ -445,11 +450,183 @@ class AgentRunner:
         if phase == "start":
             content = f"开始{labels.get(node_name, node_name)}"
         else:
-            content = f"完成{labels.get(node_name, node_name)}"
+            content = AgentRunner._node_end_content(node_name, state) or f"已完成{labels.get(node_name, node_name)}"
         raw: dict[str, Any] = {"node": node_name, "phase": phase}
         if elapsed is not None:
             raw["elapsed_ms"] = int(elapsed * 1000)
         return {"type": "status", "content": content, "raw": raw}
+
+    @staticmethod
+    def _node_end_content(node_name: str, state: SessionState | None) -> str | None:
+        if state is None:
+            return None
+
+        if node_name == "intent":
+            intents = "、".join(state.reasoning.intent or ["未明确"])
+            info_bits = AgentRunner._extracted_info_summary(state)
+            suffix = f"；{info_bits}" if info_bits else ""
+            return AgentRunner._clip(f"已理解用户问题：意图为 {intents}{suffix}")
+
+        if node_name == "router":
+            mode_labels = {
+                ExecutionMode.workflow: "轻量记忆/问答流程",
+                ExecutionMode.autonomous_loop: "标准分析流程",
+                ExecutionMode.multi_agent: "专项能力协同流程",
+            }
+            agents = AgentRunner._agent_labels(state.reasoning.required_agents)
+            agent_part = f"，启用 {agents}" if agents else ""
+            reason = state.reasoning.routing_reason or "根据本轮意图选择默认处理路径。"
+            return AgentRunner._clip(
+                f"已选择执行路径：{mode_labels.get(state.reasoning.execution_mode, str(state.reasoning.execution_mode))}"
+                f"{agent_part}；{reason}"
+            )
+
+        if node_name == "workflow":
+            if state.result.final_answer_ready:
+                return "已完成轻量流程：可直接回答，无需进入完整规划。"
+            return "已完成轻量流程：仍需结合上下文继续规划。"
+
+        if node_name == "multi_agent":
+            agents = AgentRunner._agent_labels(state.reasoning.required_agents) or "训练、营养与安全能力"
+            task_count = len(state.reasoning.tasks)
+            return AgentRunner._clip(f"已协调专项能力：{agents} 已合并为 {task_count} 个可执行任务。")
+
+        if node_name == "plan":
+            tasks = state.reasoning.tasks or []
+            if not tasks:
+                return "已规划任务：本轮无需拆分子任务，将直接回答。"
+            task_text = "；".join(
+                f"{task.name}：{task.description or task.name}"
+                for task in tasks[:3]
+            )
+            if len(tasks) > 3:
+                task_text += f"；另有 {len(tasks) - 3} 个任务"
+            return AgentRunner._clip(f"已规划任务：{task_text}")
+
+        if node_name == "reason":
+            task = AgentRunner._latest_active_task(state)
+            if task is None:
+                return "已推理并选择工具：所有子任务已完成，进入最终回答生成。"
+            if task.tool_calls:
+                tools = "、".join(call.name for call in task.tool_calls)
+                if task.status == TaskStatus.waiting_for_tool:
+                    return AgentRunner._clip(f"已推理并选择工具：需要调用 {tools}。")
+                return AgentRunner._clip(f"已推理并选择工具：已结合 {tools} 的结果整理子任务结论。")
+            if task.result:
+                return AgentRunner._clip(f"已推理并选择工具：无需调用工具，结论为 {AgentRunner._summarize(task.result)}")
+            if task.error:
+                return AgentRunner._clip(f"已推理并选择工具：任务遇到问题，{task.error}")
+            return "已推理并选择工具：无需额外工具，继续整理结果。"
+
+        if node_name == "act":
+            calls = [call for task in state.reasoning.tasks for call in task.tool_calls]
+            finished = [call.name for call in calls if call.result is not None]
+            failed = [call.name for call in calls if call.error]
+            parts = []
+            if finished:
+                parts.append("已获得 " + "、".join(finished) + " 结果")
+            if failed:
+                parts.append("失败 " + "、".join(failed))
+            return AgentRunner._clip("已执行工具：" + ("；".join(parts) if parts else "工具未返回可用结果。"))
+
+        if node_name == "finish":
+            task = AgentRunner._latest_finished_task(state)
+            if task is not None:
+                return AgentRunner._clip(f"已整理子任务结果：{task.name}，{AgentRunner._summarize(task.result or task.error or '已完成')}")
+            return "已整理子任务结果：当前任务队列已推进。"
+
+        if node_name == "generate":
+            answer_len = len(str(state.result.response or ""))
+            artifacts = dict(state.result.structured_artifacts or {})
+            artifact_names = "、".join(key for key in artifacts.keys() if key != "version")
+            suffix = f"，并整理了 {artifact_names}" if artifact_names else ""
+            return f"已生成最终回答：约 {answer_len} 字{suffix}。"
+
+        if node_name == "reflect":
+            reflection = state.reasoning.reflection or {}
+            suggestions = [str(item) for item in reflection.get("suggestions") or [] if str(item).strip()]
+            if suggestions:
+                return AgentRunner._clip("已完成反思校验：需要修正 " + "；".join(suggestions[:3]))
+            if reflection.get("is_pass") is False:
+                return "已完成反思校验：未通过，但没有返回明确修正建议。"
+            return "已完成反思校验：回答通过安全性、完整性和计划结构检查。"
+
+        if node_name == "end":
+            memory_mode = "已安排后台保存会话、标题和记忆" if state.result.response else "无最终回答可保存"
+            return f"已完成收尾保存上下文：{memory_mode}。"
+
+        return None
+
+    @staticmethod
+    def _extracted_info_summary(state: SessionState) -> str:
+        extracted = state.reasoning.extracted_info or {}
+        profile = extracted.get("profile") if isinstance(extracted, dict) else {}
+        bits: list[str] = []
+        if isinstance(profile, dict):
+            if profile.get("goal"):
+                bits.append(f"目标 {profile['goal']}")
+            if profile.get("body_condition"):
+                bits.append(f"身体状态 {profile['body_condition']}")
+            if profile.get("available_time_minutes"):
+                bits.append(f"可用时间 {profile['available_time_minutes']} 分钟")
+            if profile.get("weight_kg"):
+                bits.append(f"体重 {profile['weight_kg']}kg")
+        daily_diet = extracted.get("daily_diet") if isinstance(extracted, dict) else None
+        if daily_diet:
+            bits.append("包含饮食记录")
+        training_feedback = extracted.get("training_feedback") if isinstance(extracted, dict) else None
+        if training_feedback:
+            bits.append("包含训练反馈")
+        return "已提取 " + "，".join(bits) if bits else ""
+
+    @staticmethod
+    def _agent_labels(agents: list[str]) -> str:
+        labels = {
+            "fitness": "训练建议",
+            "nutrition": "营养建议",
+            "safety": "安全检查",
+        }
+        return "、".join(labels.get(agent, agent) for agent in agents)
+
+    @staticmethod
+    def _latest_active_task(state: SessionState):
+        task = state.reasoning.current_task()
+        if task is not None:
+            return task
+        return AgentRunner._latest_finished_task(state)
+
+    @staticmethod
+    def _latest_finished_task(state: SessionState):
+        index = min(state.reasoning.current_task_index - 1, len(state.reasoning.tasks) - 1)
+        if index < 0:
+            return None
+        return state.reasoning.tasks[index]
+
+    @staticmethod
+    def _summarize(value: Any, max_chars: int = 120) -> str:
+        if value is None:
+            return "已完成"
+        if isinstance(value, BaseModel):
+            text = value.model_dump_json()
+        elif isinstance(value, dict):
+            for key in ("answer", "result", "summary", "message"):
+                if key in value and value[key]:
+                    text = str(value[key])
+                    break
+            else:
+                text = "已获得结构化结果"
+        elif isinstance(value, list):
+            text = f"返回 {len(value)} 条结果"
+        else:
+            text = str(value)
+        return AgentRunner._clip(text, max_chars)
+
+    @staticmethod
+    def _clip(text: str, max_chars: int = 180) -> str:
+        clean = " ".join(str(text).split())
+        if len(clean) <= max_chars:
+            return clean
+        return clean[: max_chars - 1].rstrip() + "…"
 
 
 def _log_node_time(node_name: str, start_time: float, user_id: str, session_id: str) -> None:
