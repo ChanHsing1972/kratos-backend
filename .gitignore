@@ -9,3 +9,7 @@ __pycache__/
 dist/
 build/
 uploads/
+
+# iCloud/Finder conflict copies
+* 2.py
+* 2.sql

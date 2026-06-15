@@ -3,8 +3,8 @@ set -euo pipefail
 
 : "${SERVICE_NAME:?SERVICE_NAME is required}"
 : "${APP_PORT:?APP_PORT is required}"
+: "${DEPLOY_HOST:?DEPLOY_HOST is required}"
 
-DEPLOY_HOST="${DEPLOY_HOST:-192.0.2.1}"
 DEPLOY_USER="${DEPLOY_USER:-root}"
 DEPLOY_PORT="${DEPLOY_PORT:-22}"
 REMOTE_DIR="${REMOTE_DIR:-/srv/se3/$SERVICE_NAME}"

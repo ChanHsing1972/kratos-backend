@@ -2,10 +2,12 @@ image: python:3.11-slim
 
 stages:
   - verify
+  - test
   - deploy
 
 workflow:
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "master"'
     - when: never
 
@@ -13,7 +15,6 @@ variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
-  DEPLOY_HOST: "192.0.2.1"
   DEPLOY_USER: "root"
   DEPLOY_PORT: "22"
   SERVICE_NAME: "agent-backend"
@@ -27,26 +28,35 @@ cache:
   paths:
     - .cache/pip/
 
-verify:
-  stage: verify
-  before_script:
+.python_setup:
+  before_script: &python_setup
     - python -V
     - python -m pip config set global.index-url "$PIP_INDEX_URL"
     - python -m pip install -U pip
     - python -m pip install -r requirements.txt
+
+verify:
+  stage: verify
+  interruptible: true
+  before_script: *python_setup
   script:
-    - python -m compileall app
-    - |
-      set +e
-      python -m pytest -q
-      status=$?
-      set -e
-      if [ "$status" -ne 0 ] && [ "$status" -ne 5 ]; then
-        exit "$status"
-      fi
+    - python -m compileall -q app tests
+
+test:
+  stage: test
+  interruptible: true
+  needs:
+    - verify
+  before_script: *python_setup
+  script:
+    - mkdir -p reports
+    - PYTHONPATH=. python -m pytest -q --junitxml=reports/pytest.xml
   artifacts:
     when: always
+    reports:
+      junit: reports/pytest.xml
     paths:
+      - reports/
       - .pytest_cache/
     expire_in: 1 week
 
@@ -54,14 +64,22 @@ deploy:
   stage: deploy
   image: alpine:3.20
   needs:
-    - verify
+    - test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: manual
+    - when: never
   resource_group: agent-backend-production
   before_script:
     - sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
     - apk add --no-cache bash openssh-client sshpass tar
   script:
+    - test -n "$DEPLOY_HOST" || (echo "DEPLOY_HOST must be configured in GitLab CI/CD Variables." >&2; exit 1)
     - chmod +x ci/deploy_backend.sh
     - ci/deploy_backend.sh
   environment:
     name: $CI_COMMIT_BRANCH
-    url: http://192.0.2.1/

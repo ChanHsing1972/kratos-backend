@@ -5,13 +5,6 @@
 ## 快速开始
 
 前置条件：Python 3.10+。
-# Agent 应用后端
-
-本仓库实现 Kratos 智能健身 Agent 的后端。主要负责 Agent 运行时、工具封装、长期/短期记忆存储以及与前端的 REST 接口对接等。
-
-## 快速开始
-
-前置条件：Python 3.10+。
 
 在仓库根目录执行：
 
@@ -25,21 +18,20 @@ pip install -r requirements.txt
 
 cp .env.example .env
 
-# 通过 ssh 隧道连接远程 PostgreSQL
-ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 5432:localhost:5432 root@192.0.2.1
+# 如需通过 SSH 隧道连接远程 PostgreSQL，请把示例主机替换为自己的部署主机
+ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 5432:localhost:5432 user@example-host
 
-# 连接大模型端口
-ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 root@192.0.2.1
+# 如需通过 SSH 隧道连接自托管大模型端口
+ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 user@example-host
 
-# 如果使用 Autossh
+# 如果使用 autossh，请按自己的主机和转发目标替换占位符
 autossh -M 0 -f -N \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes \
   -L 5432:localhost:5432 \
   -L 4141:localhost:4141 \
-  -R 8443:token.bayesdl.com:443 \
-  do
+  user@example-host
 
 # 启动服务器，默认端口 8000
 uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
@@ -94,8 +86,8 @@ source .venv/bin/activate # macOS/Linux
 
 pip install -r requirements.txt
 
-# 连接大模型端口
-ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 root@192.0.2.1
+# 如需连接自托管大模型端口，请把示例主机替换为自己的部署主机
+ssh -f -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 4141:localhost:4141 user@example-host
 
 # 直接运行 Agent 主程序，观察日志输出
 python -m app.agent.main
@@ -113,7 +105,5 @@ python -m app.agent.main
 - `app/agent/graph.py`: LangGraph 状态流。
 
 ## 测试
-
-使用 `pytest` 组织单元与集成测试，测试代码放在 `tests/` 目录。
 
 使用 `pytest` 组织单元与集成测试，测试代码放在 `tests/` 目录。

@@ -54,7 +54,12 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Kratos Agent Backend"
     API_V1_STR: str = "/api/v1"
     CORS_ORIGINS: str = (
-        "http://localhost:5173," "http://127.0.0.1:5173," "http://localhost:5174," "http://127.0.0.1:5174," "http://localhost:3000," "http://127.0.0.1:3000," "http://192.0.2.1"
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174,"
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000"
     )
     CORS_ALLOW_ORIGIN_REGEX: str = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 
@@ -132,7 +137,7 @@ class Settings(BaseSettings):
 
     ALIYUN_OSS_ACCESS_KEY_ID: str | None = None
     ALIYUN_OSS_ACCESS_KEY_SECRET: str | None = None
-    ALIYUN_OSS_BUCKET: str = "chanhsing"
+    ALIYUN_OSS_BUCKET: str = ""
     ALIYUN_OSS_ENDPOINT: str = "https://oss-cn-shanghai.aliyuncs.com"
     ALIYUN_OSS_PUBLIC_BASE_URL: str | None = None
     UPLOAD_STORAGE_DIR: str | None = None
