@@ -486,37 +486,34 @@ class GenerateNode(BaseNode):
         tasks = state.reasoning.tasks
         intents = state.reasoning.intent
         skill_context = self.describe_active_skills(state)
-        supported_exercises = "、".join(list_supported_exercise_names())
+        include_training_library = self._needs_training_library(state)
+        supported_exercises = (
+            "、".join(list_supported_exercise_names())
+            if include_training_library
+            else "本轮不是训练计划生成任务，动作库已省略。"
+        )
+        wants_tool_inventory = bool(re.search(r"(工具|tools?|可调用|能力清单|支持哪些)", user_message, flags=re.IGNORECASE))
+        executed_tools = self._executed_tool_summaries(state)
         available_tools = json.dumps(
-            self.describe_tools(state.tools.available_tools),
+            self.describe_tools(state.tools.available_tools)
+            if wants_tool_inventory
+            else {
+                "executed_tools_this_turn": executed_tools,
+                "available_tool_count": len(state.tools.available_tools),
+                "note": "用户未询问工具清单，完整工具 schema 已省略。",
+            },
             ensure_ascii=False,
             default=str,
             indent=2,
         )
 
         task_results = "\n".join([f"- {task.name} [{task.status}]: {task.result or task.error or '无结果'}" for task in tasks])
-        memory_context = json.dumps(
-            {
-                "long_term": state.memory.long_term_memory.model_dump(),
-                "long_term_memory_points": [
-                    item.model_dump(mode="json")
-                    for item in state.memory.long_term_memory_points
-                ],
-                "short_term_memory_points": [
-                    item.model_dump(mode="json")
-                    for item in state.memory.short_term_memory_points
-                ],
-                "working_memory_points": [
-                    item.model_dump(mode="json")
-                    for item in state.memory.working_memory_points
-                ],
-                "mid_term": state.memory.mid_term_memory.model_dump(),
-                "database_context": state.memory.database_context,
-            },
-            ensure_ascii=False,
-            default=str,
-            indent=2,
+        memory_payload = (
+            self._full_memory_context(state)
+            if include_training_library
+            else self._compact_memory_context(state)
         )
+        memory_context = json.dumps(memory_payload, ensure_ascii=False, default=str, indent=2)
         external_knowledge_context = state.memory.database_context.get(
             "knowledge_base_text",
             "未检索到外部知识库上下文。",
@@ -553,6 +550,9 @@ class GenerateNode(BaseNode):
         - 如果年龄未知，不要输出高龄、老年、60岁等表述；如果只知道训练时长为 60 分钟，只能写“每次60分钟”。
         - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
         - 如果某些工具失败或信息不足，明确说明不确定性。
+        - 天气、新闻、地点、路线、导航等实时外部信息只能基于“子任务结果”或“已执行工具摘要”。不得说“我查找了/我为你导航/我搜索到”任何本轮未执行的工具结果。
+        - 如果工具结果只包含天气，不得编造 POI、地址、距离、路线或导航方案；应说明已完成天气查询，地点/导航仍缺少工具结果或起点信息。
+        - 如果地点/导航工具失败，说明失败环节并请求更明确的起点、城市或目的地类别。
         - 如果用户使用“继续”“这个”“上一个”“第二个”“说错了”“不是”“改成”等省略或修正表达，必须先结合最近会话上下文消解指代；无法唯一确定时先澄清，不要假装理解。
         - 如果使用“外部知识库检索结果”中的事实、数字或安全边界，必须在对应句子后标注来源，引用格式为 [知识库:标题#编号]。
         - 面向用户展示出处时，优先给出知识来源的文章/网页标题或机构指南名；若上下文提供网页 URL，也要在“参考来源”或对应句子中展示该网页 URL。
@@ -589,6 +589,9 @@ class GenerateNode(BaseNode):
         当前可用工具(JSON):
         {available_tools}
 
+        已执行工具摘要(JSON):
+        {json.dumps(executed_tools, ensure_ascii=False, default=str, indent=2)}
+
         外部知识库检索结果:
         {external_knowledge_context}
 
@@ -610,6 +613,84 @@ class GenerateNode(BaseNode):
         子任务结果:
         {task_results}
         """
+
+    @staticmethod
+    def _needs_training_library(state: SessionState) -> bool:
+        intents = set(state.reasoning.intent or [])
+        if intents & {"健身计划", "饮食计划", "调整计划", "反馈"}:
+            return True
+        task_text = " ".join(f"{task.name} {task.description or ''}" for task in state.reasoning.tasks)
+        return any(keyword in task_text for keyword in ["训练计划", "动作", "组数", "训练安排", "饮食计划"])
+
+    @staticmethod
+    def _executed_tool_summaries(state: SessionState) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for task in state.reasoning.tasks:
+            for tool_call in task.tool_calls:
+                summaries.append(
+                    {
+                        "task_name": task.name,
+                        "tool_name": tool_call.name,
+                        "status": str(tool_call.status),
+                        "args": tool_call.args,
+                        "result_summary": GenerateNode._compact_value(tool_call.result, 1200),
+                        "error": tool_call.error,
+                    }
+                )
+        return summaries
+
+    @staticmethod
+    def _full_memory_context(state: SessionState) -> dict[str, Any]:
+        return {
+            "long_term": state.memory.long_term_memory.model_dump(),
+            "long_term_memory_points": [
+                item.model_dump(mode="json")
+                for item in state.memory.long_term_memory_points
+            ],
+            "short_term_memory_points": [
+                item.model_dump(mode="json")
+                for item in state.memory.short_term_memory_points
+            ],
+            "working_memory_points": [
+                item.model_dump(mode="json")
+                for item in state.memory.working_memory_points
+            ],
+            "mid_term": state.memory.mid_term_memory.model_dump(),
+            "database_context": state.memory.database_context,
+        }
+
+    @staticmethod
+    def _compact_memory_context(state: SessionState) -> dict[str, Any]:
+        long_term = state.memory.long_term_memory
+        physical = long_term.physical_profile
+        lifestyle = long_term.lifestyle_profile
+        database_context = dict(state.memory.database_context or {})
+        knowledge_text = database_context.get("knowledge_base_text")
+        if isinstance(knowledge_text, str) and len(knowledge_text) > 1200:
+            database_context["knowledge_base_text"] = f"{knowledge_text[:1200]}..."
+        return {
+            "profile_summary": {
+                "name": long_term.name,
+                "gender": long_term.gender,
+                "location": long_term.location,
+                "goal": lifestyle.goal,
+                "height_cm": physical.height_cm,
+                "weight_kg": physical.weight_kg,
+                "body_condition": physical.body_condition,
+            },
+            "database_context": database_context,
+            "note": "本轮信息查询已使用精简记忆，避免把无关训练库和完整历史塞入最终回答。",
+        }
+
+    @staticmethod
+    def _compact_value(value: Any, max_chars: int) -> Any:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            text = str(value)
+        if len(text) <= max_chars:
+            return value
+        return f"{text[:max_chars]}..."
 
     def apply_response(
         self,

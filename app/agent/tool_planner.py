@@ -51,9 +51,16 @@ def build_fallback_reason_data(
         not has_structured_intent
         and _message_has_any(user_message, ["饮食", "吃", "食谱", "增肌期间", "减脂期间", "控制饮食"])
     )
-    is_running_route_request = "路线查询" in intents or (
-        not has_structured_intent
-        and _message_has_any(user_message, ["跑步路线", "跑步", "晨跑", "夜跑", "路线规划", "公里路线", "适合跑步"])
+    route_markers = ["导航", "怎么去", "怎么走", "路线规划", "规划路线", "附近", "周边", "球场", "场馆", "场地"]
+    is_running_route_request = (
+        ("路线查询" in intents and _message_has_any(user_message, ["跑步", "晨跑", "夜跑", "公里路线"]))
+        or (
+            not has_structured_intent
+            and _message_has_any(user_message, ["跑步路线", "跑步", "晨跑", "夜跑", "公里路线", "适合跑步"])
+        )
+    )
+    is_place_navigation_request = "路线查询" in intents or (
+        not has_structured_intent and _message_has_any(user_message, route_markers)
     )
     is_bodyparts_request = (
         not has_structured_intent
@@ -100,7 +107,13 @@ def build_fallback_reason_data(
     elif is_bodyparts_request and "rapidapi_bodyparts" in available_tools:
         fallback_tool_name = "rapidapi_bodyparts"
         fallback_id = "fallback-bodyparts"
+    elif is_place_navigation_request and not is_running_route_request and "place_navigation_advisor" in available_tools:
+        fallback_tool_name = "place_navigation_advisor"
+        fallback_id = "fallback-place-navigation"
     elif is_running_route_request and "running_route_advisor" in available_tools:
+        fallback_tool_name = "running_route_advisor"
+        fallback_id = "fallback-running-route"
+    elif is_place_navigation_request and "running_route_advisor" in available_tools:
         fallback_tool_name = "running_route_advisor"
         fallback_id = "fallback-running-route"
 
@@ -197,6 +210,9 @@ def repair_tool_args(
 
     if tool_name == "running_route_advisor":
         _repair_running_route_args(args, user_message)
+
+    if tool_name == "place_navigation_advisor":
+        _repair_place_navigation_args(args, user_message)
 
     if tool_name == "pain_safety_gate":
         _repair_safety_args(args, user_message, task)
@@ -379,6 +395,113 @@ def _repair_running_route_args(args: dict[str, Any], user_message: str) -> None:
             args["route_preference"] = "park_loop"
         else:
             args["route_preference"] = "general"
+
+
+def _repair_place_navigation_args(args: dict[str, Any], user_message: str) -> None:
+    normalized_message = user_message.replace("，", " ").replace("。", " ").replace("？", " ").strip()
+    city = args.get("city") or _extract_city_hint(normalized_message)
+
+    if not args.get("start_location"):
+        start_location = _extract_start_location(normalized_message, city)
+        args["start_location"] = start_location or normalized_message or user_message
+
+    if city and not args.get("city"):
+        args["city"] = city
+
+    if not args.get("destination_query"):
+        args["destination_query"] = _extract_destination_query(normalized_message) or "附近地点"
+
+    if not args.get("radius_m"):
+        radius_match = re.search(r"(\d+(?:\.\d+)?)\s*(公里|km|千米|米|m)", normalized_message, re.IGNORECASE)
+        if radius_match:
+            value = float(radius_match.group(1))
+            unit = radius_match.group(2).lower()
+            meters = int(value * 1000) if unit in {"公里", "km", "千米"} else int(value)
+            args["radius_m"] = min(max(meters, 500), 50000)
+        else:
+            args["radius_m"] = 5000
+
+    if not args.get("max_candidates"):
+        args["max_candidates"] = 3
+
+    if not args.get("travel_modes"):
+        modes: list[str] = []
+        if any(keyword in user_message for keyword in ["走路", "步行"]):
+            modes.append("walking")
+        if any(keyword in user_message for keyword in ["开车", "驾车", "打车", "自驾"]):
+            modes.append("driving")
+        if "骑行" in user_message or "骑车" in user_message:
+            modes.append("bicycling")
+        args["travel_modes"] = modes or ["walking", "driving", "bicycling"]
+
+
+def _extract_city_hint(text: str) -> str | None:
+    city_match = (
+        re.search(r"([\u4e00-\u9fff]{2,12}?市)", text)
+        or re.search(r"([\u4e00-\u9fff]{2,8})(?:天气|气温|下雨)", text)
+        or re.search(r"(?:在|从)([\u4e00-\u9fff]{2,8})(?:市|的)?[\u4e00-\u9fff]{1,12}?(?:附近|周边|出发)", text)
+    )
+    if not city_match:
+        return None
+    city = city_match.group(1).strip()
+    return city or None
+
+
+def _extract_start_location(text: str, city: str | None) -> str | None:
+    patterns = [
+        r"(?:我在|在|从)(.+?)(?:附近|周边|出发|找|搜索|推荐|想|要|去|导航|请|$)",
+        r"([\u4e00-\u9fffA-Za-z0-9·\-（）()]{2,30})(?:附近|周边).{0,20}(?:找|搜索|推荐|有没有|导航)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        location = _clean_location_text(match.group(1))
+        if location:
+            if city and city not in location and not location.endswith(("市", "区", "县")):
+                return f"{city}{location}"
+            return location
+
+    if city and any(keyword in text for keyword in ["附近", "周边"]):
+        location_match = re.search(rf"{re.escape(city)}(.+?)(?:附近|周边)", text)
+        if location_match:
+            location = _clean_location_text(location_match.group(1))
+            if location:
+                return f"{city}{location}"
+    return city
+
+
+def _extract_destination_query(text: str) -> str | None:
+    patterns = [
+        r"(?:找一个|找个|找一家|找|搜索|查找|推荐)(?:附近|周边)?(?:的)?(.+?)(?:请|并|然后|为我导航|导航|怎么去|路线|$)",
+        r"(?:附近|周边)(?:有没有|有|的)?(.+?)(?:请|并|然后|为我导航|导航|怎么去|路线|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        query = _clean_destination_text(match.group(1))
+        if query:
+            return query
+
+    for keyword in ["室外篮球场", "户外篮球场", "篮球场", "足球场", "网球场", "羽毛球馆", "游泳馆", "健身房", "公园", "咖啡店", "餐厅", "停车场"]:
+        if keyword in text:
+            return keyword
+    return None
+
+
+def _clean_location_text(value: str) -> str:
+    text = value.strip(" ：:,，。.?？!！")
+    text = re.sub(r"^(我想|我在|请|帮我|想在|想从)", "", text)
+    text = re.sub(r"(天气如何|天气|气温|下雨)", "", text)
+    return text.strip(" ：:,，。.?？!！在从")
+
+
+def _clean_destination_text(value: str) -> str:
+    text = value.strip(" ：:,，。.?？!！")
+    text = re.sub(r"^(一个|一家|附近的|周边的|的)", "", text)
+    text = re.sub(r"(请你|请|帮我|为我|导航|路线|怎么去|可以吗|谢谢).*$", "", text)
+    return text.strip(" ：:,，。.?？!！的")
 
 
 def _repair_safety_args(args: dict[str, Any], user_message: str, task: Task) -> None:

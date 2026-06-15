@@ -43,7 +43,21 @@ def is_news_query(text: str) -> bool:
 
 
 def is_route_query(text: str) -> bool:
-    return any(keyword in text for keyword in ["跑步路线", "晨跑路线", "夜跑路线", "路线规划", "公里路线"])
+    if is_running_route_query(text):
+        return True
+    if any(keyword in text for keyword in ["导航", "怎么去", "怎么走", "路线规划", "规划路线", "路径", "到达", "距离"]):
+        return True
+    if any(keyword in text for keyword in ["步行", "骑行", "驾车", "开车", "打车", "公交", "地铁"]):
+        return any(place_word in text for place_word in ["去", "到", "附近", "周边", "路线"])
+    place_words = "篮球场|球场|足球场|网球场|羽毛球馆|游泳馆|公园|健身房|场馆|场地|门店|医院|餐厅|咖啡|停车场"
+    return bool(
+        re.search(rf"(附近|周边).{{0,24}}?(找|搜索|推荐|有没有|哪里有|{place_words})", text)
+        or re.search(rf"(找|搜索|推荐|查找).{{0,24}}?(附近|周边|{place_words})", text)
+    )
+
+
+def is_running_route_query(text: str) -> bool:
+    return any(keyword in text for keyword in ["跑步路线", "晨跑路线", "夜跑路线", "公里路线", "适合跑步", "跑步"])
 
 
 def is_pain_or_safety_request(text: str) -> bool:
@@ -109,7 +123,15 @@ def information_tool_calls(
             }
         )
 
-    if wants_route and "running_route_advisor" in available:
+    if wants_route and not is_running_route_query(user_message) and "place_navigation_advisor" in available:
+        calls.append(
+            {
+                "tool_name": "place_navigation_advisor",
+                "args": repair_tool_args("place_navigation_advisor", {}, user_message, task, state),
+                "id": "intent-place-navigation",
+            }
+        )
+    elif wants_route and "running_route_advisor" in available:
         calls.append(
             {
                 "tool_name": "running_route_advisor",
@@ -141,6 +163,30 @@ def summarize_tool_result(result: Any) -> str:
         if advice:
             return f"{weather}运动建议：{'；'.join(str(item) for item in advice[:2])}"
         return weather
+
+    if tool_name == "place_navigation_advisor":
+        if result.get("ok") is False:
+            return f"地点与导航查询失败：{result.get('message') or '未能获取地点和路线'}。"
+        start = result.get("start") or {}
+        best = result.get("best_candidate") or {}
+        candidates = result.get("candidates") or []
+        candidate_lines = []
+        for item in candidates[:3]:
+            if not isinstance(item, dict):
+                continue
+            distance = item.get("distance_from_start_m")
+            distance_text = f"，距起点约 {distance} 米" if distance is not None else ""
+            routes = item.get("routes") or {}
+            route_modes = "、".join(routes.keys()) if isinstance(routes, dict) else ""
+            route_text = f"，可用路线：{route_modes}" if route_modes else ""
+            candidate_lines.append(f"{item.get('name') or '地点'}（{item.get('address') or '地址未返回'}{distance_text}{route_text}）")
+        summary = (
+            f"从{start.get('resolved_name') or start.get('input') or '起点'}附近搜索"
+            f"{result.get('destination_query') or '目的地'}，推荐 {best.get('name') or '候选地点'}。"
+        )
+        if candidate_lines:
+            return summary + "候选：" + "；".join(candidate_lines)
+        return summary
 
     if "results" in result and isinstance(result["results"], list):
         items = []

@@ -27,6 +27,7 @@ from .exercise_substitution_tool import get_exercise_substitution_tool
 from .heweather_geo_tool import get_heweather_geo_lookup_tool
 from .heweather_tool import get_heweather_tool
 from .musclewiki_tool import get_musclewiki_tool
+from .place_navigation_tool import get_place_navigation_advisor_tool
 from .rapidapi_bodyparts_tool import get_rapidapi_bodyparts_tool
 from .running_route_tool import get_running_route_advisor_tool
 from .spoonacular_tool import get_spoonacular_recipe_search_tool
@@ -56,6 +57,7 @@ def load_tools(enabled_tool_names: set[str] | list[str] | tuple[str, ...] | None
         get_amap_transit_route_tool(),
         get_amap_driving_route_tool(),
         get_amap_bicycling_route_tool(),
+        get_place_navigation_advisor_tool(),
         get_running_route_advisor_tool(),
         get_calculate_bmr_tool(),
         get_estimate_1rm_tool(),

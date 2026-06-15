@@ -156,8 +156,8 @@ class PlanNode(BaseNode):
                 tasks.append(
                     Task(
                         task_id=len(tasks),
-                        name="查询路线",
-                        description="根据用户提到的位置、距离和偏好查询适合的路线建议。",
+                        name="查询地点与路线",
+                        description="根据用户提到的起点、目的地类别和出行偏好，搜索附近候选地点并整理导航建议。",
                     )
                 )
             if not tasks:

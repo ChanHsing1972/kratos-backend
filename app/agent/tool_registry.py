@@ -39,6 +39,17 @@ TOOL_REGISTRY: dict[str, ToolMetadata] = {
     "amap_transit_route": ToolMetadata("amap_transit_route", "规划公共交通路线。", "location", True, ("AMAP_WEB_API_KEY",)),
     "amap_driving_route": ToolMetadata("amap_driving_route", "规划驾车路线。", "location", True, ("AMAP_WEB_API_KEY",)),
     "amap_bicycling_route": ToolMetadata("amap_bicycling_route", "规划骑行路线。", "location", True, ("AMAP_WEB_API_KEY",)),
+    "place_navigation_advisor": ToolMetadata(
+        "place_navigation_advisor",
+        "搜索起点附近的地点/场馆并生成步行、驾车或骑行导航摘要。",
+        "location",
+        True,
+        ("AMAP_WEB_API_KEY",),
+        use_cases=("查找附近篮球场、公园、健身房、餐厅等地点", "根据起点和目的地类别规划导航建议"),
+        required_context=("start_location", "destination_query"),
+        argument_notes=("start_location 必须来自用户明确提到的位置或已确认上下文。", "destination_query 是用户要找的地点类别，不能凭空替换。"),
+        failure_fallback="位置或地点搜索失败时，说明失败环节并请用户补充更明确的起点或目的地类别。",
+    ),
     "running_route_advisor": ToolMetadata("running_route_advisor", "根据起点、距离和偏好推荐跑步路线。", "fitness", True, ("AMAP_WEB_API_KEY",)),
     "calculate_bmr": ToolMetadata(
         "calculate_bmr",

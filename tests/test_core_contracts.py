@@ -34,6 +34,7 @@ from app.agent.tool_registry import ToolMetadata
 from app.agent.tool_planner import repair_tool_args
 from app.services.agent_chat import enrich_workout_plan_media, stream_agent_chat
 from app.services.agent_trace import build_trace
+from app.services.skill import allowed_tool_names
 from app.services.exercise_library import _match_score
 from app.services.exercise_media import (
     FALLBACK_EXERCISE_IMAGE_URL,
@@ -534,6 +535,52 @@ def test_weather_and_fitness_news_query_uses_only_information_tools():
     ]
     assert "pain_safety_gate" not in all_tool_names
     assert "calculate_workout_volume" not in all_tool_names
+
+
+def test_weather_nearby_place_navigation_query_uses_place_navigation_tool():
+    class ExplodingLLM:
+        def invoke(self, prompt):
+            raise AssertionError("LLM should not be called for deterministic information query path")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="苏州天气如何，我想在科技城附近找一个室外篮球场，请你为我导航。"))
+    state.tools.available_tools = {
+        "weather_fitness_advisor": object(),
+        "place_navigation_advisor": object(),
+        "running_route_advisor": object(),
+    }
+
+    IntentNode(ExplodingLLM())(state)
+    PlanNode(ExplodingLLM())(state)
+
+    assert state.reasoning.intent == ["天气查询", "路线查询", "信息查询"]
+    assert [task.name for task in state.reasoning.tasks] == ["查询天气", "查询地点与路线"]
+
+    ReasonNode(ExplodingLLM())(state)
+    weather_task = state.reasoning.tasks[0]
+    assert [call.name for call in weather_task.tool_calls] == ["weather_fitness_advisor"]
+    assert weather_task.tool_calls[0].args["city"] == "苏州"
+
+    state.reasoning.advance_task()
+    ReasonNode(ExplodingLLM())(state)
+    route_task = state.reasoning.tasks[1]
+    assert route_task.status == "waiting_for_tool"
+    assert [call.name for call in route_task.tool_calls] == ["place_navigation_advisor"]
+    route_args = route_task.tool_calls[0].args
+    assert route_args["city"] == "苏州"
+    assert route_args["start_location"] == "苏州科技城"
+    assert route_args["destination_query"] == "室外篮球场"
+    assert route_args["travel_modes"] == ["walking", "driving", "bicycling"]
+
+
+def test_enabled_skill_keeps_baseline_information_tools_available():
+    skill = SimpleNamespace(available_tools=["calculate_bmr"])
+
+    names = allowed_tool_names([skill])
+
+    assert "calculate_bmr" in names
+    assert "weather_fitness_advisor" in names
+    assert "place_navigation_advisor" in names
 
 
 def test_resolve_supported_exercise_name_prefers_library_media(monkeypatch):

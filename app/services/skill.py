@@ -8,6 +8,22 @@ from app.models.user import User
 from app.schemas.skill import SkillCreate, SkillUpdate
 
 
+BASELINE_UTILITY_TOOLS = {
+    "weather_fitness_advisor",
+    "heweather_geo_lookup",
+    "heweather_weather",
+    "amap_geocode",
+    "amap_place_search_around",
+    "amap_distance",
+    "amap_walking_route",
+    "amap_driving_route",
+    "amap_bicycling_route",
+    "amap_transit_route",
+    "place_navigation_advisor",
+    "tavily_search",
+}
+
+
 BUILTIN_SKILLS: list[dict] = [
     {
         "name": "减脂教练",
@@ -24,6 +40,7 @@ BUILTIN_SKILLS: list[dict] = [
             "calculate_workout_volume",
             "diet_plan_generator",
             "weather_fitness_advisor",
+            "place_navigation_advisor",
             "running_route_advisor",
         ],
         "output_format": "先给今日行动，再给训练/饮食安排，最后列出风险边界和复盘指标。",
@@ -237,6 +254,8 @@ def allowed_tool_names(skills: list[Skill]) -> set[str]:
     names: set[str] = set()
     for skill in skills:
         names.update(normalize_tool_names(skill.available_tools))
+    if skills:
+        names.update(BASELINE_UTILITY_TOOLS)
     return names
 
 
@@ -256,20 +275,44 @@ def skill_to_prompt_payload(skill: Skill) -> dict:
 def build_skill_definition(data: dict) -> str:
     tools = normalize_tool_names(data.get("available_tools"))
     tool_lines = "\n".join(f"  - {tool}" for tool in tools) or "  - none"
+    name = data.get("name") or ""
+    description = data.get("description") or ""
+    scenarios = data.get("applicable_scenarios") or ""
+    prompt = data.get("prompt_snippet") or ""
+    output_format = data.get("output_format") or ""
+    forbidden_rules = data.get("forbidden_rules") or ""
     return f"""---
-name: {data.get("name") or ""}
-applicable_scenarios: {data.get("applicable_scenarios") or ""}
+name: {name}
+description: {description}
+applicable_scenarios: {scenarios}
 available_tools:
 {tool_lines}
 ---
-# 系统提示片段
-{data.get("prompt_snippet") or ""}
+# 何时使用
+当用户请求符合 applicable_scenarios，或当前对话明确需要本 Skill 的专业视角时使用。Skill 只改变推理策略、风险边界和工具优先级，不代表工具一定已经执行。
+
+# 工作流
+1. 先识别用户真正目标、约束、地点、时间和风险信号。
+2. 区分已确认资料、用户本轮新信息和外部实时信息。
+3. 需要天气、新闻、地点、导航等实时信息时，先调用对应工具；最终回答只能引用工具结果。
+4. 给出用户今天能直接执行的建议，同时说明不确定性和下一步。
+
+# 策略提示
+{prompt}
+
+# 推荐工具
+available_tools 是本 Skill 的优先工具集合；基础天气、搜索、地图和导航工具仍可用于普通信息查询。不要因为 Skill 未列出某个基础工具就拒绝用户的天气、地点或导航需求。
 
 # 输出格式
-{data.get("output_format") or ""}
+{output_format}
 
-# 禁忌规则
-{data.get("forbidden_rules") or ""}
+# 安全边界
+{forbidden_rules}
+
+# 禁止事项
+- 不要编造未读取的用户资料。
+- 不要声称已经调用未出现在轨迹中的工具。
+- 不要把外部实时信息写成确定事实，除非它来自本轮工具结果。
 """
 
 
