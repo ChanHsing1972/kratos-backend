@@ -26,6 +26,10 @@ from app.services.agent_run import (
     fail_reserved_agent_run,
     reserve_agent_run,
 )
+from app.services.agent_fast_path import (
+    build_fast_path_state,
+    detect_agent_fast_path,
+)
 from app.services.agent_state_builder import prepare_agent_state
 from app.services.agent_tool import record_tool_failures_from_state
 from app.services.agent_trace import (
@@ -39,6 +43,7 @@ from app.services.agent_trace import (
     trace_key,
 )
 from app.services.conversation_session import (
+    ensure_conversation_session,
     persist_session_turn_artifacts,
 )
 from app.services.exercise_media import get_exercise_media, resolve_supported_exercise_name
@@ -75,6 +80,42 @@ def run_agent_chat(
     返回：
         最终状态和完整 trace。
     """
+
+    fast_path = detect_agent_fast_path(message=message, attachments=attachments)
+    if fast_path is not None:
+        session = session_id or str(uuid4())
+        state = build_fast_path_state(
+            user_id=user_id,
+            session_id=session,
+            message=message,
+            result=fast_path,
+        )
+        trace = _fast_path_trace(state, fast_path.kind, fast_path.reason)
+        logger.info(
+            "AGENT_FAST_PATH user_id=%s session_id=%s kind=%s intent=%s reason=%s mode=sync",
+            user_id,
+            session,
+            fast_path.kind,
+            fast_path.intent,
+            fast_path.reason,
+        )
+        if db is not None:
+            ensure_conversation_session(db, user_id, session)
+            reserved_run, should_run = reserve_agent_run(db, user_id, session, message, client_turn_id)
+            if not should_run and reserved_run is not None:
+                state.result.response = reserved_run.answer
+                return state, [AgentTraceStep(type="final", content=reserved_run.answer, raw=reserved_run.result_payload)]
+            create_agent_run(
+                db,
+                user_id,
+                message,
+                state,
+                trace,
+                client_turn_id=client_turn_id,
+                reserved_run_id=reserved_run.id if reserved_run else None,
+            )
+            persist_session_turn_artifacts(db, user_id, session, state, message)
+        return state, trace
 
     model_route = select_agent_model_route(message, attachments)
     prepared = prepare_agent_state(
@@ -143,7 +184,6 @@ def stream_agent_chat(
     persisted_trace: list[AgentTraceStep] = []
     if is_cancelled is not None and is_cancelled():
         return
-    model_route = select_agent_model_route(message, attachments)
     run_id = client_turn_id or str(uuid4())
     early_event = {
         "type": "status",
@@ -154,6 +194,114 @@ def stream_agent_chat(
     }
     append_persistable_event(persisted_trace, early_event)
     yield early_event
+
+    fast_path = detect_agent_fast_path(message=message, attachments=attachments)
+    if fast_path is not None:
+        session = session_id or str(uuid4())
+        if db is not None:
+            ensure_conversation_session(db, user_id, session)
+            reserved_run, should_run = reserve_agent_run(db, user_id, session, message, client_turn_id)
+            if reserved_run is not None:
+                run_id = str(reserved_run.id)
+            if not should_run and reserved_run is not None:
+                if reserved_run.status == "completed":
+                    yield {
+                        "type": "final",
+                        "content": reserved_run.answer,
+                        "raw": reserved_run.result_payload,
+                        "session_id": reserved_run.session_id,
+                        "run_id": str(reserved_run.id),
+                    }
+                    yield {
+                        "type": "done",
+                        "content": "Agent 回复完成",
+                        "session_id": reserved_run.session_id,
+                        "answer": reserved_run.answer,
+                        "run_id": str(reserved_run.id),
+                    }
+                else:
+                    yield {
+                        "type": "error",
+                        "content": "这条消息正在处理或此前未成功完成，请稍后重试。",
+                        "session_id": reserved_run.session_id,
+                        "run_id": str(reserved_run.id),
+                    }
+                    yield {
+                        "type": "done",
+                        "content": "Agent 运行结束",
+                        "session_id": reserved_run.session_id,
+                        "answer": "",
+                        "run_id": str(reserved_run.id),
+                    }
+                return
+        state = build_fast_path_state(
+            user_id=user_id,
+            session_id=session,
+            message=message,
+            result=fast_path,
+        )
+        logger.info(
+            "AGENT_FAST_PATH user_id=%s session_id=%s kind=%s intent=%s reason=%s mode=stream",
+            user_id,
+            session,
+            fast_path.kind,
+            fast_path.intent,
+            fast_path.reason,
+        )
+        events = [
+            {
+                "type": "thought",
+                "content": f"已选择快速回复路径：{fast_path.reason}",
+                "session_id": session,
+                "run_id": run_id,
+                "raw": {
+                    "fast_path": True,
+                    "kind": fast_path.kind,
+                    "reason": fast_path.reason,
+                    "intent": fast_path.intent,
+                },
+            },
+            {
+                "type": "answer_delta",
+                "content": fast_path.answer,
+                "delta": fast_path.answer,
+                "session_id": session,
+                "run_id": run_id,
+                "raw": {"fast_path": True, "kind": fast_path.kind},
+            },
+            {
+                "type": "final",
+                "content": fast_path.answer,
+                "session_id": session,
+                "run_id": run_id,
+                "raw": state.result.model_dump(mode="json"),
+            },
+        ]
+        for event in events:
+            append_persistable_event(persisted_trace, event)
+            yield event
+        yield {
+            "type": "done",
+            "content": "Agent 回复完成",
+            "session_id": session,
+            "answer": fast_path.answer,
+            "run_id": run_id,
+            "raw": {"fast_path": True, "kind": fast_path.kind},
+        }
+        if db is not None:
+            create_agent_run(
+                db,
+                user_id,
+                message,
+                state,
+                persisted_trace,
+                client_turn_id=client_turn_id,
+                reserved_run_id=reserved_run.id if reserved_run else None,
+            )
+            persist_session_turn_artifacts(db, user_id, session, state, message)
+        return
+
+    model_route = select_agent_model_route(message, attachments)
     prepared = prepare_agent_state(
         user_id=user_id,
         message=message,
@@ -383,6 +531,27 @@ def _model_route_events(
         if run_id is not None:
             event["run_id"] = run_id
         yield event
+
+
+def _fast_path_trace(state: SessionState, kind: str, reason: str) -> list[AgentTraceStep]:
+    answer = str(state.result.response or "")
+    return [
+        AgentTraceStep(
+            type="thought",
+            content=f"已选择快速回复路径：{reason}",
+            raw={
+                "fast_path": True,
+                "kind": kind,
+                "reason": reason,
+                "intent": state.reasoning.intent,
+            },
+        ),
+        AgentTraceStep(
+            type="final",
+            content=answer,
+            raw=state.result.model_dump(mode="json"),
+        ),
+    ]
 
 
 def _persist_stream_result_later(

@@ -33,6 +33,8 @@ from app.agent.tools.fitness_calculator_tool import (
 from app.agent.tool_registry import ToolMetadata
 from app.agent.tool_planner import repair_tool_args
 from app.services.agent_chat import enrich_workout_plan_media, stream_agent_chat
+from app.services.agent_context_trim import build_answer_context, build_reason_memory_context
+from app.services.agent_fast_path import detect_agent_fast_path
 from app.services.agent_trace import build_trace
 from app.services.skill import allowed_tool_names
 from app.services.exercise_library import _match_score
@@ -290,6 +292,111 @@ def test_generate_prompt_requires_citations_for_knowledge_contexts():
     assert "网页 URL" in prompt
     assert "[知识库:膝痛训练安全#1]" in prompt
     assert "https://www.acsm.org/" in prompt
+
+
+def test_chitchat_fast_path_skips_agent_context_loading():
+    result = detect_agent_fast_path(message="你好", attachments=[])
+
+    assert result is not None
+    assert result.kind == "chitchat"
+    assert result.intent == ["闲聊"]
+    assert detect_agent_fast_path(message="你好，帮我安排训练", attachments=[]) is None
+    assert detect_agent_fast_path(message="你好", attachments=[{"type": "image"}]) is None
+
+    events = list(stream_agent_chat(user_id=1, message="你好", session_id="s1", db=None))
+
+    assert any(event.get("raw", {}).get("fast_path") for event in events)
+    assert any(event["type"] == "answer_delta" for event in events)
+    assert not any("已读取数据库上下文" in str(event.get("content") or "") for event in events)
+
+
+def test_final_answer_context_trims_training_history():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.reasoning.intent = ["健身计划"]
+    state.conversation.messages.append(HumanMessage(content="帮我看看下周训练怎么安排"))
+    state.memory.database_context = {
+        "profile": {"goal": "减脂塑形", "experience": "中等"},
+        "active_plan": {"notes": "全身训练" * 800},
+        "recent_workout_logs": [
+            {"date": f"2026-05-{index:02d}", "summary": "完成力量训练", "notes": "状态稳定"}
+            for index in range(1, 241)
+        ],
+        "recent_diet_records": [{"food": "无关饮食记录"} for _ in range(30)],
+    }
+
+    payload, stats = build_answer_context(state)
+    selected = payload["selected_database_context"]
+
+    assert stats["raw_context_chars"] > stats["selected_context_chars"]
+    assert "recent_workout_logs" in selected
+    assert len(selected["recent_workout_logs"]) <= 8
+    assert "recent_diet_records" not in selected
+    assert stats["included_sections"].count("recent_workout_logs") == 1
+
+
+def test_final_answer_context_keeps_diet_context_only_for_diet_record():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.reasoning.intent = ["饮食记录"]
+    state.conversation.messages.append(HumanMessage(content="我今天午餐吃了鸡胸肉和米饭，帮我记录"))
+    state.memory.database_context = {
+        "recent_diet_records": [
+            {"date": f"2026-06-{index:02d}", "meal": "午餐", "items": ["鸡胸肉", "米饭"]}
+            for index in range(1, 21)
+        ],
+        "recent_workout_logs": [
+            {"date": f"2026-05-{index:02d}", "summary": "力量训练"}
+            for index in range(1, 51)
+        ],
+    }
+
+    payload, _stats = build_answer_context(state)
+    selected = payload["selected_database_context"]
+
+    assert "recent_diet_records" in selected
+    assert len(selected["recent_diet_records"]) <= 10
+    assert "recent_workout_logs" not in selected
+
+
+def test_final_answer_context_limits_body_metric_history():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.reasoning.intent = ["信息查询"]
+    state.conversation.messages.append(HumanMessage(content="我的体重趋势如何？"))
+    state.memory.database_context = {
+        "recent_body_metrics": [
+            {"date": f"2026-05-{index:02d}", "weight_kg": 66 + index / 100}
+            for index in range(1, 31)
+        ],
+        "recent_workout_logs": [
+            {"date": f"2026-05-{index:02d}", "summary": "力量训练"}
+            for index in range(1, 51)
+        ],
+    }
+
+    payload, _stats = build_answer_context(state)
+    selected = payload["selected_database_context"]
+
+    assert "recent_body_metrics" in selected
+    assert len(selected["recent_body_metrics"]) <= 10
+    assert "recent_workout_logs" not in selected
+
+
+def test_reason_memory_context_uses_same_trimmed_database_sections():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.reasoning.intent = ["健身计划"]
+    state.conversation.messages.append(HumanMessage(content="根据最近训练反馈调整计划"))
+    state.memory.database_context = {
+        "profile": {"goal": "减脂"},
+        "recent_workout_logs": [{"date": str(index), "summary": "训练"} for index in range(30)],
+        "recent_diet_records": [{"date": str(index), "food": "无关"} for index in range(30)],
+    }
+
+    context = build_reason_memory_context(state)
+    selected = context["selected_database_context"]
+
+    assert "database_context" not in context
+    assert "recent_workout_logs" in selected
+    assert len(selected["recent_workout_logs"]) <= 8
+    assert "recent_diet_records" not in selected
 
 
 def test_new_tool_config_can_be_initialized_without_api_key():

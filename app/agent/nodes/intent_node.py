@@ -211,6 +211,14 @@ class IntentNode(BaseNode):
         }
         state.memory.ephemeral_turn_info = state.reasoning.extracted_info
 
+        self.logger.info(
+            "AGENT_INTENT user_id=%s session_id=%s intents=%s deterministic=%s confidence=%s",
+            state.user_id,
+            state.session_id,
+            state.reasoning.intent,
+            data.get("confidence") == 0.75,
+            data.get("confidence"),
+        )
         self.logger.debug(
             "IntentNode result: %s",
             {

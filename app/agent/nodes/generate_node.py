@@ -32,6 +32,7 @@ from app.agent.state.result import (
 )
 from app.agent.state.session_state import SessionState
 from app.core.config import settings
+from app.services.agent_context_trim import build_answer_context, estimate_tokens
 from app.services.diet_image_estimator import normalize_food_estimate_payload
 from app.services.exercise_media import display_exercise_name, list_supported_exercise_names
 from app.services.training_plan_draft import build_training_plan_draft
@@ -476,11 +477,7 @@ class GenerateNode(BaseNode):
         return False
 
     def build_prompt(self, state: SessionState) -> str:
-        """构造最终回答 prompt。
-
-        Prompt 会显式传入任务结果、数据库上下文、Skill 约束和可展示动作库，
-        防止模型脱离已确认资料或生成前端无法匹配的动作名称。
-        """
+        """构造最终回答 prompt，按本轮意图只注入必要上下文。"""
 
         user_message = self.latest_user_text(state)
         tasks = state.reasoning.tasks
@@ -507,14 +504,13 @@ class GenerateNode(BaseNode):
             indent=2,
         )
 
-        task_results = "\n".join([f"- {task.name} [{task.status}]: {task.result or task.error or '无结果'}" for task in tasks])
-        memory_payload = (
-            self._full_memory_context(state)
-            if include_training_library
-            else self._compact_memory_context(state)
+        task_results = "\n".join(
+            f"- {task.name} [{task.status}]: {self._clip_text(str(task.result or task.error or '无结果'), 1200)}"
+            for task in tasks
         )
-        memory_context = json.dumps(memory_payload, ensure_ascii=False, default=str, indent=2)
-        external_knowledge_context = state.memory.database_context.get(
+        answer_context_payload, context_stats = build_answer_context(state)
+        memory_context = json.dumps(answer_context_payload, ensure_ascii=False, default=str, indent=2)
+        external_knowledge_context = answer_context_payload.get("selected_database_context", {}).get(
             "knowledge_base_text",
             "未检索到外部知识库上下文。",
         )
@@ -531,54 +527,38 @@ class GenerateNode(BaseNode):
             indent=2,
         )
 
-        return f"""
+        prompt = f"""
         你是 Kratos 智能健身 Agent。
-        请根据用户问题、识别意图和所有子任务结果生成最终回复。
+        请根据用户问题、识别意图、精简上下文和子任务结果生成最终回复。
 
         {STANDARD_MARKDOWN_OUTPUT_PROMPT}
 
-        业务要求：
+        通用规则：
         - 中文回答。
-        - 具体、可执行，避免空泛建议。
-        - 回答前必须利用已读取的数据库上下文；如果上下文缺关键数据，先指出缺口并给出下一步引导。
-        - 如果用户在消息中提到新的个人信息或身体数据，说明需由用户确认后才会保存，不得声称已经记录。
-        - 记忆使用优先级必须遵守：工作记忆 > 短期记忆 > 长期记忆。
-        - 工作记忆主要约束当前任务范围、时长、当前资源和本轮输出要求；短期记忆主要反映近期位置、近期需求和阶段性限制；长期记忆主要反映稳定目标、偏好和长期限制。
-        - 若多层记忆冲突，先遵守工作记忆，再遵守短期记忆，最后参考长期记忆；但若数据库结构化上下文已确认且与记忆点冲突，应优先以数据库为准，并说明临时变化。
-        - 严禁编造用户资料；年龄、身高、体重、目标、训练经验等只能来自用户问题或已读取数据库上下文。
-        - 如果子任务结果与数据库上下文冲突，以数据库上下文为准；例如“60分钟”是训练时长，不是“60岁”。
-        - 如果年龄未知，不要输出高龄、老年、60岁等表述；如果只知道训练时长为 60 分钟，只能写“每次60分钟”。
-        - 健身建议要包含强度、组数/时长、风险边界或恢复建议中的至少两项。
+        - 只使用下方给出的上下文和子任务结果；资料缺失时说明缺口，不要编造。
+        - 新的个人信息、身体数据、饮食记录必须提示需确认后保存，不能声称已保存。
+        - 数据冲突时优先使用已确认数据库上下文，其次是工作/短期/长期记忆。
+        - 严格区分“60分钟”和“60岁”；年龄未知时不要输出高龄、老年等表述。
         - 如果某些工具失败或信息不足，明确说明不确定性。
-        - 天气、新闻、地点、路线、导航等实时外部信息只能基于“子任务结果”或“已执行工具摘要”。不得说“我查找了/我为你导航/我搜索到”任何本轮未执行的工具结果。
-        - 如果工具结果只包含天气，不得编造 POI、地址、距离、路线或导航方案；应说明已完成天气查询，地点/导航仍缺少工具结果或起点信息。
-        - 如果地点/导航工具失败，说明失败环节并请求更明确的起点、城市或目的地类别。
-        - 如果用户使用“继续”“这个”“上一个”“第二个”“说错了”“不是”“改成”等省略或修正表达，必须先结合最近会话上下文消解指代；无法唯一确定时先澄清，不要假装理解。
-        - 如果使用“外部知识库检索结果”中的事实、数字或安全边界，必须在对应句子后标注来源，引用格式为 [知识库:标题#编号]。
-        - 面向用户展示出处时，优先给出知识来源的文章/网页标题或机构指南名；若上下文提供网页 URL，也要在“参考来源”或对应句子中展示该网页 URL。
-        - 不得编造外部知识库来源；只能使用已给出的 [知识库:标题#编号] 标记、文章/网页标题和网页 URL。
-        - 如果启用了 Skill，最终回复必须遵守 Skill 的系统提示片段、输出格式和禁忌规则。
-        - 用户请求每周、长期、周期或多周训练计划时，回复应提供至少一周的多个训练日安排，明确周几、动作、组次和恢复日。
-        - 生成训练计划或动作安排时，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
-        - 面向用户展示的动作名称必须使用中文；不要在标题、正文、表格或动作列表中输出英文动作名或英文别名。
-        - 如果用户需求确实无法由可展示动作库覆盖，选择最接近的可展示动作替代，并在备注里说明替代原因。
-        - 不要把“你反馈...”“结合你的情况...”“身高/体重/年龄/训练经验”等解释文字放进训练计划标题或动作名称里；这些内容只能放在计划前后的说明段。
-        - 今日训练只输出当天安排，不要把用户原话重复成标题；标题优先使用“上肢训练”“下肢训练”“全身训练”“恢复训练”等短主题。
-        - 生成训练计划时，必须提供可直接保存的训练安排：周/周期计划和今日计划都优先使用 Markdown 表格展示动作、组数、次数/时长、休息和备注。不要在正文与训练安排中给出互相冲突的内容。
-        - 训练计划回复必须使用固定模板，不要自由发挥标题：
-          1. 第一行只能是一个短标题：`## 上肢训练计划`、`## 腹部训练计划`、`## 本周训练计划` 等。
-          2. 第二行必须为空行。
-          3. 第三行开始才允许写“根据你的资料...”等说明。
-          4. 今日/单次计划必须有 `### 训练安排` 表格，表头固定为：`| 动作 | 组数 | 次数/时长 | 休息 | 备注 |`。
-          5. 周期/本周计划必须有 `### 每周训练安排` 表格，表头固定为：`| 星期 | 主题 | 动作 | 组数 | 次数/时长 | 休息 | 备注 |`。
-          6. 同一个表格单元格内不要使用 `<br>` 或换行；多个动作必须拆成多行表格。
-          7. `1-2次`、`3-4组` 这种范围必须保留连字符，不要拆成列表或换行。
-          8. “根据你的资料”“结合近期训练”“注意事项”等说明严禁出现在标题、动作名或表格标题中。
-        - 如果用户上传的是食物/餐食图片，必须直接根据图片估算可见食物，回答中包含标准 Markdown 表格，表头必须为：`| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |`。说明这是估算并需要用户确认后保存；不要声称已经保存。
-        - 如果图片不是食物或无法判断食物，不要输出饮食热量估算表，直接说明无法生成饮食记录卡片的原因。
-        - 如果用户询问“你有哪些工具 / 可调用 tools / 支持哪些能力”，必须基于“当前可用工具”如实列出工具名、用途和限制；不要编造未出现在清单里的工具。
-        - 不要把 Skill 描述成会直接执行代码；Skill 只是改变你的领域策略和工具范围。
+        - 天气、新闻、地点、路线等实时信息只能基于本轮子任务或已执行工具摘要。
+        - 使用外部知识库事实时，在对应句后标注已给出的 [知识库:标题#编号]；如上下文提供 source_title 或 source_url，在文末列出来源标题和网页 URL。
+        - 启用 Skill 时遵守其输出格式、提示片段和禁忌规则；Skill 不是代码执行插件。
         - 不要暴露内部任务编号或 JSON。
+
+        训练计划规则（仅在请求训练计划/动作安排时适用）：
+        - 至少包含强度、组数/时长、风险边界或恢复建议中的两项。
+        - 周计划提供至少一周的多个训练日和恢复日；今日训练只输出当天安排。
+        - 动作名称优先从“可展示动作库”选择，使用中文准确名称；无法覆盖时选最接近动作并说明。
+        - 今日/单次计划用 `### 训练安排` 表格，表头：`| 动作 | 组数 | 次数/时长 | 休息 | 备注 |`。
+        - 周期/本周计划用 `### 每周训练安排` 表格，表头：`| 星期 | 主题 | 动作 | 组数 | 次数/时长 | 休息 | 备注 |`。
+        - 表格单元格不要使用 `<br>`；多个动作拆成多行；`1-2次`、`3-4组` 保留连字符。
+
+        饮食图片规则（仅在上传餐食图片时适用）：
+        - 根据可见食物估算，使用表头：`| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |`。
+        - 说明估算需用户确认后保存；图片非食物或无法判断时不要输出估算表。
+
+        工具清单规则（仅在用户询问工具/能力时适用）：
+        - 基于“当前可用工具”如实列出工具名、用途和限制；不要编造工具。
 
         可展示动作库:
         {supported_exercises}
@@ -607,20 +587,37 @@ class GenerateNode(BaseNode):
         用户意图:
         {intents}
 
-        已读取数据库上下文:
+        已读取的精简上下文(JSON):
         {memory_context}
 
         子任务结果:
         {task_results}
         """
+        self.logger.info(
+            (
+                "AGENT_FINAL_PROMPT_CONTEXT user_id=%s session_id=%s intents=%s "
+                "prompt_chars=%d prompt_tokens_est=%d raw_context_chars=%d "
+                "selected_context_chars=%d reduction_chars=%d included_sections=%s"
+            ),
+            state.user_id,
+            state.session_id,
+            intents,
+            len(prompt),
+            estimate_tokens(prompt),
+            context_stats["raw_context_chars"],
+            context_stats["selected_context_chars"],
+            context_stats["reduction_chars"],
+            context_stats["included_sections"],
+        )
+        return prompt
 
     @staticmethod
     def _needs_training_library(state: SessionState) -> bool:
         intents = set(state.reasoning.intent or [])
-        if intents & {"健身计划", "饮食计划", "调整计划", "反馈"}:
+        if intents & {"健身计划", "调整计划", "反馈"}:
             return True
         task_text = " ".join(f"{task.name} {task.description or ''}" for task in state.reasoning.tasks)
-        return any(keyword in task_text for keyword in ["训练计划", "动作", "组数", "训练安排", "饮食计划"])
+        return any(keyword in task_text for keyword in ["训练计划", "动作", "组数", "训练安排"])
 
     @staticmethod
     def _executed_tool_summaries(state: SessionState) -> list[dict[str, Any]]:
@@ -638,49 +635,6 @@ class GenerateNode(BaseNode):
                     }
                 )
         return summaries
-
-    @staticmethod
-    def _full_memory_context(state: SessionState) -> dict[str, Any]:
-        return {
-            "long_term": state.memory.long_term_memory.model_dump(),
-            "long_term_memory_points": [
-                item.model_dump(mode="json")
-                for item in state.memory.long_term_memory_points
-            ],
-            "short_term_memory_points": [
-                item.model_dump(mode="json")
-                for item in state.memory.short_term_memory_points
-            ],
-            "working_memory_points": [
-                item.model_dump(mode="json")
-                for item in state.memory.working_memory_points
-            ],
-            "mid_term": state.memory.mid_term_memory.model_dump(),
-            "database_context": state.memory.database_context,
-        }
-
-    @staticmethod
-    def _compact_memory_context(state: SessionState) -> dict[str, Any]:
-        long_term = state.memory.long_term_memory
-        physical = long_term.physical_profile
-        lifestyle = long_term.lifestyle_profile
-        database_context = dict(state.memory.database_context or {})
-        knowledge_text = database_context.get("knowledge_base_text")
-        if isinstance(knowledge_text, str) and len(knowledge_text) > 1200:
-            database_context["knowledge_base_text"] = f"{knowledge_text[:1200]}..."
-        return {
-            "profile_summary": {
-                "name": long_term.name,
-                "gender": long_term.gender,
-                "location": long_term.location,
-                "goal": lifestyle.goal,
-                "height_cm": physical.height_cm,
-                "weight_kg": physical.weight_kg,
-                "body_condition": physical.body_condition,
-            },
-            "database_context": database_context,
-            "note": "本轮信息查询已使用精简记忆，避免把无关训练库和完整历史塞入最终回答。",
-        }
 
     @staticmethod
     def _compact_value(value: Any, max_chars: int) -> Any:

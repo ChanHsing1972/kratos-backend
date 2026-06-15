@@ -18,6 +18,7 @@ from app.agent.intent_policy import (
 from app.agent.nodes.base_node import BaseNode
 from app.agent.state.reasoning import TaskStatus
 from app.agent.tool_planner import build_fallback_reason_data, parse_tool_calls, repair_tool_args
+from app.services.agent_context_trim import build_reason_memory_context
 
 
 class ReasonNode(BaseNode):
@@ -47,7 +48,7 @@ class ReasonNode(BaseNode):
         if fast_data is not None:
             return self._apply_reason_data(state, task, fast_data, available_tools, user_message)
 
-        convs = state.conversation.conversations
+        convs = state.conversation.conversations[-3:]
         tool_descriptions = self.describe_tools(state.tools.available_tools)
         first_ai_message = state.conversation.first_ai_message or state.result.first_response or ""
         extracted_info = state.reasoning.extracted_info or {}
@@ -65,7 +66,7 @@ class ReasonNode(BaseNode):
 
         task.status = TaskStatus.running
 
-        prompt_reason = f"""        
+        prompt_reason = f"""
         用户原始问题: {user_message}
         第一轮 AI 分析: {first_ai_message}
         当前识别意图: {state.reasoning.intent}
@@ -80,15 +81,8 @@ class ReasonNode(BaseNode):
         查询工具之前，先查看过往会话，看有没有什么有用信息(JSON):
         {conversations_json}
 
-        当前长期/中期记忆(JSON)，可用于直接回答用户关于个人资料、近期饮食和训练反馈的问题：
+        当前精简记忆(JSON)，仅包含和本轮任务最可能相关的用户资料、近期记录和知识库摘录：
         {memory_context_json}
-
-        记忆优先级规则：
-        - 工作记忆优先级最高，只要仍与当前任务相关，应优先约束本轮回答。
-        - 短期记忆次之，适合解释用户最近位置、近期需求、近期阶段安排。
-        - 长期记忆再次之，适合提供稳定目标、偏好、长期限制与长期风险背景。
-        - 若三层记忆冲突：工作记忆 > 短期记忆 > 长期记忆。
-        - 若数据库结构化上下文与记忆点冲突，以数据库已确认上下文优先；但可在回答中说明用户近期表达的临时变化。
 
         可用工具及参数 schema(JSON):
         {tool_descriptions_json}
@@ -98,13 +92,12 @@ class ReasonNode(BaseNode):
         - Skill 是领域能力包，不是代码执行插件；你只能遵守其策略、工具范围、输出格式和禁忌规则。
         - 如果启用 Skill 声明了可用工具，当前工具列表已经按这些 Skill 做了范围约束。
         - 严禁编造用户资料；年龄、身高、体重、目标、训练经验等只能来自“已提取关键信息”或“当前长期/中期记忆”。
-        - 字段为 null、None、空字符串或未出现时，必须视为未知，不得自行填充。
-        - 计算 BMR、热量或 1RM 时，如果缺少必需的性别、年龄、身高、体重、重量或次数，不要用默认值硬算；直接说明缺少哪些信息。
+        - 字段为 null、None、空字符串或未出现时，视为未知；缺少必需信息时说明缺口，不用默认值硬算。
         - 严格区分“60分钟”和“60岁”：available_time_minutes 或“60分钟”只表示训练时长，绝不能当作年龄。
-        - 如果任务描述与已提取信息冲突，以已提取信息和数据库记忆为准，并在结果中纠正，不要沿用错误任务描述。
-        - 如果用户在询问“我叫什么”“我的身高是多少”“我的体重是多少”“我最近吃了什么”这类可直接从记忆回答的问题，优先直接用记忆回答，不调用工具。
+        - 如果任务描述与已提取信息冲突，以已提取信息和精简记忆为准。
+        - 可直接从精简记忆回答的问题，不调用工具。
         - 如果用户要求根据身体状态、训练强度、可用时间、饮食限制制定饮食计划，优先调用 diet_plan_generator。
-        - 如果当前长期/中期记忆中的 database_context.knowledge_base 存在相关外部知识，子任务结果需要保留对应 citation，例如 [知识库:膝痛训练安全#1]。
+        - 如果精简记忆中的 knowledge_base 存在相关外部知识，子任务结果保留对应 citation，例如 [知识库:膝痛训练安全#1]。
         - 如果用户提到急性疼痛、膝盖/腰/肩不适、极度疲劳，必须优先调用 pain_safety_gate，再决定是否替代训练或休息。
         - 如果用户要求替换某个动作，或安全分流结果显示需要 modify_plan/rest_or_recovery，优先调用 exercise_substitution_advisor 给出更安全替代动作。
         - 如果用户要求按训练时长安排组数/动作数量，优先调用 calculate_workout_volume。
@@ -116,14 +109,10 @@ class ReasonNode(BaseNode):
         - 如果用户要求规划附近适合的跑步路线、晨跑路线、夜跑路线、5公里/10公里跑步路线，优先调用 running_route_advisor。
         - 对跑步路线相关问题，优先把自然语言地点放入 running_route_advisor 的 start_location；若用户提到城市，也可填 city；若提到 3公里/5公里/10公里等距离，填 target_distance_km。
         - 如果用户询问有哪些训练部位、身体部位列表、可训练的身体区域，优先调用 rapidapi_bodyparts。
-        - 如果需要工具：
-          - tool_name 必须严格等于可用工具名之一，不允许添加任何前缀或后缀。
-          - args 必须严格满足该工具的参数 schema。
-          - 工具会在执行前进行参数校验；缺少必填字段或数值越界时，本轮会得到 validation_failed 降级结果，所以你应尽量从用户问题和记忆中补齐必要参数。
-          - 如果工具返回 fallback=true，必须把它视为保守降级结果，不要当作精确外部 API 结果；最终回答要说明不确定性。
-          - tavily_search 的 args 必须包含 query。
-          - diet_plan_generator 的 args 应优先传 user_profile，并尽量从当前记忆中补齐 height_cm、weight_kg、body_condition、goal、exercise_intensity、available_cooking_time_minutes、diet、intolerances、preferred_ingredients、disliked_ingredients、preferred_cuisines、daily_diet。
-          - result 必须为 null。
+        - 如果需要工具，tool_name 必须严格等于可用工具名之一，args 必须满足 schema，result 必须为 null。
+        - 如果工具返回 fallback=true，视为保守降级结果，最终回答说明不确定性。
+        - tavily_search 的 args 必须包含 query。
+        - diet_plan_generator 的 args 应优先传 user_profile，并尽量从当前记忆中补齐必要资料。
         - 如果不需要工具：
           - tool_calls 必须为空数组。
           - result 直接给出该子任务结果。
@@ -438,24 +427,7 @@ class ReasonNode(BaseNode):
     def _memory_context(state) -> dict:
         """整理 ReasonNode prompt 所需的长期/中期记忆和数据库上下文。"""
 
-        long_term = state.memory.long_term_memory
-        return {
-            "name": long_term.name,
-            "gender": long_term.gender,
-            "job": long_term.job,
-            "location": long_term.location,
-            "physical_profile": long_term.physical_profile.model_dump(),
-            "lifestyle_profile": long_term.lifestyle_profile.model_dump(),
-            "dietary_profile": long_term.dietary_profile.model_dump(),
-            "long_term_memory_points": [item.model_dump(mode="json") for item in state.memory.long_term_memory_points],
-            "short_term_memory_points": [item.model_dump(mode="json") for item in state.memory.short_term_memory_points],
-            "working_memory_points": [item.model_dump(mode="json") for item in state.memory.working_memory_points],
-            "daily_diet": state.memory.mid_term_memory.daily_diet,
-            "training_feedbacks": state.memory.mid_term_memory.training_feedbacks,
-            "database_context": state.memory.database_context,
-            "turn_summaries": [item.model_dump() for item in state.memory.turn_summaries],
-            "conversation_summaries": state.conversation.summaries,
-        }
+        return build_reason_memory_context(state)
 
     @staticmethod
     def _answer_from_memory(state) -> str | None:
