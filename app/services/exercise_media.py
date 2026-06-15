@@ -112,6 +112,7 @@ NON_EXERCISE_KEYWORDS = (
 
 _MEDIA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_TTL_SECONDS = 60 * 60 * 24
+FALLBACK_EXERCISE_IMAGE_URL = "https://box.nju.edu.cn/seafhttp/f/859a4f1b57634fa2a280/"
 
 
 @dataclass(frozen=True)
@@ -158,12 +159,17 @@ def get_exercise_media(action_name: str, db: Session | None = None) -> dict[str,
     if cached is not None:
         cached = dict(cached)
         cached["teaching_videos"] = get_teaching_videos(normalized_action, db)
+        if not _has_media_asset(cached):
+            cached = _fallback_media_result(normalized_action, cached)
         _set_cached(normalized_action, cached)
         return cached
 
     persisted = _get_persisted_media(db, normalized_action)
     if persisted is not None:
         persisted["teaching_videos"] = get_teaching_videos(normalized_action, db)
+        if not _has_media_asset(persisted):
+            persisted = _fallback_media_result(normalized_action, persisted)
+            _set_persisted_media(db, normalized_action, persisted)
         _set_cached(normalized_action, persisted)
         return persisted
 
@@ -202,16 +208,7 @@ def get_exercise_media(action_name: str, db: Session | None = None) -> dict[str,
         _set_cached(normalized_action, result)
         return result
 
-    result = ExerciseMediaResult(
-        action_name=normalized_action,
-        query=None,
-        exercise_id=None,
-        exercise_name=None,
-        media_url=None,
-        image_url=None,
-        video_url=None,
-        source="not_found",
-    ).as_dict()
+    result = _fallback_media_result(normalized_action)
     result["teaching_videos"] = get_teaching_videos(normalized_action, db)
     _set_persisted_media(db, normalized_action, result)
     _set_cached(normalized_action, result)
@@ -429,6 +426,30 @@ def _select_image_url(exercise: dict[str, Any]) -> str | None:
             if url:
                 return url
     return _clean_optional_url(exercise.get("imageUrl") or exercise.get("gifUrl"))
+
+
+def _fallback_media_result(
+    normalized_action: str,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base = dict(existing or {})
+    base.update(
+        {
+            "action_name": base.get("action_name") or normalized_action,
+            "query": base.get("query"),
+            "exercise_id": base.get("exercise_id"),
+            "exercise_name": base.get("exercise_name"),
+            "media_url": FALLBACK_EXERCISE_IMAGE_URL,
+            "image_url": FALLBACK_EXERCISE_IMAGE_URL,
+            "video_url": None,
+            "source": "fallback_image",
+        }
+    )
+    return base
+
+
+def _has_media_asset(media: dict[str, Any]) -> bool:
+    return bool(media.get("media_url") or media.get("image_url") or media.get("video_url"))
 
 
 def _clean_optional_url(value: Any) -> str | None:

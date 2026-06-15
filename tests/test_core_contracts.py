@@ -35,7 +35,12 @@ from app.agent.tool_planner import repair_tool_args
 from app.services.agent_chat import enrich_workout_plan_media, stream_agent_chat
 from app.services.agent_trace import build_trace
 from app.services.exercise_library import _match_score
-from app.services.exercise_media import _pick_best_exercise, resolve_supported_exercise_name
+from app.services.exercise_media import (
+    FALLBACK_EXERCISE_IMAGE_URL,
+    _pick_best_exercise,
+    get_exercise_media,
+    resolve_supported_exercise_name,
+)
 from app.services.training_plan_draft import build_training_plan_draft
 from app.db.session import Base
 from app.models.knowledge_base import KnowledgeBaseEntry
@@ -541,6 +546,41 @@ def test_resolve_supported_exercise_name_prefers_library_media(monkeypatch):
     )
 
     assert resolve_supported_exercise_name("胸部推举 4组 x 8次", db=object()) == "杠铃卧推"
+
+
+def test_get_exercise_media_uses_default_image_for_unknown_exercise(monkeypatch):
+    monkeypatch.setattr("app.services.exercise_media._get_cached", lambda key: None)
+    monkeypatch.setattr(
+        "app.services.exercise_media._get_persisted_media",
+        lambda db, action_name: None,
+    )
+    monkeypatch.setattr(
+        "app.services.exercise_media._get_library_media",
+        lambda db, action_name: None,
+    )
+    monkeypatch.setattr(
+        "app.services.exercise_media._rapidapi_get",
+        lambda path, query_params: None,
+    )
+    monkeypatch.setattr(
+        "app.services.exercise_video.get_teaching_videos",
+        lambda action_name, db=None: [],
+    )
+
+    media = get_exercise_media("自定义平衡练习", db=None)
+
+    assert media["source"] == "fallback_image"
+    assert media["media_url"] == FALLBACK_EXERCISE_IMAGE_URL
+    assert media["image_url"] == FALLBACK_EXERCISE_IMAGE_URL
+    assert media["video_url"] is None
+
+
+def test_get_exercise_media_skips_non_exercise_without_default_image():
+    media = get_exercise_media("休息", db=None)
+
+    assert media["source"] == "skipped"
+    assert media["media_url"] is None
+    assert media["image_url"] is None
 
 
 def test_enrich_workout_plan_media_replaces_action_with_supported_name(monkeypatch):
