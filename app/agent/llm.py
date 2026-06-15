@@ -66,3 +66,26 @@ def get_agent_llm() -> ChatOpenAI:
     return build_chat_openai(
         max_tokens=settings.AGENT_LLM_MAX_OUTPUT_TOKENS,
     )
+
+
+@lru_cache(maxsize=4)
+def get_agent_llm_for_route(route: str) -> ChatOpenAI:
+    """Return a cached Agent LLM for the selected model route."""
+
+    if route == "text" and settings.AGENT_ENABLE_MODEL_ROUTER:
+        return build_chat_openai(
+            api_key=settings.AGENT_TEXT_LLM_API_KEY,
+            base_url=settings.AGENT_TEXT_LLM_BASE_URL,
+            max_tokens=settings.AGENT_LLM_MAX_OUTPUT_TOKENS,
+            model=settings.AGENT_TEXT_LLM_MODEL,
+        )
+
+    if route == "vision" and settings.AGENT_ENABLE_MODEL_ROUTER:
+        return build_chat_openai(
+            api_key=settings.AGENT_VISION_LLM_API_KEY,
+            base_url=settings.AGENT_VISION_LLM_BASE_URL,
+            max_tokens=settings.AGENT_LLM_MAX_OUTPUT_TOKENS,
+            model=settings.AGENT_VISION_LLM_MODEL or settings.AGENT_LLM_MODEL,
+        )
+
+    return get_agent_llm()

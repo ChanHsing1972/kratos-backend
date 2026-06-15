@@ -5,17 +5,21 @@ Agent、补齐动作媒体、持久化运行结果和会话产物。状态构造
 独立模块，避免服务层继续膨胀。
 """
 
-from functools import lru_cache
 from collections.abc import Callable
+from functools import lru_cache
+import logging
+from threading import Thread
 from typing import Any, Iterator
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.agent.llm import get_agent_llm
+from app.agent.llm import get_agent_llm_for_route
+from app.agent.model_router import AgentModelRoute, select_agent_model_route
 from app.agent.runner import AgentCancelledError, AgentRunner, build_agent_nodes
 from app.agent.state.result import ExerciseMedia
 from app.agent.state.session_state import SessionState
+from app.db.session import SessionLocal
 from app.schemas.agent_chat import AgentTraceStep
 from app.services.agent_run import (
     create_agent_run,
@@ -40,12 +44,14 @@ from app.services.conversation_session import (
 from app.services.exercise_media import get_exercise_media, resolve_supported_exercise_name
 from app.services.training_plan_media import embed_schedule_json_media
 
+logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=1)
-def get_agent_runner():
-    """返回进程内复用的 AgentRunner。"""
 
-    return AgentRunner(build_agent_nodes(get_agent_llm()))
+@lru_cache(maxsize=4)
+def get_agent_runner(route: str = "default"):
+    """返回按模型路由缓存的 AgentRunner。"""
+
+    return AgentRunner(build_agent_nodes(get_agent_llm_for_route(route)))
 
 
 def run_agent_chat(
@@ -70,6 +76,7 @@ def run_agent_chat(
         最终状态和完整 trace。
     """
 
+    model_route = select_agent_model_route(message, attachments)
     prepared = prepare_agent_state(
         user_id=user_id,
         message=message,
@@ -88,7 +95,7 @@ def run_agent_chat(
             return state, trace
 
     try:
-        final_state = get_agent_runner().run(state)
+        final_state = get_agent_runner(model_route.route).run(state)
     except BaseException:
         if db is not None:
             fail_reserved_agent_run(db, reserved_run.id if reserved_run else None)
@@ -136,6 +143,17 @@ def stream_agent_chat(
     persisted_trace: list[AgentTraceStep] = []
     if is_cancelled is not None and is_cancelled():
         return
+    model_route = select_agent_model_route(message, attachments)
+    run_id = client_turn_id or str(uuid4())
+    early_event = {
+        "type": "status",
+        "content": "Agent 已收到请求，开始读取上下文",
+        "session_id": session_id,
+        "run_id": run_id,
+        "raw": {"phase": "received"},
+    }
+    append_persistable_event(persisted_trace, early_event)
+    yield early_event
     prepared = prepare_agent_state(
         user_id=user_id,
         message=message,
@@ -146,7 +164,6 @@ def stream_agent_chat(
     state = prepared.state
     attach_pending_health_artifact(state, prepared.pending_health_updates)
     reserved_run = None
-    run_id = str(uuid4())
     if db is not None:
         reserved_run, should_run = reserve_agent_run(db, user_id, state.session_id, prepared.stored_message, client_turn_id)
         if reserved_run is not None:
@@ -193,9 +210,13 @@ def stream_agent_chat(
         "content": "Agent 已读取数据库上下文，开始处理请求",
         "session_id": state.session_id,
         "run_id": run_id,
+        "raw": {"prepare_timing_ms": prepared.timings_ms},
     }
     append_persistable_event(persisted_trace, event)
     yield event
+    for route_event in _model_route_events(model_route, state.session_id, run_id):
+        append_persistable_event(persisted_trace, route_event)
+        yield route_event
     if prepared.context_snapshot:
         event = {
             "type": "observation",
@@ -230,7 +251,13 @@ def stream_agent_chat(
     media_enriched_for_final = False
 
     try:
-        for event in _run_streaming_agent(final_state, emitted_keys, run_id=run_id, is_cancelled=is_cancelled):
+        for event in _run_streaming_agent(
+            final_state,
+            emitted_keys,
+            run_id=run_id,
+            model_route=model_route,
+            is_cancelled=is_cancelled,
+        ):
             if event.get("type") == "final":
                 if not media_enriched_for_final:
                     enrich_workout_plan_media(final_state, db)
@@ -254,20 +281,6 @@ def stream_agent_chat(
 
     answer = str(final_state.result.response or "")
 
-    if db is not None:
-        record_tool_failures_from_state(db, user_id, final_state)
-        trace = persisted_trace or build_trace(final_state)
-        create_agent_run(
-            db,
-            user_id,
-            prepared.stored_message,
-            final_state,
-            trace,
-            client_turn_id=client_turn_id,
-            reserved_run_id=reserved_run.id if reserved_run else None,
-        )
-        persist_session_turn_artifacts(db, user_id, final_state.session_id, final_state, prepared.stored_message)
-
     yield {
         "type": "done",
         "content": "Agent 回复完成",
@@ -276,11 +289,23 @@ def stream_agent_chat(
         "run_id": run_id,
     }
 
+    if db is not None:
+        _persist_stream_result_later(
+            user_id=user_id,
+            state=final_state,
+            stored_message=prepared.stored_message,
+            trace=persisted_trace or build_trace(final_state),
+            client_turn_id=client_turn_id,
+            reserved_run_id=reserved_run.id if reserved_run else None,
+            run_id=run_id,
+        )
+
 
 def _run_streaming_agent(
     state: SessionState,
     emitted_keys: set[tuple[str, str]],
     run_id: str | None = None,
+    model_route: AgentModelRoute | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """运行 AgentRunner 的流式接口，并把 final_state 转为 final 事件。"""
@@ -293,7 +318,8 @@ def _run_streaming_agent(
             include_tool_events=False,
         )
 
-    for raw_event in get_agent_runner().iter_events(
+    route = model_route.route if model_route is not None else "default"
+    for raw_event in get_agent_runner(route).iter_events(
         state,
         stream_answer=True,
         after_node=emit_trace,
@@ -324,6 +350,91 @@ def _run_streaming_agent(
             if content is not None:
                 emitted_keys.add((str(event.get("type")), str(content)))
         yield event
+
+
+def _model_route_events(
+    model_route: AgentModelRoute,
+    session_id: str,
+    run_id: str | None,
+) -> Iterator[dict[str, Any]]:
+    raw = {
+            "decision": "model_route",
+            "route": model_route.route,
+            "label": model_route.label,
+            "model": model_route.model,
+            "reason": model_route.reason,
+            "requires_vision": model_route.requires_vision,
+    }
+    events = [
+        {
+            "type": "status",
+            "content": "开始选择执行路径",
+            "session_id": session_id,
+            "raw": {"node": "router", "phase": "start", **raw},
+        },
+        {
+            "type": "thought",
+            "content": f"已选择「{model_route.label}」：{model_route.reason}，使用 {model_route.model}",
+            "session_id": session_id,
+            "raw": raw,
+        },
+        {
+            "type": "status",
+            "content": "完成选择执行路径",
+            "session_id": session_id,
+            "raw": {"node": "router", "phase": "end", "elapsed_ms": 0, **raw},
+        },
+    ]
+    for event in events:
+        if run_id is not None:
+            event["run_id"] = run_id
+        yield event
+
+
+def _persist_stream_result_later(
+    *,
+    user_id: int,
+    state: SessionState,
+    stored_message: str,
+    trace: list[AgentTraceStep],
+    client_turn_id: str | None,
+    reserved_run_id: int | None,
+    run_id: str,
+) -> None:
+    """Persist the completed stream without delaying the SSE done event."""
+
+    def worker() -> None:
+        db = SessionLocal()
+        try:
+            record_tool_failures_from_state(db, user_id, state)
+            create_agent_run(
+                db,
+                user_id,
+                stored_message,
+                state,
+                trace,
+                client_turn_id=client_turn_id,
+                reserved_run_id=reserved_run_id,
+            )
+            persist_session_turn_artifacts(db, user_id, state.session_id, state, stored_message)
+            logger.info(
+                "AGENT_STREAM_PERSIST_COMPLETE run_id=%s user_id=%s session_id=%s",
+                run_id,
+                user_id,
+                state.session_id,
+            )
+        except Exception:
+            logger.exception(
+                "AGENT_STREAM_PERSIST_FAILED run_id=%s user_id=%s session_id=%s",
+                run_id,
+                user_id,
+                state.session_id,
+            )
+            fail_reserved_agent_run(db, reserved_run_id)
+        finally:
+            db.close()
+
+    Thread(target=worker, daemon=True).start()
 
 
 def enrich_workout_plan_media(state: SessionState, db: Session | None = None) -> None:

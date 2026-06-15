@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     AGENT_LLM_MAX_OUTPUT_TOKENS: int = 1800
     AGENT_LLM_HTTP_USER_AGENT: str = "curl/8.7.1"
     AGENT_LLM_SSL_VERIFY: bool = False
+    AGENT_ENABLE_MODEL_ROUTER: bool = True
+    AGENT_TEXT_LLM_MODEL: str = "deepseek-v4-flash"
+    AGENT_TEXT_LLM_BASE_URL: str | None = None
+    AGENT_TEXT_LLM_API_KEY: str | None = None
+    AGENT_VISION_LLM_MODEL: str | None = None
+    AGENT_VISION_LLM_BASE_URL: str | None = None
+    AGENT_VISION_LLM_API_KEY: str | None = None
     AGENT_INCLUDE_ATTACHMENTS_IN_LLM: bool = True
     AGENT_ENABLE_MEMORY_SUMMARY_LLM: bool = False
     AGENT_ENABLE_SESSION_TITLE_LLM: bool = True

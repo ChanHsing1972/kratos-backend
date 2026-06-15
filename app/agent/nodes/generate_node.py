@@ -7,6 +7,7 @@ GenerateNode 负责把任务结果组织成用户可见 Markdown，并从工具�
 
 import json
 import re
+import time
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -250,6 +251,7 @@ class GenerateNode(BaseNode):
         """非流式生成最终回答，并同步更新结构化结果。"""
 
         prompt = self.build_prompt(state)
+        t0 = time.monotonic()
         try:
             response = self.llm.invoke(
                 self.prompt_input(
@@ -263,6 +265,23 @@ class GenerateNode(BaseNode):
             self.logger.warning("GenerateNode invoke failed, using fallback answer: %s", exc)
             response_text = self._fallback_response_text(state, exc)
             response = AIMessage(content=response_text)
+        elapsed = time.monotonic() - t0
+        self.logger.info(
+            (
+                "AGENT_LLM_CALL node=%s mode=invoke model=%s prompt_chars=%d "
+                "prompt_tokens_est=%d first_token_ms=%s total_ms=%d output_chars=%d "
+                "user_id=%s session_id=%s"
+            ),
+            self.__class__.__name__,
+            self._model_name(),
+            len(prompt),
+            self._estimate_tokens(prompt),
+            "null",
+            int(elapsed * 1000),
+            len(response_text),
+            state.user_id,
+            state.session_id,
+        )
         self.apply_response(state, response, response_text)
         return state
 
@@ -277,6 +296,7 @@ class GenerateNode(BaseNode):
         visible_streamer = _VisibleMarkdownStreamer()
         markdown_repairer = _StreamingMarkdownRepairer()
         last_chunk = None
+        first_token_ms: int | None = None
 
         prompt_input = self.prompt_input(
             prompt,
@@ -290,6 +310,8 @@ class GenerateNode(BaseNode):
                 delta = self._chunk_delta_text(chunk)
                 if not delta:
                     continue
+                if first_token_ms is None:
+                    first_token_ms = int((time.monotonic() - t0) * 1000)
                 response_text += delta
                 visible_delta = visible_streamer.feed(delta)
                 if visible_delta:
@@ -348,10 +370,20 @@ class GenerateNode(BaseNode):
 
         elapsed = time.monotonic() - t0
         self.logger.info(
-            "stream_response_events elapsed=%.2fs response_len=%d model=%s",
-            elapsed,
+            (
+                "AGENT_LLM_CALL node=%s mode=stream model=%s prompt_chars=%d "
+                "prompt_tokens_est=%d first_token_ms=%s total_ms=%d output_chars=%d "
+                "user_id=%s session_id=%s"
+            ),
+            self.__class__.__name__,
+            self._model_name(),
+            len(prompt),
+            self._estimate_tokens(prompt),
+            first_token_ms if first_token_ms is not None else "null",
+            int(elapsed * 1000),
             len(response_text),
-            getattr(self.llm, "model_name", "") or "",
+            state.user_id,
+            state.session_id,
         )
 
         self.apply_response(state, AIMessage(content=normalized_response_text), response_text)
@@ -364,6 +396,14 @@ class GenerateNode(BaseNode):
             status_raw["node"] = "generate"
             status_raw["phase"] = "end"
             status_raw["elapsed_ms"] = int(elapsed * 1000)
+            status_raw["llm"] = {
+                "model": self._model_name(),
+                "prompt_chars": len(prompt),
+                "prompt_tokens_est": self._estimate_tokens(prompt),
+                "first_token_ms": first_token_ms,
+                "total_ms": int(elapsed * 1000),
+                "output_chars": len(response_text),
+            }
             if structured_card_requested and draft_ready:
                 status_raw["structured_card_pending"] = True
                 status_raw["training_plan_draft_ready"] = True

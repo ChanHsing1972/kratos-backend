@@ -788,7 +788,7 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
                 "raw": state.result.model_dump(mode="json"),
             }
 
-    monkeypatch.setattr("app.services.agent_chat.get_agent_runner", lambda: FakeRunner())
+    monkeypatch.setattr("app.services.agent_chat.get_agent_runner", lambda route="default": FakeRunner())
     monkeypatch.setattr(
         "app.services.training_plan_media.resolve_supported_exercise_name",
         lambda action_name, db=None: "卧推" if action_name == "胸部推举" else action_name,

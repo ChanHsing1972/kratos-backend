@@ -2,11 +2,13 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from queue import Empty
 from queue import Queue
 from threading import Lock
 from threading import Thread
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -33,7 +35,9 @@ class LiveAgentStream:
     会向所有订阅者发送 None 作为结束信号。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, trace_id: str | None = None, server_received_at: str | None = None) -> None:
+        self.trace_id = trace_id or str(uuid4())
+        self.server_received_at = server_received_at or _utc_iso()
         self.events: list[dict[str, Any]] = []
         self.subscribers: list[Queue[dict[str, Any] | None]] = []
         self.cancelled = False
@@ -43,6 +47,7 @@ class LiveAgentStream:
     def publish(self, event: dict[str, Any]) -> None:
         """发布一个事件并广播给当前所有订阅者。"""
 
+        event = self._decorate_event(event)
         with self.lock:
             if self.done:
                 return
@@ -79,6 +84,8 @@ class LiveAgentStream:
                 "content": "Agent 运行已终止",
                 "answer": "",
             }
+            error_event = self._decorate_event(error_event)
+            done_event = self._decorate_event(done_event)
             self.events.extend([error_event, done_event])
             subscribers = list(self.subscribers)
             self.done = True
@@ -113,6 +120,13 @@ class LiveAgentStream:
         with self.lock:
             if queue in self.subscribers:
                 self.subscribers.remove(queue)
+
+    def _decorate_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        decorated = dict(event)
+        decorated.setdefault("trace_id", self.trace_id)
+        decorated.setdefault("server_received_at", self.server_received_at)
+        decorated["server_emit_at"] = _utc_iso()
+        return decorated
 
 
 _LIVE_AGENT_STREAMS: dict[tuple[int, str], LiveAgentStream] = {}
@@ -176,19 +190,30 @@ def stream_chat_with_agent(
 
     check_agent_chat_rate_limit(current_user.id)
     user_id = current_user.id
+    trace_id = payload.client_turn_id or str(uuid4())
+    server_received_at = _utc_iso()
     stream_key = (user_id, payload.client_turn_id) if payload.client_turn_id else None
     should_start_worker = True
+    logger.info(
+        "AGENT_STREAM_RECEIVED trace_id=%s user_id=%s session_id=%s client_turn_id=%s attachments=%d received_at=%s",
+        trace_id,
+        user_id,
+        payload.session_id,
+        payload.client_turn_id,
+        len(payload.attachments),
+        server_received_at,
+    )
 
     if stream_key is not None:
         with _LIVE_AGENT_STREAMS_LOCK:
             live_stream = _LIVE_AGENT_STREAMS.get(stream_key)
             if live_stream is None or live_stream.done:
-                live_stream = LiveAgentStream()
+                live_stream = LiveAgentStream(trace_id=trace_id, server_received_at=server_received_at)
                 _LIVE_AGENT_STREAMS[stream_key] = live_stream
             else:
                 should_start_worker = False
     else:
-        live_stream = LiveAgentStream()
+        live_stream = LiveAgentStream(trace_id=trace_id, server_received_at=server_received_at)
 
     def agent_worker() -> None:
         db = SessionLocal()
@@ -221,6 +246,7 @@ def stream_chat_with_agent(
                     "type": "error",
                     "content": _agent_stream_error_message(exc),
                     "session_id": payload.session_id,
+                    "trace_id": live_stream.trace_id,
                 }
             )
             live_stream.publish(
@@ -229,6 +255,7 @@ def stream_chat_with_agent(
                     "content": "Agent 运行结束",
                     "session_id": payload.session_id,
                     "answer": "",
+                    "trace_id": live_stream.trace_id,
                 }
             )
         finally:
@@ -276,6 +303,10 @@ def stream_chat_with_agent(
 def _sse_frame(event_type: str, event: dict[str, Any]) -> str:
     data = json.dumps(event, ensure_ascii=False, default=str)
     return f"event: {event_type}\ndata: {data}\n\n"
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @router.post("/chat/stream/{client_turn_id}/cancel")

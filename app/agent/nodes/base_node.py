@@ -64,20 +64,29 @@ class BaseNode:
         """
 
         t0 = time.monotonic()
-        response = self.llm.invoke(
-            self.prompt_input(
-                prompt,
-                state,
-                include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
-            )
+        prompt_input = self.prompt_input(
+            prompt,
+            state,
+            include_attachments=settings.AGENT_INCLUDE_ATTACHMENTS_IN_LLM,
         )
+        response = self.llm.invoke(prompt_input)
         content = self._extract_content(response)
         elapsed = time.monotonic() - t0
         self.logger.info(
-            "invoke_json elapsed=%.2fs content_len=%d model=%s",
-            elapsed,
+            (
+                "AGENT_LLM_CALL node=%s mode=json model=%s prompt_chars=%d "
+                "prompt_tokens_est=%d first_token_ms=%s total_ms=%d output_chars=%d "
+                "user_id=%s session_id=%s"
+            ),
+            self.__class__.__name__,
+            self._model_name(),
+            len(prompt),
+            self._estimate_tokens(prompt),
+            "null",
+            int(elapsed * 1000),
             len(content),
-            getattr(self.llm, "model_name", "") or "",
+            getattr(state, "user_id", None) if state is not None else None,
+            getattr(state, "session_id", None) if state is not None else None,
         )
         return parse_json_object(content)
 
@@ -226,6 +235,13 @@ class BaseNode:
                 pass
 
         return ""
+
+    def _model_name(self) -> str:
+        return str(getattr(self.llm, "model_name", "") or getattr(self.llm, "model", "") or "")
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return max(1, int(len(text) / 4)) if text else 0
 
     @staticmethod
     def describe_tools(tools: dict[str, Any]) -> list[dict[str, Any]]:

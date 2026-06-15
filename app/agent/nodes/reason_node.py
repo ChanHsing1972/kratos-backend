@@ -187,10 +187,14 @@ class ReasonNode(BaseNode):
 
                 return state
         else:
-            try:
-                data = self.invoke_json(prompt_observation, state)
-            except Exception as exc:  # noqa: BLE001
-                data = {"result": f"工具结果已获取，但模型解析工具观察结果时失败：{exc}。请根据已有工具结果保守生成回答。"}
+            compact_observation = self._compact_tool_observation(task)
+            if compact_observation is not None:
+                data = {"result": compact_observation}
+            else:
+                try:
+                    data = self.invoke_json(prompt_observation, state)
+                except Exception as exc:  # noqa: BLE001
+                    data = {"result": f"工具结果已获取，但模型解析工具观察结果时失败：{exc}。请根据已有工具结果保守生成回答。"}
             task.result = data.get("result")
 
         if task.result:
@@ -350,6 +354,74 @@ class ReasonNode(BaseNode):
         if has_attachment:
             return "用户上传了餐食附件。请基于可见食物估算热量和三大营养素，并生成需要用户确认后保存的饮食记录。"
         return "用户想记录饮食，但尚未提供具体食物、份量或图片。请先请用户补充餐食明细，暂不生成可保存记录。"
+
+    @staticmethod
+    def _compact_tool_observation(task) -> str | None:
+        if not task.tool_calls:
+            return None
+
+        tool_names = {str(call.name) for call in task.tool_calls}
+        if tool_names == {"diet_plan_generator"}:
+            summaries = [
+                ReasonNode._summarize_diet_plan_result(result)
+                for result in task.tool_results
+            ]
+            summary = "；".join(item for item in summaries if item)
+            return summary or "饮食计划工具已返回候选食谱和营养目标，请据此生成简洁、可执行的饮食建议。"
+
+        return None
+
+    @staticmethod
+    def _summarize_diet_plan_result(result: Any) -> str:
+        if not isinstance(result, dict):
+            return str(result)[:800]
+        if result.get("ok") is False:
+            return f"饮食计划工具返回降级结果：{result.get('message') or result.get('reason') or '未知原因'}。"
+
+        plan = result.get("diet_plan") if isinstance(result.get("diet_plan"), dict) else {}
+        profile = plan.get("profile_summary") if isinstance(plan.get("profile_summary"), dict) else {}
+        targets = plan.get("nutrition_targets") if isinstance(plan.get("nutrition_targets"), dict) else {}
+        meals = plan.get("meals") if isinstance(plan.get("meals"), list) else []
+        tips = plan.get("tips") if isinstance(plan.get("tips"), list) else []
+
+        parts = []
+        goal = profile.get("goal")
+        if goal:
+            parts.append(f"目标：{goal}")
+        protein = targets.get("daily_protein_g")
+        calories = targets.get("estimated_calories_per_meal")
+        hydration = targets.get("hydration_liters")
+        target_bits = []
+        if protein is not None:
+            target_bits.append(f"每日蛋白约 {protein}g")
+        if calories is not None:
+            target_bits.append(f"每餐约 {calories}kcal")
+        if hydration is not None:
+            target_bits.append(f"饮水约 {hydration}L")
+        if target_bits:
+            parts.append("营养目标：" + "，".join(target_bits))
+
+        meal_lines = []
+        for meal in meals[:4]:
+            if not isinstance(meal, dict):
+                continue
+            meal_type = meal.get("meal_type") or "餐次"
+            recommendation = meal.get("recommendation") if isinstance(meal.get("recommendation"), dict) else {}
+            recipes = recommendation.get("recipes") if isinstance(recommendation.get("recipes"), list) else []
+            titles = []
+            for recipe in recipes[:2]:
+                if isinstance(recipe, dict):
+                    title = recipe.get("title") or recipe.get("name")
+                    if title:
+                        titles.append(str(title))
+            if titles:
+                meal_lines.append(f"{meal_type}候选：{' / '.join(titles)}")
+        if meal_lines:
+            parts.append("餐次建议：" + "；".join(meal_lines))
+        if tips:
+            parts.append("提示：" + "；".join(str(item) for item in tips[:2]))
+
+        return "饮食计划工具摘要：" + "；".join(parts)
 
     @staticmethod
     def _has_latest_attachment(state) -> bool:

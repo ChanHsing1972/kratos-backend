@@ -134,6 +134,8 @@ class ActNode(BaseNode):
     @staticmethod
     def _tool_observation_event(task, tool_call, elapsed_ms: int) -> dict[str, Any]:
         raw = tool_call.model_dump(mode="json")
+        if tool_call.result is not None:
+            raw["result"] = _compact_tool_result_for_event(tool_call.name, tool_call.result)
         raw.update(
             {
                 "node": "act",
@@ -154,3 +156,43 @@ class ActNode(BaseNode):
             "content": content,
             "raw": raw,
         }
+
+
+def _compact_tool_result_for_event(tool_name: str, result: Any) -> Any:
+    """Keep SSE trace payloads readable without mutating the stored tool result."""
+
+    if not isinstance(result, dict):
+        return result
+    if tool_name == "diet_plan_generator":
+        plan = result.get("diet_plan") if isinstance(result.get("diet_plan"), dict) else {}
+        meals = plan.get("meals") if isinstance(plan.get("meals"), list) else []
+        compact_meals = []
+        for meal in meals[:4]:
+            if not isinstance(meal, dict):
+                continue
+            recommendation = meal.get("recommendation") if isinstance(meal.get("recommendation"), dict) else {}
+            recipes = recommendation.get("recipes") if isinstance(recommendation.get("recipes"), list) else []
+            compact_meals.append(
+                {
+                    "meal_type": meal.get("meal_type"),
+                    "recipes": [
+                        {
+                            "title": recipe.get("title") or recipe.get("name"),
+                            "readyInMinutes": recipe.get("readyInMinutes"),
+                            "servings": recipe.get("servings"),
+                        }
+                        for recipe in recipes[:2]
+                        if isinstance(recipe, dict)
+                    ],
+                }
+            )
+        return {
+            "ok": result.get("ok"),
+            "tool": result.get("tool") or tool_name,
+            "profile_summary": plan.get("profile_summary"),
+            "nutrition_targets": plan.get("nutrition_targets"),
+            "meals": compact_meals,
+            "tips": plan.get("tips"),
+            "raw_compacted": True,
+        }
+    return result

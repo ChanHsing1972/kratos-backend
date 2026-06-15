@@ -322,8 +322,8 @@ def format_skill_snapshot(snapshot: list[dict[str, Any]]) -> str:
 
 def _task_thought(name: str, description: str | None) -> str:
     if description and description != name:
-        return description
-    return name
+        return f"本轮计划：{description}"
+    return f"本轮计划：{name}"
 
 
 def _format_tool_call(tool_call: ToolCall) -> str:

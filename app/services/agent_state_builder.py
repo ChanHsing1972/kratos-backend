@@ -6,6 +6,8 @@
 """
 
 from dataclasses import dataclass
+import logging
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -41,6 +43,8 @@ from app.services.skill import (
 from app.services.working_memory_point import hydrate_state_working_memory_points
 from app.services.upload import build_agent_attachment_parts
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class PreparedAgentState:
@@ -59,6 +63,7 @@ class PreparedAgentState:
     pending_health_updates: dict[str, Any] | None
     context_snapshot: dict[str, Any] | None
     skill_snapshot: list[dict[str, Any]]
+    timings_ms: dict[str, int]
 
 
 def prepare_agent_state(
@@ -84,13 +89,19 @@ def prepare_agent_state(
         当 `db` 非空时会确保会话记录存在，并读取用户上下文、Skill 和工具配置。
     """
 
+    total_started = time.monotonic()
+    timings: dict[str, int] = {}
+
     stored_message = message_for_storage(message, attachments)
+    stage_started = time.monotonic()
     enabled_tool_names = enabled_tool_names_for_user(db, user_id) if db is not None else None
     tools = load_tools(enabled_tool_names=enabled_tool_names)
+    _record_timing(timings, "tools_load", stage_started)
     active_skill_models = []
     skill_snapshot: list[dict[str, Any]] = []
 
     if db is not None:
+        stage_started = time.monotonic()
         active_skill_models = get_enabled_skills_for_user(db, user_id)
         allowed_tools = allowed_tool_names(active_skill_models)
         if active_skill_models:
@@ -103,7 +114,9 @@ def prepare_agent_state(
             }
             for skill in active_skill_models
         ]
+        _record_timing(timings, "skills_load", stage_started)
 
+    stage_started = time.monotonic()
     state = SessionState(
         session_id=session_id or str(uuid4()),
         user_id=str(user_id),
@@ -111,27 +124,39 @@ def prepare_agent_state(
         active_skills=[ActiveSkill(**skill_to_prompt_payload(skill)) for skill in active_skill_models],
     )
     state.result.user_attachments = attachments_for_history(attachments or [])
+    _record_timing(timings, "state_init", stage_started)
 
     context_snapshot = None
     conversation_session = None
     if db is not None:
+        stage_started = time.monotonic()
         conversation_session = ensure_conversation_session(db, user_id, state.session_id)
+        _record_timing(timings, "session_ensure", stage_started)
         if session_id:
+            stage_started = time.monotonic()
             memory_payload = get_latest_agent_memory_payload(db, user_id, session_id)
             if memory_payload:
                 state.memory = MemoryState.model_validate(memory_payload)
             conversation_session = hydrate_state_from_conversation_session(db, user_id, session_id, state) or conversation_session
+            _record_timing(timings, "session_restore", stage_started)
 
+        stage_started = time.monotonic()
         user = db.query(User).filter(User.id == user_id).first()
         state.memory.replace_long_term_memory_points(hydrate_state_long_term_memory_points(db, user_id))
         state.memory.replace_short_term_memory_points(hydrate_state_short_term_memory_points(db, user_id))
         state.memory.replace_working_memory_points(hydrate_state_working_memory_points(db, user_id))
+        _record_timing(timings, "memory_hydration", stage_started)
         if user is not None:
+            stage_started = time.monotonic()
             context = load_fitness_context(db, user)
             hydrate_agent_memory(state, context)
             context_snapshot = context_for_prompt(context)
+            _record_timing(timings, "fitness_context", stage_started)
+        stage_started = time.monotonic()
         attach_knowledge_contexts(state, db, message)
+        _record_timing(timings, "knowledge_retrieval", stage_started)
 
+    stage_started = time.monotonic()
     pending_updates = extract_body_data_from_message(
         message,
         context_snapshot=context_snapshot,
@@ -139,13 +164,23 @@ def prepare_agent_state(
         conversation_context=conversation_context_for_extraction(state),
     )
     state.memory.pending_confirmation_updates = pending_updates or {}
+    _record_timing(timings, "health_extraction", stage_started)
 
+    stage_started = time.monotonic()
     content = build_agent_attachment_parts(
         user_id=user_id,
         message=message,
         attachments=attachments or [],
     )
     state.conversation.messages.append(HumanMessage(content=content))
+    _record_timing(timings, "attachment_parts", stage_started)
+    _record_timing(timings, "total", total_started)
+    logger.info(
+        "AGENT_PREPARE_TIMING user_id=%s session_id=%s timings_ms=%s",
+        user_id,
+        state.session_id,
+        timings,
+    )
 
     return PreparedAgentState(
         state=state,
@@ -153,7 +188,12 @@ def prepare_agent_state(
         pending_health_updates=pending_updates,
         context_snapshot=context_snapshot,
         skill_snapshot=skill_snapshot,
+        timings_ms=timings,
     )
+
+
+def _record_timing(timings: dict[str, int], key: str, started: float) -> None:
+    timings[key] = int((time.monotonic() - started) * 1000)
 
 
 def attach_knowledge_contexts(
