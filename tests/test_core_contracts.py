@@ -21,7 +21,13 @@ from app.agent.state.short_term_memory_point import ShortTermMemoryPoint
 from app.agent.state.conversation import AskAns
 from app.agent.state.memory import TurnMemory
 from app.agent.state.reasoning import Task, TaskStatus
-from app.agent.state.result import ResultSource, WorkoutExercise, WorkoutPlanResult, WorkoutSession
+from app.agent.state.result import (
+    DietPlanResult,
+    ResultSource,
+    WorkoutExercise,
+    WorkoutPlanResult,
+    WorkoutSession,
+)
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolCall, ToolStatus
 from app.api.v1.endpoints.agent_chat import LiveAgentStream, _agent_stream_error_message
@@ -773,6 +779,35 @@ def test_enrich_workout_plan_media_replaces_action_with_supported_name(monkeypat
     assert exercise.media is not None
     assert exercise.media.media_url == "https://example.com/bench.mp4"
     assert state.result.structured_artifacts["workout_plan"]["sessions"][0]["exercises"][0]["name"] == "卧推"
+
+
+def test_result_runtime_reset_preserves_visible_cards_after_turn_end():
+    state = SessionState(session_id="s1", user_id="u1")
+    state.result.response = "## 今日安排\n\n已生成。"
+    state.result.first_response = "正在生成..."
+    state.result.training_plan_draft = {"schedule_json": {"weeks": []}}
+    state.result.workout_plan = WorkoutPlanResult(
+        sessions=[WorkoutSession(title="推训练", exercises=[WorkoutExercise(name="卧推")])]
+    )
+    state.result.diet_plan = DietPlanResult(tips=["多喝水"])
+    state.result.structured_artifacts = {
+        "version": 1,
+        "training_plan_draft": state.result.training_plan_draft,
+        "pending_health_data": {"body_metric": {"weight_kg": 66}},
+        "diet_records": [{"name": "鸡胸肉"}],
+    }
+    state.result.final_answer_ready = True
+
+    state.result.reset_runtime_for_new_turn()
+
+    assert state.result.first_response is None
+    assert state.result.response == "## 今日安排\n\n已生成。"
+    assert state.result.training_plan_draft == {"schedule_json": {"weeks": []}}
+    assert state.result.workout_plan is not None
+    assert state.result.diet_plan is not None
+    assert state.result.structured_artifacts["pending_health_data"]["body_metric"]["weight_kg"] == 66
+    assert state.result.structured_artifacts["diet_records"][0]["name"] == "鸡胸肉"
+    assert state.result.final_answer_ready is True
 
 
 def test_enrich_workout_plan_media_updates_training_plan_draft(monkeypatch):
@@ -1970,6 +2005,7 @@ def test_generate_node_stream_repairs_glued_markdown_before_completion():
     assert "### 每周训练安排\n\n| 星期 | 主题 | 动作 | 组数 |" in streamed
     assert "| --- | --- | --- | --- |\n| 周一 | 全身力量 A | 深蹲 | 4 |" in streamed
     assert snapshots
+    assert not any(event.get("type") == "answer_replace" for event in events)
     assert all("###本周训练计划" not in snapshot for snapshot in snapshots)
     assert all("每周训练安排|" not in snapshot for snapshot in snapshots)
 
@@ -2003,6 +2039,7 @@ def test_generate_node_stream_holds_incomplete_table_until_it_can_render():
         event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
     ]
     assert answer_events
+    assert not any(event.get("type") == "answer_replace" for event in answer_events)
     assert "每周训练安排|" not in str(answer_events[0].get("content") or "")
 
 

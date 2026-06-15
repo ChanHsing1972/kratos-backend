@@ -113,13 +113,13 @@ class _StreamingMarkdownRepairer:
             return None
         self.source_text += text
         repairable_source = _repairable_stream_source(self.source_text)
-        return self._event_for(finalize_markdown_response(repairable_source), phase=phase)
+        return self._event_for(finalize_markdown_response(repairable_source), phase=phase, allow_replace=False)
 
     def reconcile(self, source_text: str, *, phase: str) -> dict[str, Any] | None:
         self.source_text = source_text
-        return self._event_for(finalize_markdown_response(source_text), phase=phase)
+        return self._event_for(finalize_markdown_response(source_text), phase=phase, allow_replace=True)
 
-    def _event_for(self, repaired_text: str, *, phase: str) -> dict[str, Any] | None:
+    def _event_for(self, repaired_text: str, *, phase: str, allow_replace: bool) -> dict[str, Any] | None:
         if repaired_text == self.emitted_text:
             return None
 
@@ -133,6 +133,9 @@ class _StreamingMarkdownRepairer:
                 "content": delta,
                 "raw": raw,
             }
+
+        if not allow_replace:
+            return None
 
         self.emitted_text = repaired_text
         return {
