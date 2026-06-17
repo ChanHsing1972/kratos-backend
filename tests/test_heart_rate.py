@@ -1,5 +1,9 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta
 
+from app.db.session import Base
+from app.schemas.current_heart_rate import CurrentHeartRateIn
+from app.services.current_heart_rate import current_heart_rate_status, upsert_current_heart_rate
 from app.services.heart_rate import _estimate_kcal, _zone_distribution
 
 
@@ -33,3 +37,31 @@ def test_estimate_kcal_prefers_heart_rate_when_profile_data_is_complete():
     assert estimate["method"] == "heart_rate"
     assert estimate["value"] == 431
     assert estimate["reason"] is None
+
+
+def test_current_heart_rate_upsert_and_stale_status():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db_session = session_factory()
+    payload = CurrentHeartRateIn(
+        bpm=128,
+        source="sport_app",
+        recorded_at=datetime.utcnow(),
+    )
+
+    try:
+        reading = upsert_current_heart_rate(db_session, user_id=1, payload=payload)
+
+        assert reading.user_id == 1
+        assert reading.bpm == 128
+        assert reading.source == "sport_app"
+        assert current_heart_rate_status(reading) == ("ok", None)
+
+        reading.received_at = datetime.utcnow() - timedelta(seconds=20)
+        assert current_heart_rate_status(reading)[0] == "stale"
+    finally:
+        db_session.close()

@@ -7,6 +7,7 @@ from app.models.agent_run import AgentRun, AgentTraceStep
 from app.models.apple_health import AppleHealthSync
 from app.models.body_metric import BodyMetric
 from app.models.conversation_session import ConversationSession
+from app.models.current_heart_rate import CurrentHeartRate
 from app.models.diet import DietRecord
 from app.models.exercise_library import ExerciseLibraryItem
 from app.models.exercise_media import ExerciseMediaCache
@@ -31,6 +32,7 @@ __all__ = [
     "ShortTermMemoryPoint",
     "WorkingMemoryPoint",
     "ConversationSession",
+    "CurrentHeartRate",
     "DietRecord",
     "ExerciseLibraryItem",
     "ExerciseMediaCache",

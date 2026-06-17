@@ -312,6 +312,22 @@ def ensure_runtime_schema(engine: Engine) -> None:
                 )
             )
 
+    if "current_heart_rates" not in table_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS current_heart_rates (
+                        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                        bpm INTEGER NOT NULL,
+                        source VARCHAR(30) DEFAULT 'sport_app' NOT NULL,
+                        recorded_at TIMESTAMP NOT NULL,
+                        received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+                    )
+                    """
+                )
+            )
+
     with engine.begin() as connection:
         connection.execute(
             text(

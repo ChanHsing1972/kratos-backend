@@ -41,6 +41,12 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    current_heart_rate: Mapped["CurrentHeartRate | None"] = relationship(
+        "CurrentHeartRate",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     apple_health_syncs: Mapped[list["AppleHealthSync"]] = relationship(
         "AppleHealthSync",
         back_populates="user",
