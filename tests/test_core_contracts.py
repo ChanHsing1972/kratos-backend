@@ -300,6 +300,57 @@ def test_generate_prompt_requires_citations_for_knowledge_contexts():
     assert "https://www.acsm.org/" in prompt
 
 
+def test_rag_document_chunks_are_retrieved_with_chunk_citation():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.rag import create_document_from_text, retrieve_rag_contexts
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = session_factory()
+    try:
+        document = create_document_from_text(
+            db,
+            title="膝痛训练指南",
+            content="膝盖疼痛时应暂停高冲击训练和大重量深蹲，优先选择低冲击替代动作。",
+            created_by=1,
+            source_type="manual",
+        )
+
+        contexts = retrieve_rag_contexts(db, "膝盖疼还能深蹲吗", limit=3)
+
+        assert document.chunk_count == 1
+        assert contexts
+        assert contexts[0]["document_title"] == "膝痛训练指南"
+        assert "#chunk-" in contexts[0]["citation"]
+        assert "低冲击" in contexts[0]["content"]
+    finally:
+        db.close()
+
+
+def test_knowledge_trace_shows_retrieved_chunks():
+    from app.services.agent_trace import build_knowledge_trace_step_from_state
+
+    state = SessionState(session_id="s1", user_id="1")
+    state.memory.database_context["knowledge_base"] = [
+        {
+            "document_title": "膝痛训练指南",
+            "chunk_id": 12,
+            "citation": "[膝痛训练指南 #chunk-12]",
+            "content": "避免高冲击训练。",
+        }
+    ]
+
+    step = build_knowledge_trace_step_from_state(state)
+
+    assert step is not None
+    assert "已检索知识库：命中 1 条" in step.content
+    assert "[膝痛训练指南 #chunk-12]" in step.content
+    assert step.raw == {"knowledge_hits": state.memory.database_context["knowledge_base"]}
+
+
 def test_chitchat_fast_path_skips_agent_context_loading():
     result = detect_agent_fast_path(message="你好", attachments=[])
 

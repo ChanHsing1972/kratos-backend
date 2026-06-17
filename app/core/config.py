@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     WORKING_MEMORY_RETENTION_HOURS: int = 48
     TAVILY_API_KEY: str | None = None
 
+    RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    RAG_EMBEDDING_BASE_URL: str | None = None
+    RAG_EMBEDDING_API_KEY: str | None = None
+    RAG_EMBEDDING_TIMEOUT_SECONDS: int = 60
+    RAG_EMBEDDING_MAX_RETRIES: int = 1
+
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str | None = None
     FOOD_VISION_API_KEY: str | None = None
@@ -193,6 +199,21 @@ class Settings(BaseSettings):
             return agent_model
         base_url = self.FOOD_VISION_EFFECTIVE_BASE_URL or ""
         return "qwen-vl-plus" if "dashscope" in base_url else "gpt-4.1"
+
+    @property
+    def RAG_EMBEDDING_EFFECTIVE_API_KEY(self) -> str | None:
+        return (
+            _configured_secret(self.RAG_EMBEDDING_API_KEY)
+            or _configured_secret(self.OPENAI_API_KEY)
+        )
+
+    @property
+    def RAG_EMBEDDING_EFFECTIVE_BASE_URL(self) -> str | None:
+        if self.RAG_EMBEDDING_BASE_URL and self.RAG_EMBEDDING_BASE_URL.strip():
+            return self.RAG_EMBEDDING_BASE_URL.strip()
+        if _configured_secret(self.OPENAI_API_KEY):
+            return self.OPENAI_BASE_URL
+        return None
 
     @property
     def DATABASE_URI(self) -> str:

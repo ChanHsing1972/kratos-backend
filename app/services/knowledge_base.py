@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.knowledge_base import KnowledgeBaseEntry
+from app.services.rag import format_rag_contexts, retrieve_rag_contexts
 
 
 def retrieve_knowledge_contexts(
@@ -15,6 +16,10 @@ def retrieve_knowledge_contexts(
     query_text = str(query or "").strip()
     if not query_text:
         return []
+
+    rag_contexts = retrieve_rag_contexts(db, query_text, limit=limit)
+    if rag_contexts:
+        return rag_contexts
 
     entries = db.scalars(
         select(KnowledgeBaseEntry)
@@ -50,6 +55,8 @@ def retrieve_knowledge_contexts(
 def format_knowledge_contexts(contexts: list[dict[str, Any]]) -> str:
     if not contexts:
         return "未检索到外部知识库上下文。"
+    if contexts and "chunk_id" in contexts[0]:
+        return format_rag_contexts(contexts)
     lines = []
     for item in contexts:
         source_parts = []

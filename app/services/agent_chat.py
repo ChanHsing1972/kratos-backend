@@ -34,11 +34,13 @@ from app.services.agent_state_builder import prepare_agent_state
 from app.services.agent_tool import record_tool_failures_from_state
 from app.services.agent_trace import (
     append_persistable_event,
+    build_knowledge_trace_step_from_state,
     build_trace,
     emit_new_trace,
     format_context_snapshot,
     format_persisted_body_data,
     format_skill_snapshot,
+    knowledge_trace_event,
     prepend_context_trace,
     trace_key,
 )
@@ -149,6 +151,9 @@ def run_agent_chat(
         prepared.context_snapshot,
         prepared.skill_snapshot,
     )
+    knowledge_step = build_knowledge_trace_step_from_state(final_state)
+    if knowledge_step is not None:
+        trace.insert(0, knowledge_step)
 
     if db is not None:
         record_tool_failures_from_state(db, user_id, final_state)
@@ -372,6 +377,10 @@ def stream_agent_chat(
             "session_id": state.session_id,
             "run_id": run_id,
         }
+        append_persistable_event(persisted_trace, event)
+        yield event
+    event = knowledge_trace_event(state, state.session_id, run_id)
+    if event is not None:
         append_persistable_event(persisted_trace, event)
         yield event
     if prepared.skill_snapshot:

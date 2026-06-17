@@ -201,6 +201,42 @@ def prepend_context_trace(
     trace[0:0] = leading_steps
 
 
+def knowledge_trace_event(state: SessionState, session_id: str, run_id: str | None = None) -> dict[str, Any] | None:
+    step = build_knowledge_trace_step_from_state(state)
+    if step is None:
+        return None
+    event = step.model_dump(mode="json")
+    event["session_id"] = session_id
+    if run_id is not None:
+        event["run_id"] = run_id
+    return event
+
+
+def build_knowledge_trace_step_from_state(state: SessionState | None) -> AgentTraceStep | None:
+    if state is None:
+        return None
+    contexts = state.memory.database_context.get("knowledge_base")
+    if not isinstance(contexts, list) or not contexts:
+        return None
+    titles = []
+    for item in contexts[:5]:
+        if not isinstance(item, dict):
+            continue
+        citation = item.get("citation")
+        title = item.get("document_title") or item.get("title") or item.get("source_title")
+        if citation:
+            titles.append(str(citation))
+        elif title:
+            titles.append(str(title))
+    if not titles:
+        return None
+    return AgentTraceStep(
+        type="observation",
+        content=f"已检索知识库：命中 {len(contexts)} 条，" + "、".join(titles),
+        raw={"knowledge_hits": contexts},
+    )
+
+
 def trace_key(step: AgentTraceStep) -> tuple[str, str]:
     """返回用于流式去重的稳定键。"""
 

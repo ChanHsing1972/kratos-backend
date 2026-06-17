@@ -116,6 +116,10 @@ def ensure_runtime_schema(engine: Engine) -> None:
     table_names = set(inspector.get_table_names())
     missing_columns: list[tuple[str, str, str]] = []
 
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
     if "body_metrics" in table_names:
         existing_columns = {
             column["name"]
@@ -252,6 +256,15 @@ def ensure_runtime_schema(engine: Engine) -> None:
         with engine.begin() as connection:
             for table_name, name, ddl in missing_columns:
                 connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+
+    if engine.dialect.name == "postgresql" and "knowledge_chunks" in table_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_embedding "
+                    "ON knowledge_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+                )
+            )
 
     if "health_metrics" not in table_names:
         columns = ", ".join(
