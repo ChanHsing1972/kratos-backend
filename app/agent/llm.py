@@ -6,9 +6,13 @@
 """
 
 from functools import lru_cache
+import os
 from typing import Any
 
 import httpx
+
+os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
+
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
