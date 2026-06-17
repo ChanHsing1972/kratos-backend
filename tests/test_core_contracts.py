@@ -199,81 +199,88 @@ def test_act_node_iter_events_emits_running_action_and_observation():
     assert task.tool_results[0]["value"] == "hi"
 
 
-def test_knowledge_retrieval_returns_active_ranked_contexts():
+def test_knowledge_retrieval_returns_active_ranked_contexts(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    import app.services.rag as rag_service
+    from app.services.rag import create_document_from_text
+
+    def fake_embedding(text: str) -> list[float]:
+        if "膝" in text or "深蹲" in text:
+            return [1.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0]
+
+    monkeypatch.setattr(rag_service, "embed_text", fake_embedding)
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = session_factory()
     try:
-        db.add_all(
-            [
-                KnowledgeBaseEntry(
-                    title="膝痛训练安全",
-                    content="膝盖疼痛时应避免跳跃和大重量深蹲，优先选择低冲击训练。",
-                    source="ACSM safety note",
-                    source_title="ACSM Exercise Preparticipation Health Screening",
-                    source_url="https://www.acsm.org/education-resources/trending-topics-resources/physical-activity-guidelines",
-                    tags=["膝盖", "疼痛", "安全"],
-                ),
-                KnowledgeBaseEntry(
-                    title="增肌蛋白质摄入",
-                    content="增肌期蛋白质摄入通常可按每公斤体重 1.6 到 2.2 克估算。",
-                    source="ISSN protein position stand",
-                    tags=["增肌", "蛋白质"],
-                ),
-                KnowledgeBaseEntry(
-                    title="停用知识",
-                    content="这条停用内容不应被检索到。",
-                    source="disabled",
-                    tags=["膝盖"],
-                    is_active=False,
-                ),
-            ]
+        create_document_from_text(
+            db,
+            title="膝痛训练安全",
+            content="膝盖疼痛时应避免跳跃和大重量深蹲，优先选择低冲击训练。",
+            source_url="https://www.acsm.org/education-resources/trending-topics-resources/physical-activity-guidelines",
+            source_type="manual",
+            created_by=1,
         )
-        db.commit()
+        create_document_from_text(
+            db,
+            title="增肌蛋白质摄入",
+            content="增肌期蛋白质摄入通常可按每公斤体重 1.6 到 2.2 克估算。",
+            source_type="manual",
+            created_by=1,
+        )
 
         contexts = retrieve_knowledge_contexts(db, "膝盖疼还能深蹲吗", limit=2)
 
-        assert [item["title"] for item in contexts] == ["膝痛训练安全"]
-        assert contexts[0]["citation"] == "[知识库:膝痛训练安全#1]"
+        assert contexts[0]["document_title"] == "膝痛训练安全"
+        assert contexts[0]["citation"].startswith("[膝痛训练安全")
+        assert "#chunk-" in contexts[0]["citation"]
         assert "低冲击训练" in contexts[0]["content"]
-        assert contexts[0]["source"] == "ACSM safety note"
-        assert contexts[0]["source_title"] == "ACSM Exercise Preparticipation Health Screening"
         assert contexts[0]["source_url"].startswith("https://www.acsm.org/")
     finally:
         db.close()
 
 
-def test_agent_state_loads_cited_knowledge_contexts():
+def test_agent_state_loads_cited_knowledge_contexts(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    import app.services.rag as rag_service
+    from app.services.rag import create_document_from_text
+
+    def fake_embedding(text: str) -> list[float]:
+        if "恢复" in text or "酸痛" in text:
+            return [1.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0]
+
+    monkeypatch.setattr(rag_service, "embed_text", fake_embedding)
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = session_factory()
     try:
-        db.add(
-            KnowledgeBaseEntry(
-                title="训练恢复",
-                content="高强度训练后通常需要安排恢复日，并关注睡眠和酸痛变化。",
-                source="ACSM recovery note",
-                tags=["恢复", "酸痛"],
-            )
+        create_document_from_text(
+            db,
+            title="训练恢复",
+            content="高强度训练后通常需要安排恢复日，并关注睡眠和酸痛变化。",
+            source_type="manual",
+            created_by=1,
         )
-        db.commit()
         state = SessionState(session_id="s1", user_id="1")
 
         attach_knowledge_contexts(state, db, "练完很酸痛还要继续高强度训练吗")
 
         knowledge = state.memory.database_context["knowledge_base"]
-        assert knowledge[0]["citation"] == "[知识库:训练恢复#1]"
+        assert knowledge[0]["citation"].startswith("[训练恢复")
+        assert "#chunk-" in knowledge[0]["citation"]
         assert "恢复日" in knowledge[0]["content"]
         assert state.memory.database_context["knowledge_base_text"].startswith(
-            "- [知识库:训练恢复#1]"
+            "- [训练恢复"
         )
     finally:
         db.close()
@@ -300,11 +307,19 @@ def test_generate_prompt_requires_citations_for_knowledge_contexts():
     assert "https://www.acsm.org/" in prompt
 
 
-def test_rag_document_chunks_are_retrieved_with_chunk_citation():
+def test_rag_document_chunks_are_retrieved_with_chunk_citation(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
+    import app.services.rag as rag_service
     from app.services.rag import create_document_from_text, retrieve_rag_contexts
+
+    def fake_embedding(text: str) -> list[float]:
+        if "膝" in text or "深蹲" in text:
+            return [1.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0]
+
+    monkeypatch.setattr(rag_service, "embed_text", fake_embedding)
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)

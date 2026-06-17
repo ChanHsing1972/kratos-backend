@@ -106,9 +106,10 @@ class Settings(BaseSettings):
     WORKING_MEMORY_RETENTION_HOURS: int = 48
     TAVILY_API_KEY: str | None = None
 
-    RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    RAG_EMBEDDING_BASE_URL: str | None = None
+    RAG_EMBEDDING_MODEL: str = "text-embedding-v4"
+    RAG_EMBEDDING_BASE_URL: str | None = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     RAG_EMBEDDING_API_KEY: str | None = None
+    RAG_EMBEDDING_DIMENSIONS: int = 1536
     RAG_EMBEDDING_TIMEOUT_SECONDS: int = 60
     RAG_EMBEDDING_MAX_RETRIES: int = 1
 
