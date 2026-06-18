@@ -338,6 +338,29 @@ def test_generate_node_exposes_only_cited_rag_chunks_as_artifacts():
     assert citations[0]["source_url"] == "https://example.com/recovery"
 
 
+def test_generate_node_appends_visible_rag_references_when_model_omits_citation():
+    state = SessionState(session_id="s1", user_id="1")
+    state.memory.database_context["knowledge_base"] = [
+        {
+            "document_title": "膝关节不适与低冲击训练替代",
+            "citation": "[膝关节不适与低冲击训练替代 #chunk-9]",
+            "content": "膝关节疼痛升高时应避免跳跃类高冲击训练，优先选择椭圆机或坡度步行。",
+            "source_title": "训练安全知识库",
+            "source_url": "https://example.com/knee-safe-training",
+            "chunk_id": 9,
+        }
+    ]
+    answer = "## 今日建议\n\n如果膝盖不舒服，先用低冲击有氧替代跳跃训练。"
+
+    GenerateNode().apply_response(state, AIMessage(content=answer), answer)
+
+    assert "### 参考来源" in state.result.response
+    assert "[膝关节不适与低冲击训练替代 #chunk-9]" in state.result.response
+    citations = state.result.structured_artifacts["rag_citations"]
+    assert citations[0]["content"].startswith("膝关节疼痛升高")
+    assert citations[0]["source_url"] == "https://example.com/knee-safe-training"
+
+
 def test_rag_document_chunks_are_retrieved_with_chunk_citation(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -2070,6 +2093,38 @@ def test_generate_node_stream_emits_visible_answer_delta_and_finalizes_result():
     assert streamed == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。"
     assert state.result.response == "## 下肢训练建议\n\n- 今天以激活为主，控制疼痛边界。"
     assert events[-1]["type"] == "status"
+
+
+def test_generate_node_stream_appends_rag_references_as_delta():
+    class RagMarkdownLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="## 膝痛训练建议\n\n")
+            yield SimpleNamespace(content="先用低冲击有氧替代跳跃训练。\n")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="膝盖痛还能训练吗"))
+    state.reasoning.intent = ["健身计划"]
+    state.memory.database_context["knowledge_base"] = [
+        {
+            "document_title": "膝关节不适与低冲击训练替代",
+            "citation": "[膝关节不适与低冲击训练替代 #chunk-9]",
+            "content": "膝关节疼痛升高时应避免跳跃类高冲击训练，优先选择椭圆机或坡度步行。",
+            "source_title": "训练安全知识库",
+            "source_url": "https://example.com/knee-safe-training",
+            "chunk_id": 9,
+        }
+    ]
+
+    events = list(GenerateNode(RagMarkdownLLM()).stream_response_events(state))
+    streamed = "".join(str(event.get("delta") or "") for event in events if event.get("type") == "answer_delta")
+
+    assert "### 参考来源" in streamed
+    assert "[膝关节不适与低冲击训练替代 #chunk-9]" in streamed
+    assert streamed == state.result.response
+    assert not any(event.get("type") == "answer_replace" for event in events)
+    assert state.result.structured_artifacts["rag_citations"][0]["content"].startswith("膝关节疼痛升高")
 
 
 def test_generate_node_stream_repairs_glued_markdown_before_completion():

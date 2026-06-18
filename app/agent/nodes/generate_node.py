@@ -289,6 +289,10 @@ def _longest_marker_prefix_suffix(text: str, marker: str) -> int:
     return 0
 
 
+def _normalize_text_for_citation(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
 class GenerateNode(BaseNode):
     """生成最终回答并更新 `state.result`。"""
 
@@ -433,6 +437,9 @@ class GenerateNode(BaseNode):
 
         self.apply_response(state, AIMessage(content=normalized_response_text), response_text)
         final_text = str(state.result.response or normalized_response_text)
+        final_event = markdown_repairer.reconcile(final_text, phase="rag_references")
+        if final_event is not None:
+            yield final_event
 
         structured_card_requested = self._should_emit_workout_plan(state, final_text)
         draft_ready = state.result.training_plan_draft is not None
@@ -705,6 +712,8 @@ class GenerateNode(BaseNode):
         tasks = state.reasoning.tasks
         visible_response_text, embedded_artifacts = self._split_embedded_structured_artifacts(response_text)
         response_text = self._normalize_markdown_response(visible_response_text)
+        response_text = self._append_knowledge_references(state, response_text)
+        response_text = self._normalize_markdown_response(response_text)
         state.result.response = response_text
         state.result.task_results = [
             {
@@ -830,37 +839,96 @@ class GenerateNode(BaseNode):
 
     @staticmethod
     def _attach_rag_citations(state: SessionState, response_text: str) -> None:
-        """Expose only RAG chunks cited by the visible answer to the frontend."""
+        """Expose RAG chunks used by the visible answer to the frontend."""
 
-        contexts = state.memory.database_context.get("knowledge_base")
-        if not isinstance(contexts, list):
-            return
-
-        citations = []
-        for item in contexts:
-            if not isinstance(item, dict):
-                continue
-            citation = str(item.get("citation") or "").strip()
-            if not citation or citation not in response_text:
-                continue
-            citations.append(
-                {
-                    "citation": citation,
-                    "document_title": item.get("document_title") or item.get("title"),
-                    "source_title": item.get("source_title"),
-                    "source_url": item.get("source_url"),
-                    "content": item.get("content"),
-                    "page_number": item.get("page_number"),
-                    "chunk_id": item.get("chunk_id"),
-                }
-            )
-
+        citations = GenerateNode._knowledge_citations_for_response(state, response_text)
         artifacts = dict(state.result.structured_artifacts or {})
         if citations:
             artifacts["rag_citations"] = citations
         else:
             artifacts.pop("rag_citations", None)
         state.result.structured_artifacts = artifacts
+
+    @staticmethod
+    def _append_knowledge_references(state: SessionState, response_text: str) -> str:
+        """Append a compact visible source section when RAG contexts were used."""
+
+        text = str(response_text or "").strip()
+        citations = GenerateNode._knowledge_citations_for_response(state, text)
+        if not text or not citations or re.search(r"^#{2,3}\s*参考来源\s*$", text, flags=re.MULTILINE):
+            return text
+
+        lines = ["", "", "### 参考来源"]
+        for citation in citations[:4]:
+            marker = str(citation.get("citation") or "").strip()
+            title = str(citation.get("document_title") or citation.get("source_title") or "知识库来源").strip()
+            source_url = str(citation.get("source_url") or "").strip()
+            source_title = str(citation.get("source_title") or "").strip()
+            source = source_title if source_title and source_title != title else ""
+            if source_url:
+                source = f"{source} {source_url}".strip()
+            if source:
+                lines.append(f"- {marker} {title}：{source}")
+            else:
+                lines.append(f"- {marker} {title}")
+        reference_section = "\n".join(lines)
+        return f"{text}{reference_section}"
+
+    @staticmethod
+    def _knowledge_citations_for_response(state: SessionState, response_text: str) -> list[dict[str, Any]]:
+        contexts = state.memory.database_context.get("knowledge_base")
+        if not isinstance(contexts, list):
+            return []
+
+        response = str(response_text or "")
+        cited: list[dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in contexts:
+            if not isinstance(item, dict):
+                continue
+            citation = str(item.get("citation") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if not citation or not content:
+                continue
+            payload = {
+                "citation": citation,
+                "document_title": item.get("document_title") or item.get("title") or item.get("source_title"),
+                "source_title": item.get("source_title"),
+                "source_url": item.get("source_url"),
+                "content": GenerateNode._clip_text(content, 700),
+                "page_number": item.get("page_number"),
+                "chunk_id": item.get("chunk_id"),
+            }
+            key = str(payload.get("chunk_id") or citation)
+            if key in seen:
+                continue
+            seen.add(key)
+            if GenerateNode._response_mentions_knowledge_item(response, item):
+                cited.append(payload)
+            else:
+                fallback.append(payload)
+
+        if cited:
+            return cited[:4]
+        return fallback[:3]
+
+    @staticmethod
+    def _response_mentions_knowledge_item(response_text: str, item: dict[str, Any]) -> bool:
+        response = _normalize_text_for_citation(response_text)
+        citation = _normalize_text_for_citation(str(item.get("citation") or ""))
+        if citation and citation in response:
+            return True
+
+        chunk_id = item.get("chunk_id")
+        if chunk_id is not None and re.search(rf"#chunk-?{re.escape(str(chunk_id))}\b", response_text, flags=re.IGNORECASE):
+            return True
+
+        for key in ("document_title", "title", "source_title"):
+            title = _normalize_text_for_citation(str(item.get(key) or ""))
+            if title and len(title) >= 3 and title in response:
+                return True
+        return False
 
     def _build_workout_plan_from_task_results(self, state: SessionState) -> WorkoutPlanResult | None:
         """优先从工具结果中构建训练计划，减少从自然语言反解析的误差。"""
