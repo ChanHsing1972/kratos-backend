@@ -307,6 +307,37 @@ def test_generate_prompt_requires_citations_for_knowledge_contexts():
     assert "https://www.acsm.org/" in prompt
 
 
+def test_generate_node_exposes_only_cited_rag_chunks_as_artifacts():
+    state = SessionState(session_id="s1", user_id="1")
+    state.memory.database_context["knowledge_base"] = [
+        {
+            "document_title": "训练恢复指南",
+            "citation": "[训练恢复指南 #chunk-12]",
+            "content": "高强度训练后应安排恢复日，并关注睡眠与酸痛。",
+            "source_title": "恢复训练手册",
+            "source_url": "https://example.com/recovery",
+            "chunk_id": 12,
+        },
+        {
+            "document_title": "未引用文档",
+            "citation": "[未引用文档 #chunk-19]",
+            "content": "这段内容不应发送给前端。",
+            "chunk_id": 19,
+        },
+    ]
+
+    GenerateNode._attach_rag_citations(
+        state,
+        "本周需要安排恢复日。[训练恢复指南 #chunk-12]",
+    )
+
+    citations = state.result.structured_artifacts["rag_citations"]
+    assert len(citations) == 1
+    assert citations[0]["citation"] == "[训练恢复指南 #chunk-12]"
+    assert citations[0]["content"].startswith("高强度训练后")
+    assert citations[0]["source_url"] == "https://example.com/recovery"
+
+
 def test_rag_document_chunks_are_retrieved_with_chunk_citation(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -1087,6 +1118,7 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
     assert done_event["type"] == "done"
     assert done_event["content"] == "Agent 回复完成"
     assert done_event["answer"] == streamed
+    assert done_event["raw"]["structured_artifacts"]["training_plan_draft"]
     assert done_event["run_id"] == events[0]["run_id"]
 
 

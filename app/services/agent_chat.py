@@ -443,6 +443,7 @@ def stream_agent_chat(
         "content": "Agent 回复完成",
         "session_id": final_state.session_id,
         "answer": answer,
+        "raw": final_state.result.model_dump(mode="json"),
         "run_id": run_id,
     }
 

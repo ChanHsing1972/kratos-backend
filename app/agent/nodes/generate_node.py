@@ -825,7 +825,42 @@ class GenerateNode(BaseNode):
             response_text,
             draft_source_plan,
         )
+        self._attach_rag_citations(state, response_text)
         state.result.sync_structured_artifacts()
+
+    @staticmethod
+    def _attach_rag_citations(state: SessionState, response_text: str) -> None:
+        """Expose only RAG chunks cited by the visible answer to the frontend."""
+
+        contexts = state.memory.database_context.get("knowledge_base")
+        if not isinstance(contexts, list):
+            return
+
+        citations = []
+        for item in contexts:
+            if not isinstance(item, dict):
+                continue
+            citation = str(item.get("citation") or "").strip()
+            if not citation or citation not in response_text:
+                continue
+            citations.append(
+                {
+                    "citation": citation,
+                    "document_title": item.get("document_title") or item.get("title"),
+                    "source_title": item.get("source_title"),
+                    "source_url": item.get("source_url"),
+                    "content": item.get("content"),
+                    "page_number": item.get("page_number"),
+                    "chunk_id": item.get("chunk_id"),
+                }
+            )
+
+        artifacts = dict(state.result.structured_artifacts or {})
+        if citations:
+            artifacts["rag_citations"] = citations
+        else:
+            artifacts.pop("rag_citations", None)
+        state.result.structured_artifacts = artifacts
 
     def _build_workout_plan_from_task_results(self, state: SessionState) -> WorkoutPlanResult | None:
         """优先从工具结果中构建训练计划，减少从自然语言反解析的误差。"""
