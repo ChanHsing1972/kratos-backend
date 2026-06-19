@@ -262,11 +262,11 @@ def _preserve_missing_schedule_doses(
     if not isinstance(schedule_json, dict):
         return schedule_json
 
+    repaired, normalized_dirty_doses = _normalize_schedule_json_doses(schedule_json)
     dose_index = _existing_dose_index(existing_schedule_json, existing_weekly_schedule)
     if not dose_index["by_name"] and not dose_index["by_position"]:
-        return schedule_json
+        return repaired if normalized_dirty_doses else schedule_json
 
-    repaired = deepcopy(schedule_json)
     action_position = 0
     for exercise in _iter_schedule_exercises(repaired):
         name = str(exercise.get("name") or "").strip()
@@ -281,6 +281,23 @@ def _preserve_missing_schedule_doses(
     return repaired
 
 
+def _normalize_schedule_json_doses(schedule_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    repaired = deepcopy(schedule_json)
+    changed = False
+    for exercise in _iter_schedule_exercises(repaired):
+        target_sets, target_reps = _normalize_dose_values(
+            exercise.get("target_sets"),
+            exercise.get("target_reps"),
+        )
+        if target_sets != exercise.get("target_sets"):
+            exercise["target_sets"] = target_sets
+            changed = True
+        if target_reps != exercise.get("target_reps"):
+            exercise["target_reps"] = target_reps
+            changed = True
+    return repaired, changed
+
+
 def _existing_dose_index(
     schedule_json: dict[str, Any] | None = None,
     weekly_schedule: str | None = None,
@@ -293,10 +310,14 @@ def _existing_dose_index(
             name = str(exercise.get("name") or "").strip()
             if not name:
                 continue
+            target_sets, target_reps = _normalize_dose_values(
+                exercise.get("target_sets"),
+                exercise.get("target_reps"),
+            )
             dose = {
                 "name": name,
-                "target_sets": _coerce_int(exercise.get("target_sets")),
-                "target_reps": _clean_optional_str(exercise.get("target_reps")),
+                "target_sets": target_sets,
+                "target_reps": target_reps,
             }
             if dose["target_sets"] is None and dose["target_reps"] is None:
                 continue
@@ -351,8 +372,7 @@ def _format_schedule_action(
     target_sets: Any,
     target_reps: Any,
 ) -> str:
-    sets = _coerce_int(target_sets)
-    reps = _clean_optional_str(target_reps)
+    sets, reps = _normalize_dose_values(target_sets, target_reps)
     if sets is not None and reps:
         return f"{exercise_name} {sets}组 x {reps}"
     if sets is not None:
@@ -360,6 +380,41 @@ def _format_schedule_action(
     if reps:
         return f"{exercise_name} {reps}"
     return exercise_name
+
+
+def _normalize_dose_values(target_sets: Any, target_reps: Any) -> tuple[int | None, str | None]:
+    sets = _coerce_int(target_sets)
+    reps = _clean_optional_str(target_reps)
+    embedded = _parse_embedded_dose(reps)
+    if embedded is not None:
+        embedded_sets, embedded_reps = embedded
+        if sets is None:
+            sets = embedded_sets
+        reps = embedded_reps
+    return sets, reps
+
+
+def _parse_embedded_dose(value: str | None) -> tuple[int, str | None] | None:
+    if not value:
+        return None
+    normalized = re.sub(r"\s+", " ", value.strip())
+    dose_match = re.match(
+        r"^(?P<sets>\d+)\s*(?:组|sets?)\s*(?:[x×*]|次|个)?\s*"
+        r"(?P<reps>\d+(?:\s*[-~～至到]\s*\d+)?\s*(?:次|个|秒|分钟|min|s)?|力竭|尽力|AMRAP)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not dose_match:
+        dose_match = re.match(
+            r"^(?P<sets>\d+)\s*[x×*]\s*"
+            r"(?P<reps>\d+(?:\s*[-~～至到]\s*\d+)?\s*(?:次|个|秒|分钟|min|s)?)$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    if not dose_match:
+        return None
+    reps = re.sub(r"\s+", "", dose_match.group("reps").strip())
+    return int(dose_match.group("sets")), reps or None
 
 
 def _exercise_key(name: str) -> str:
@@ -400,20 +455,44 @@ def propose_training_plan_adjustment(
     workout_title: str | None = None,
     duration_seconds: int | None = None,
     safety_stop: bool = False,
+    user_feedback: str | None = None,
 ) -> tuple[TrainingPlanUpdate, list[str]]:
+    original_feedback = (user_feedback or feedback).strip()
     if safety_stop:
-        return _propose_training_plan_adjustment_fallback(plan, feedback, completed=completed)
+        return _propose_training_plan_adjustment_fallback(
+            plan,
+            feedback,
+            completed=completed,
+            user_feedback=original_feedback,
+            use_context_signals=True,
+        )
+
+    rule_result = _propose_training_plan_adjustment_by_rule(
+        plan,
+        original_feedback,
+        completed=completed,
+        workout_title=workout_title,
+    )
+    if rule_result is not None:
+        return rule_result
+
     llm_result = _propose_training_plan_adjustment_with_llm(
         plan,
         feedback,
         completed=completed,
         workout_title=workout_title,
         duration_seconds=duration_seconds,
+        user_feedback=original_feedback,
     )
     if llm_result is not None:
         return llm_result
 
-    return _propose_training_plan_adjustment_fallback(plan, feedback, completed=completed)
+    return _propose_training_plan_adjustment_fallback(
+        plan,
+        feedback,
+        completed=completed,
+        user_feedback=original_feedback,
+    )
 
 
 def progression_guidance_from_history(
@@ -544,6 +623,7 @@ def _propose_training_plan_adjustment_with_llm(
     completed: bool | None = None,
     workout_title: str | None = None,
     duration_seconds: int | None = None,
+    user_feedback: str | None = None,
 ) -> tuple[TrainingPlanUpdate, list[str]] | None:
     prompt = ""
     started = time.monotonic()
@@ -555,6 +635,7 @@ def _propose_training_plan_adjustment_with_llm(
             completed=completed,
             workout_title=workout_title,
             duration_seconds=duration_seconds,
+            user_feedback=user_feedback,
         )
         response = llm.invoke(prompt)
         content = getattr(response, "content", response)
@@ -598,6 +679,7 @@ def _build_training_plan_adjustment_prompt(
     completed: bool | None = None,
     workout_title: str | None = None,
     duration_seconds: int | None = None,
+    user_feedback: str | None = None,
 ) -> str:
     plan_snapshot = _compact_plan_for_adjustment(plan)
     candidate_exercises = "、".join(_candidate_exercise_names(plan, feedback))
@@ -605,7 +687,8 @@ def _build_training_plan_adjustment_prompt(
         "title": workout_title or None,
         "duration_seconds": duration_seconds,
         "completed": completed,
-        "feedback": feedback.strip()[:1000],
+        "user_feedback": (user_feedback or feedback).strip()[:500],
+        "context": feedback.strip()[:1200],
     }
 
     return f"""
@@ -620,6 +703,8 @@ proposal 只能包含需要修改的字段：title, goal, status, start_date, en
 - 每个动作都必须包含“组数 + 次数/时长”。保留动作或只改次数时必须沿用原组数；禁止写成“罗马尼亚硬拉 10次”这类缺组数格式。
 - 动作名优先使用候选动作；确需替换时在 rationale 说明原因。
 - 疼痛/疲劳/提前结束写入 recovery_guidance；补给不足写入 nutrition_guidance。
+- 必须优先服从 user_feedback：如“整体轻松/太简单/增加组数”应真实增加后续力量动作组数；“较为吃力/太累/降低组数”应真实减少后续力量动作组数或训练量。
+- context 是系统补充信息，只用于安全校验；不要因为 context 中出现历史疼痛、提前结束或进阶规则，就覆盖 user_feedback 的主意图。
 
 当前日期：{date.today().isoformat()}
 候选动作：{candidate_exercises}
@@ -648,6 +733,217 @@ def _repair_adjustment_proposal_data(
             existing_weekly_schedule=plan.weekly_schedule,
         )
     return repaired
+
+
+def _propose_training_plan_adjustment_by_rule(
+    plan: TrainingPlan,
+    user_feedback: str,
+    completed: bool | None = None,
+    workout_title: str | None = None,
+) -> tuple[TrainingPlanUpdate, list[str]] | None:
+    direction = _feedback_volume_direction(user_feedback, completed=completed)
+    if direction is None:
+        return None
+
+    schedule = _adjust_weekly_schedule_volume(
+        plan,
+        direction=direction,
+        workout_title=workout_title,
+    )
+    if schedule is None:
+        return None
+
+    label = "增加" if direction > 0 else "降低"
+    rationale = [
+        f"已识别反馈为训练量{'偏低' if direction > 0 else '偏高'}，对后续力量动作{label} 1 组。",
+        "有氧、恢复和拉伸安排保持不变，避免无关调整。",
+    ]
+    summary = append_guidance(
+        plan.summary or "",
+        f"根据最近训练反馈“{_clean_optional_str(user_feedback, limit=60)}”，后续计划已小幅{label}力量训练组数。",
+    )
+    recovery = plan.recovery_guidance or None
+    if direction > 0:
+        recovery = append_guidance(
+            recovery or "",
+            "进阶提示|本次反馈显示刺激偏低，后续力量动作每项增加 1 组；若动作质量下降或疲劳累积，立即恢复原组数。",
+        )
+    else:
+        recovery = append_guidance(
+            recovery or "",
+            "降量提示|本次反馈显示训练较吃力，后续力量动作每项减少 1 组并保留 2 次以上余力。",
+        )
+
+    logger.info(
+        "TRAINING_PLAN_ADJUSTMENT_RULE direction=%s plan_id=%s feedback_chars=%d changed_schedule_chars=%d",
+        direction,
+        getattr(plan, "id", None),
+        len(user_feedback or ""),
+        len(schedule),
+    )
+    return (
+        TrainingPlanUpdate(
+            summary=summary or None,
+            weekly_schedule=schedule,
+            recovery_guidance=recovery or None,
+        ),
+        rationale,
+    )
+
+
+def _feedback_volume_direction(
+    user_feedback: str,
+    *,
+    completed: bool | None = None,
+) -> int | None:
+    text = re.sub(r"\s+", "", str(user_feedback or "").lower())
+    if not text:
+        return None
+
+    risk_markers = ("疼", "痛", "不适", "头晕", "胸闷", "胸痛", "急性")
+    if any(marker in text for marker in risk_markers):
+        return None
+
+    explicit_decrease_markers = (
+        "较为吃力",
+        "有点吃力",
+        "太吃力",
+        "吃力",
+        "太累",
+        "疲劳",
+        "恢复差",
+        "降低组数",
+        "减少组数",
+        "少一组",
+        "降组",
+        "减组",
+        "太难",
+    )
+    increase_markers = (
+        "整体轻松",
+        "比较轻松",
+        "很轻松",
+        "轻松",
+        "太简单",
+        "不累",
+        "还能加",
+        "增加组数",
+        "组数太少",
+        "加组",
+        "多一组",
+        "刺激不够",
+        "强度低",
+        "提高强度",
+        "增强度",
+        "easy",
+    )
+
+    if any(marker in text for marker in explicit_decrease_markers):
+        return -1
+    if any(marker in text for marker in increase_markers):
+        return 1
+    if re.search(r"(?<!不)(?<!没)(?<!无)累", text):
+        return -1
+    return None
+
+
+def _adjust_weekly_schedule_volume(
+    plan: TrainingPlan,
+    *,
+    direction: int,
+    workout_title: str | None = None,
+) -> str | None:
+    lines = _schedule_lines_from_json_for_adjustment(plan.schedule_json)
+    if not lines and plan.weekly_schedule:
+        lines = [line.strip() for line in str(plan.weekly_schedule).splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    selected_indexes = _select_adjustment_line_indexes(lines, workout_title)
+    changed = False
+    adjusted_lines: list[str] = []
+    for index, line in enumerate(lines):
+        if selected_indexes and index not in selected_indexes:
+            adjusted_lines.append(line)
+            continue
+        next_line, line_changed = _adjust_weekly_schedule_line_volume(line, direction)
+        adjusted_lines.append(next_line)
+        changed = changed or line_changed
+
+    if not changed and selected_indexes:
+        adjusted_lines = []
+        changed = False
+        for line in lines:
+            next_line, line_changed = _adjust_weekly_schedule_line_volume(line, direction)
+            adjusted_lines.append(next_line)
+            changed = changed or line_changed
+
+    return "\n".join(adjusted_lines) if changed else None
+
+
+def _schedule_lines_from_json_for_adjustment(schedule_json: dict[str, Any] | None) -> list[str]:
+    return _schedule_lines_from_json(schedule_json, session_limit=20, exercise_limit=20)
+
+
+def _select_adjustment_line_indexes(lines: list[str], workout_title: str | None) -> set[int]:
+    title_key = _exercise_key(workout_title or "")
+    if not title_key:
+        return set()
+    matches = {
+        index
+        for index, line in enumerate(lines)
+        if title_key in _exercise_key(line) or _exercise_key(line) in title_key
+    }
+    return matches
+
+
+def _adjust_weekly_schedule_line_volume(line: str, direction: int) -> tuple[str, bool]:
+    match = re.match(r"\s*(周[一二三四五六日天])\s*[|｜]\s*([^：:]+)[：:]\s*(.+)", line)
+    if not match:
+        return line, False
+
+    weekday, title, action_text = match.groups()
+    if _is_non_strength_session(title, action_text):
+        return f"{weekday}｜{title.strip()}：{action_text.strip()}", False
+
+    changed = False
+    adjusted_actions: list[str] = []
+    for raw_action in re.split(r"[；;]", action_text):
+        action = raw_action.strip()
+        if not action:
+            continue
+        adjusted, action_changed = _adjust_schedule_action_sets(action, direction)
+        adjusted_actions.append(adjusted)
+        changed = changed or action_changed
+    if not adjusted_actions:
+        return line, False
+    return f"{weekday}｜{title.strip()}：{'；'.join(adjusted_actions)}", changed
+
+
+def _adjust_schedule_action_sets(action: str, direction: int) -> tuple[str, bool]:
+    exercise_name, target_sets, target_reps = _parse_schedule_action(action)
+    if target_sets is None or _is_non_strength_action(exercise_name, target_reps):
+        return action, False
+    next_sets = max(1, min(8, target_sets + direction))
+    if next_sets == target_sets:
+        return action, False
+    return _format_schedule_action(exercise_name, next_sets, target_reps), True
+
+
+def _is_non_strength_session(title: str, action_text: str) -> bool:
+    text = f"{title} {action_text}"
+    markers = ("有氧", "恢复", "拉伸", "快走", "椭圆", "步行", "散步", "记录")
+    return any(marker in text for marker in markers)
+
+
+def _is_non_strength_action(exercise_name: str, target_reps: str | None) -> bool:
+    text = f"{exercise_name} {target_reps or ''}"
+    markers = ("快走", "椭圆", "拉伸", "恢复", "步行", "散步", "记录")
+    if any(marker in text for marker in markers):
+        return True
+    if target_reps and any(unit in target_reps for unit in ("分钟", "min")) and not re.search(r"组|次|秒", target_reps):
+        return True
+    return False
 
 
 def _compact_plan_for_guidance(plan: TrainingPlan) -> dict[str, Any]:
@@ -846,16 +1142,23 @@ def _propose_training_plan_adjustment_fallback(
     plan: TrainingPlan,
     feedback: str,
     completed: bool | None = None,
+    user_feedback: str | None = None,
+    use_context_signals: bool = False,
 ) -> tuple[TrainingPlanUpdate, list[str]]:
-    normalized = feedback.strip()
+    normalized = (user_feedback or feedback).strip()
+    context = feedback.strip()
     lowered = normalized.lower()
+    context_lowered = context.lower()
     rationale: list[str] = []
 
     summary = plan.summary or ""
     recovery = plan.recovery_guidance or ""
     nutrition = plan.nutrition_guidance or ""
 
-    if any(keyword in normalized for keyword in ["疼", "痛", "不适", "膝", "腰", "肩"]):
+    safety_text = context if use_context_signals else normalized
+    fatigue_text = context_lowered if use_context_signals else lowered
+
+    if any(keyword in safety_text for keyword in ["疼", "痛", "不适", "膝", "腰", "肩"]):
         rationale.append("反馈中出现疼痛或不适信号，优先降低训练风险。")
         recovery = append_guidance(
             recovery,
@@ -865,13 +1168,13 @@ def _propose_training_plan_adjustment_fallback(
             recovery,
             "调整提示|疼痛反馈日后续：相关部位动作减少 1 组，优先选择低冲击、可控速度的替代动作。",
         )
-        if any(keyword in normalized for keyword in ["头晕", "胸痛", "急性", "明显疼痛"]):
+        if any(keyword in safety_text for keyword in ["头晕", "胸痛", "急性", "明显疼痛"]):
             recovery = append_guidance(
                 recovery,
                 "若出现头晕、胸痛或急性明显疼痛，立即停止训练；症状持续或严重时及时就医。",
             )
 
-    if any(keyword in lowered for keyword in ["累", "疲劳", "恢复差", "睡眠差", "酸痛", "没力", "rpe 较高"]):
+    if any(keyword in fatigue_text for keyword in ["累", "疲劳", "恢复差", "睡眠差", "酸痛", "没力", "rpe 较高"]):
         rationale.append("反馈中出现疲劳或恢复不足，建议降低下一次训练负荷。")
         recovery = append_guidance(
             recovery,
@@ -892,7 +1195,7 @@ def _propose_training_plan_adjustment_fallback(
             "根据最近一次提前结束反馈，后续训练优先控制单次任务量，确保动作质量和完成率。",
         )
 
-    if any(keyword in normalized for keyword in ["饿", "低血糖", "没吃", "头晕"]):
+    if any(keyword in safety_text for keyword in ["饿", "低血糖", "没吃", "头晕"]):
         rationale.append("反馈中出现补给不足信号，补充训练前后营养提示。")
         nutrition = append_guidance(
             nutrition,

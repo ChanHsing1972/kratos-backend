@@ -73,6 +73,7 @@ from app.services.training_plan import (
     _schedule_json_from_text,
     create_training_plan,
     generate_training_guidance,
+    propose_training_plan_adjustment,
     progression_guidance_from_history,
     update_training_plan,
 )
@@ -1596,6 +1597,153 @@ def test_training_plan_adjustment_prompt_is_compact_and_requires_complete_dose(m
     assert len(prompt) < 3500
 
 
+def test_training_plan_adjustment_prompt_separates_user_feedback_from_context():
+    plan = SimpleNamespace(
+        id=12,
+        title="本周训练",
+        goal="减脂塑形",
+        status="active",
+        start_date=None,
+        end_date=None,
+        summary="计划摘要",
+        weekly_schedule="周一|全身力量 A：深蹲 3组 x 10次；俯卧撑 3组 x 8-12次",
+        schedule_json=None,
+        nutrition_guidance=None,
+        recovery_guidance=None,
+    )
+
+    prompt = _build_training_plan_adjustment_prompt(
+        plan,
+        "整体轻松，增加组数\n已保存训练记录：完成=False；本次训练提前结束。",
+        completed=False,
+        user_feedback="整体轻松，增加组数",
+    )
+
+    assert '"user_feedback":"整体轻松，增加组数"' in prompt
+    assert '"context":"整体轻松，增加组数\\n已保存训练记录：完成=False；本次训练提前结束。"' in prompt
+    assert "不要因为 context 中出现历史疼痛、提前结束或进阶规则，就覆盖 user_feedback 的主意图" in prompt
+
+
+def test_training_plan_adjustment_rule_increases_sets_for_easy_feedback():
+    schedule = (
+        "周一｜全身力量 A：深蹲模式 3 组 x 10 次；俯卧撑 3 组 x 8-12 次；平板支撑 3 组 x 30 秒\n"
+        "周二｜低冲击有氧：快走或椭圆机 35 分钟，保持可对话强度\n"
+        "周四｜全身力量 B：罗马尼亚硬拉 3 组 x 10 次；哑铃划船 3 组 x 12 次；死虫 3 组 x 10 次"
+    )
+    plan = SimpleNamespace(
+        id=70,
+        title="4 周减脂基础计划",
+        summary="每周 4 次训练",
+        recovery_guidance="有氧强度以能完整说话为准。",
+        weekly_schedule=schedule,
+        schedule_json=_schedule_json_from_text(schedule),
+    )
+
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        "整体轻松，增加组数\n已保存训练记录：完成=False；本次训练提前结束。",
+        completed=False,
+        workout_title="周一 - 全身力量 A",
+        user_feedback="整体轻松，增加组数",
+    )
+
+    assert any("训练量偏低" in item for item in rationale)
+    assert "周一｜全身力量 A：深蹲模式 4组 x 10次；俯卧撑 4组 x 8-12次；平板支撑 4组 x 30秒" in proposal.weekly_schedule
+    assert "周二|低冲击有氧：快走或椭圆机 35 分钟" in proposal.weekly_schedule
+    assert "周四|全身力量 B：罗马尼亚硬拉 3组 x 10次" in proposal.weekly_schedule
+
+
+def test_training_plan_adjustment_rule_decreases_sets_for_hard_feedback():
+    schedule = (
+        "周一｜全身力量 A：深蹲模式 3 组 x 10 次；俯卧撑 3 组 x 8-12 次；平板支撑 3 组 x 30 秒\n"
+        "周二｜低冲击有氧：快走或椭圆机 35 分钟，保持可对话强度"
+    )
+    plan = SimpleNamespace(
+        id=70,
+        title="4 周减脂基础计划",
+        summary="每周 4 次训练",
+        recovery_guidance="有氧强度以能完整说话为准。",
+        weekly_schedule=schedule,
+        schedule_json=_schedule_json_from_text(schedule),
+    )
+
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        "较为吃力",
+        completed=True,
+        workout_title="周一 - 全身力量 A",
+    )
+
+    assert any("训练量偏高" in item for item in rationale)
+    assert "周一｜全身力量 A：深蹲模式 2组 x 10次；俯卧撑 2组 x 8-12次；平板支撑 2组 x 30秒" in proposal.weekly_schedule
+    assert "周二|低冲击有氧：快走或椭圆机 35 分钟" in proposal.weekly_schedule
+
+
+def test_training_plan_adjustment_rule_handles_dirty_schedule_json_doses():
+    plan = SimpleNamespace(
+        id=70,
+        title="4 周减脂基础计划",
+        summary="每周 4 次训练",
+        recovery_guidance=None,
+        weekly_schedule=None,
+        schedule_json={
+            "version": 1,
+            "weeks": [
+                {
+                    "week": 1,
+                    "sessions": [
+                        {
+                            "weekday": "周四",
+                            "title": "全身力量 B",
+                            "exercises": [
+                                {"name": "罗马尼亚硬拉", "target_sets": None, "target_reps": "3 组 x 10 次"},
+                                {"name": "哑铃划船", "target_sets": None, "target_reps": "3组x12次"},
+                                {"name": "死虫", "target_sets": None, "target_reps": "3 组 x 10 次"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        "整体轻松，增加组数",
+        completed=True,
+        workout_title="周四 - 全身力量 B",
+    )
+
+    assert any("训练量偏低" in item for item in rationale)
+    assert "罗马尼亚硬拉 4组 x 10次" in proposal.weekly_schedule
+    assert "哑铃划船 4组 x 12次" in proposal.weekly_schedule
+    assert "死虫 4组 x 10次" in proposal.weekly_schedule
+    assert "罗马尼亚硬拉 10次" not in proposal.weekly_schedule
+
+
+def test_training_plan_adjustment_rule_treats_not_tired_as_increase():
+    schedule = "周一｜全身力量 A：深蹲模式 3 组 x 10 次；俯卧撑 3 组 x 8-12 次"
+    plan = SimpleNamespace(
+        id=70,
+        title="4 周减脂基础计划",
+        summary="每周 4 次训练",
+        recovery_guidance=None,
+        weekly_schedule=schedule,
+        schedule_json=_schedule_json_from_text(schedule),
+    )
+
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        "不累，还能加一点组数",
+        completed=True,
+        workout_title="周一 - 全身力量 A",
+    )
+
+    assert any("训练量偏低" in item for item in rationale)
+    assert "深蹲模式 4组 x 10次" in proposal.weekly_schedule
+    assert "俯卧撑 4组 x 8-12次" in proposal.weekly_schedule
+
+
 def test_training_plan_adjustment_preview_repairs_missing_sets():
     old_schedule = (
         "周四|全身力量 B：罗马尼亚硬拉 3组 x 10次；"
@@ -2423,6 +2571,76 @@ def test_generate_node_stream_emits_stable_table_prefix_before_final_row():
     assert not any("| 周一 | 全身 |" in snapshot for snapshot in snapshots[:-1])
     assert "| 周一 | 全身力量 A | 深蹲 | 4 |" in streamed
     assert streamed == state.result.response
+    assert not any(event.get("type") == "answer_replace" for event in answer_events)
+
+
+def test_generate_node_stream_emits_diet_table_header_before_food_rows():
+    class DietTableLLM:
+        model_name = "fake-vision-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="我识别到这是一份餐食，以下为估算：\n\n")
+            yield SimpleNamespace(
+                content="### 餐食估算\n\n| 食物 | 估算重量(g) | 热量(kcal) | 蛋白质(g) | 脂肪(g) | 碳水(g) | 置信度 | 备注 |\n"
+            )
+            yield SimpleNamespace(content="| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |\n")
+            yield SimpleNamespace(content="| 米饭 | 180 | 210 | 4 | 0.5 | 46 | 80% | 碗大小估算 |\n")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="帮我看看这张餐食图片"))
+    state.reasoning.intent = ["饮食记录"]
+
+    events = list(GenerateNode(DietTableLLM()).stream_response_events(state))
+    answer_events = [
+        event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
+    ]
+    streamed = ""
+    snapshots = []
+    for event in answer_events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+        snapshots.append(streamed)
+
+    header_snapshot_index = next(
+        index
+        for index, snapshot in enumerate(snapshots)
+        if "| 食物 | 估算重量(g) | 热量(kcal)" in snapshot
+    )
+    assert "### 餐食估算" in snapshots[header_snapshot_index]
+    assert "| --- | --- | --- | --- | --- | --- | --- | --- |" in snapshots[header_snapshot_index]
+    assert "| 米饭 |" not in snapshots[header_snapshot_index]
+    assert "| 米饭 | 180 | 210 |" in streamed
+    assert streamed == state.result.response
+    assert not any(event.get("type") == "answer_replace" for event in answer_events)
+    assert state.result.food_image_estimate is not None
+
+
+def test_generate_node_stream_emits_glued_diet_title_before_table_header():
+    class GluedDietTableLLM:
+        model_name = "fake-vision-stream"
+
+        def stream(self, prompt):
+            yield SimpleNamespace(content="餐食估算| 食物 | 估算重量(g) | 热量(kcal) |")
+            yield SimpleNamespace(content="\n| --- | ---: | ---: |\n")
+            yield SimpleNamespace(content="| 米饭 | 180 | 210 |\n")
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="帮我看看这张餐食图片"))
+    state.reasoning.intent = ["饮食记录"]
+
+    events = list(GenerateNode(GluedDietTableLLM()).stream_response_events(state))
+    answer_events = [
+        event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
+    ]
+
+    assert answer_events[0]["type"] == "answer_delta"
+    assert answer_events[0]["delta"] == "### 餐食估算"
+    assert "| 食物 | 估算重量(g) | 热量(kcal) |" in answer_events[1]["delta"]
+    assert "| --- | --- | --- |" in answer_events[1]["delta"]
+    assert "| 米饭 |" not in answer_events[1]["delta"]
+    assert "| 米饭 | 180 | 210 |" in answer_events[2]["delta"]
     assert not any(event.get("type") == "answer_replace" for event in answer_events)
 
 

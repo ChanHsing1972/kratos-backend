@@ -153,7 +153,35 @@ def _repairable_stream_source(text: str) -> str:
     hold_from = _trailing_unstable_markdown_start(source)
     if hold_from is None:
         return source
-    return source[:hold_from]
+    return _promote_streaming_table_title(source, hold_from)
+
+
+def _promote_streaming_table_title(source: str, hold_from: int) -> str:
+    prefix = source[:hold_from]
+    if hold_from >= len(source) or source[hold_from] != "|":
+        return prefix
+
+    line_start = prefix.rfind("\n") + 1
+    raw_title = prefix[line_start:].strip()
+    if not re.search(r"(安排|计划|明细|概览|建议|数据|结果|估算)$", raw_title):
+        return prefix
+
+    title = _streaming_table_title_heading(raw_title)
+    if title is None:
+        return prefix
+    return f"{prefix[:line_start]}{title}\n\n"
+
+
+def _streaming_table_title_heading(raw_title: str) -> str | None:
+    heading_match = re.match(r"^(#{1,6})\s*(\S.*)$", raw_title)
+    if heading_match:
+        hashes, title = heading_match.groups()
+        return f"{hashes} {title.strip()}"
+
+    title = raw_title.strip(" ：:")
+    if not title:
+        return None
+    return f"### {title}"
 
 
 def _trailing_unstable_markdown_start(text: str) -> int | None:
@@ -198,7 +226,7 @@ def _trailing_unstable_markdown_start(text: str) -> int | None:
 
     stable_end = _stable_table_prefix_end(candidate, lines, block_start, last_nonempty)
     if stable_end is None:
-        return lines[block_start][0]
+        return _unstable_table_hold_start(lines[block_start][0], lines[block_start][1])
     if stable_end >= len(candidate):
         return forced_hold_from
     return stable_end
@@ -220,21 +248,32 @@ def _stable_table_prefix_end(
             end = len(text)
         prefix = text[:end]
         repaired_prefix = finalize_markdown_response(prefix)
-        if any("表格" in violation for violation in markdown_contract_violations(repaired_prefix)):
+        table_violations = [
+            violation
+            for violation in markdown_contract_violations(repaired_prefix)
+            if "表格" in violation
+        ]
+        has_streamable_table = _contains_streamable_markdown_table(repaired_prefix)
+        if table_violations and not has_streamable_table:
             continue
-        if not _contains_valid_markdown_table(repaired_prefix):
+        if not has_streamable_table:
             continue
         best_end = end
     return best_end
 
 
-def _contains_valid_markdown_table(markdown: str) -> bool:
+def _contains_streamable_markdown_table(markdown: str) -> bool:
     lines = [line.strip() for line in markdown.splitlines()]
     for index, line in enumerate(lines[:-1]):
         if not _looks_like_unstable_table_fragment(line):
             continue
         separator = lines[index + 1]
-        if _is_markdown_table_separator(separator):
+        if (
+            _is_markdown_table_separator(separator)
+            and line.endswith("|")
+            and separator.endswith("|")
+            and len(_stream_table_cells(line)) == len(_stream_table_cells(separator))
+        ):
             return True
     return False
 
@@ -242,6 +281,23 @@ def _contains_valid_markdown_table(markdown: str) -> bool:
 def _is_markdown_table_separator(line: str) -> bool:
     cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
     return len(cells) >= 2 and all(re.match(r"^:?-{2,}:?$", cell) for cell in cells)
+
+
+def _stream_table_cells(line: str) -> list[str]:
+    if not _looks_like_unstable_table_fragment(line):
+        return []
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _unstable_table_hold_start(line_start: int, line: str) -> int:
+    pipe_index = line.find("|")
+    if pipe_index <= 0:
+        return line_start
+
+    prefix = line[:pipe_index].strip()
+    if re.search(r"(安排|计划|明细|概览|建议|数据|结果|估算)$", prefix):
+        return line_start + pipe_index
+    return line_start
 
 
 def _line_infos(text: str) -> list[tuple[int, str]]:
@@ -261,7 +317,7 @@ def _looks_like_unstable_table_fragment(line: str) -> bool:
         return False
     return bool(
         re.match(
-            r"^[^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果)\s*\|",
+            r"^[^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果|估算)\s*\|",
             stripped,
         )
     )

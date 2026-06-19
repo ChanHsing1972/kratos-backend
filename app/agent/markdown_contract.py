@@ -141,7 +141,7 @@ def _split_plain_title_from_table(line: str) -> list[str]:
         return [line]
 
     match = re.match(
-        r"^\s*([^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果))\s*(\|.+)$",
+        r"^\s*([^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果|估算))\s*(\|.+)$",
         line,
     )
     if not match or match.group(2).count("|") < 3:

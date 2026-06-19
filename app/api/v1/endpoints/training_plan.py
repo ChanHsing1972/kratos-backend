@@ -206,7 +206,8 @@ def preview_plan_adjustment(
         completed=workout_log.completed if workout_log is not None else adjustment_in.completed,
         workout_title=workout_log.title if workout_log is not None else adjustment_in.workout_title,
         duration_seconds=workout_log.duration_seconds if workout_log is not None else adjustment_in.duration_seconds,
-        safety_stop=safety_stop
+        safety_stop=safety_stop,
+        user_feedback=adjustment_in.feedback,
     )
     return TrainingPlanAdjustmentResponse(proposal=proposal, rationale=rationale)
 
