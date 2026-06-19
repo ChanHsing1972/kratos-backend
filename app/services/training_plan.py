@@ -467,6 +467,29 @@ def propose_training_plan_adjustment(
             use_context_signals=True,
         )
 
+    llm_result = _propose_training_plan_adjustment_with_llm(
+        plan,
+        feedback,
+        completed=completed,
+        workout_title=workout_title,
+        duration_seconds=duration_seconds,
+        user_feedback=original_feedback,
+    )
+    if llm_result is not None and _adjustment_proposal_is_actionable(
+        plan,
+        llm_result[0],
+        user_feedback=original_feedback,
+        completed=completed,
+        workout_title=workout_title,
+    ):
+        return llm_result
+    if llm_result is not None:
+        logger.warning(
+            "TRAINING_PLAN_ADJUSTMENT_LLM_NOT_ACTIONABLE plan_id=%s feedback=%s",
+            getattr(plan, "id", None),
+            _clean_optional_str(original_feedback, limit=80),
+        )
+
     rule_result = _propose_training_plan_adjustment_by_rule(
         plan,
         original_feedback,
@@ -476,23 +499,51 @@ def propose_training_plan_adjustment(
     if rule_result is not None:
         return rule_result
 
-    llm_result = _propose_training_plan_adjustment_with_llm(
-        plan,
-        feedback,
-        completed=completed,
-        workout_title=workout_title,
-        duration_seconds=duration_seconds,
-        user_feedback=original_feedback,
-    )
-    if llm_result is not None:
-        return llm_result
-
     return _propose_training_plan_adjustment_fallback(
         plan,
         feedback,
         completed=completed,
         user_feedback=original_feedback,
     )
+
+
+def _adjustment_proposal_is_actionable(
+    plan: TrainingPlan,
+    proposal: TrainingPlanUpdate,
+    *,
+    user_feedback: str,
+    completed: bool | None = None,
+    workout_title: str | None = None,
+) -> bool:
+    changes = proposal.to_update_dict()
+    if not changes:
+        return False
+
+    direction = _feedback_volume_direction(user_feedback, completed=completed)
+    if direction is None:
+        return True
+
+    proposed_schedule = changes.get("weekly_schedule")
+    if not isinstance(proposed_schedule, str) or not proposed_schedule.strip():
+        return False
+
+    current_lines = _schedule_lines_from_json_for_adjustment(plan.schedule_json)
+    if not current_lines and plan.weekly_schedule:
+        current_lines = [
+            line.strip()
+            for line in str(plan.weekly_schedule).splitlines()
+            if line.strip()
+        ]
+    proposed_lines = [
+        line.strip()
+        for line in proposed_schedule.splitlines()
+        if line.strip()
+    ]
+    current_sets = _strength_set_total(current_lines, workout_title)
+    proposed_sets = _strength_set_total(proposed_lines, workout_title)
+    if current_sets is None or proposed_sets is None:
+        return proposed_schedule.strip() != str(plan.weekly_schedule or "").strip()
+    return proposed_sets > current_sets if direction > 0 else proposed_sets < current_sets
 
 
 def progression_guidance_from_history(
@@ -895,6 +946,28 @@ def _select_adjustment_line_indexes(lines: list[str], workout_title: str | None)
         if title_key in _exercise_key(line) or _exercise_key(line) in title_key
     }
     return matches
+
+
+def _strength_set_total(lines: list[str], workout_title: str | None) -> int | None:
+    selected_indexes = _select_adjustment_line_indexes(lines, workout_title)
+    total = 0
+    found = False
+    for index, line in enumerate(lines):
+        if selected_indexes and index not in selected_indexes:
+            continue
+        match = re.match(r"\s*(周[一二三四五六日天])\s*[|｜]\s*([^：:]+)[：:]\s*(.+)", line)
+        if not match:
+            continue
+        _, title, action_text = match.groups()
+        if _is_non_strength_session(title, action_text):
+            continue
+        for raw_action in re.split(r"[；;]", action_text):
+            exercise_name, target_sets, target_reps = _parse_schedule_action(raw_action)
+            if target_sets is None or _is_non_strength_action(exercise_name, target_reps):
+                continue
+            total += target_sets
+            found = True
+    return total if found else None
 
 
 def _adjust_weekly_schedule_line_volume(line: str, direction: int) -> tuple[str, bool]:

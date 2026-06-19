@@ -1624,7 +1624,99 @@ def test_training_plan_adjustment_prompt_separates_user_feedback_from_context():
     assert "不要因为 context 中出现历史疼痛、提前结束或进阶规则，就覆盖 user_feedback 的主意图" in prompt
 
 
-def test_training_plan_adjustment_rule_increases_sets_for_easy_feedback():
+def test_training_plan_adjustment_prefers_llm_before_rule_fallback(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class FakeAdjustmentLLM:
+        def bind(self, **kwargs):
+            calls.append(("bind", kwargs))
+            return self
+
+        def invoke(self, prompt):
+            calls.append(("invoke", prompt))
+            return SimpleNamespace(
+                content=(
+                    '{"proposal":{"summary":"LLM 生成的调整",'
+                    '"weekly_schedule":"周四|全身力量 B：罗马尼亚硬拉 4组 x 10次"},'
+                    '"rationale":["已由模型结合训练反馈生成建议。"]}'
+                )
+            )
+
+    def fail_if_rule_runs(*args, **kwargs):
+        raise AssertionError("LLM 成功时不应执行规则兜底")
+
+    monkeypatch.setattr(
+        "app.services.training_plan.get_agent_llm_for_route",
+        lambda route: FakeAdjustmentLLM(),
+    )
+    monkeypatch.setattr(
+        "app.services.training_plan._propose_training_plan_adjustment_by_rule",
+        fail_if_rule_runs,
+    )
+
+    plan = SimpleNamespace(
+        id=70,
+        title="4 周减脂基础计划",
+        goal="减脂",
+        status="active",
+        start_date=None,
+        end_date=None,
+        summary="每周 4 次训练",
+        weekly_schedule="周四|全身力量 B：罗马尼亚硬拉 3组 x 10次",
+        schedule_json=None,
+        nutrition_guidance=None,
+        recovery_guidance=None,
+    )
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        "整体轻松",
+        completed=True,
+        workout_title="周四 - 全身力量 B",
+    )
+
+    assert calls[0] == ("bind", {"max_tokens": 900})
+    assert calls[1][0] == "invoke"
+    assert '"user_feedback":"整体轻松"' in str(calls[1][1])
+    assert proposal.summary == "LLM 生成的调整"
+    assert proposal.weekly_schedule == "周四|全身力量 B：罗马尼亚硬拉 4组 x 10次"
+    assert rationale == ["已由模型结合训练反馈生成建议。"]
+
+
+def test_training_plan_adjustment_falls_back_when_llm_does_not_change_volume(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan._propose_training_plan_adjustment_with_llm",
+        lambda *args, **kwargs: (
+            TrainingPlanUpdate(summary="训练反馈已收到"),
+            ["继续保持。"],
+        ),
+    )
+    schedule = "周四|全身力量 B：罗马尼亚硬拉 3组 x 10次；死虫 3组 x 10次"
+    plan = SimpleNamespace(
+        id=70,
+        title="4 周减脂基础计划",
+        summary="每周 4 次训练",
+        recovery_guidance=None,
+        weekly_schedule=schedule,
+        schedule_json=_schedule_json_from_text(schedule),
+    )
+
+    proposal, rationale = propose_training_plan_adjustment(
+        plan,
+        "整体轻松",
+        completed=True,
+        workout_title="周四 - 全身力量 B",
+    )
+
+    assert "罗马尼亚硬拉 4组 x 10次" in proposal.weekly_schedule
+    assert "死虫 4组 x 10次" in proposal.weekly_schedule
+    assert any("训练量偏低" in item for item in rationale)
+
+
+def test_training_plan_adjustment_rule_increases_sets_for_easy_feedback(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan._propose_training_plan_adjustment_with_llm",
+        lambda *args, **kwargs: None,
+    )
     schedule = (
         "周一｜全身力量 A：深蹲模式 3 组 x 10 次；俯卧撑 3 组 x 8-12 次；平板支撑 3 组 x 30 秒\n"
         "周二｜低冲击有氧：快走或椭圆机 35 分钟，保持可对话强度\n"
@@ -1653,7 +1745,11 @@ def test_training_plan_adjustment_rule_increases_sets_for_easy_feedback():
     assert "周四|全身力量 B：罗马尼亚硬拉 3组 x 10次" in proposal.weekly_schedule
 
 
-def test_training_plan_adjustment_rule_decreases_sets_for_hard_feedback():
+def test_training_plan_adjustment_rule_decreases_sets_for_hard_feedback(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan._propose_training_plan_adjustment_with_llm",
+        lambda *args, **kwargs: None,
+    )
     schedule = (
         "周一｜全身力量 A：深蹲模式 3 组 x 10 次；俯卧撑 3 组 x 8-12 次；平板支撑 3 组 x 30 秒\n"
         "周二｜低冲击有氧：快走或椭圆机 35 分钟，保持可对话强度"
@@ -1679,7 +1775,11 @@ def test_training_plan_adjustment_rule_decreases_sets_for_hard_feedback():
     assert "周二|低冲击有氧：快走或椭圆机 35 分钟" in proposal.weekly_schedule
 
 
-def test_training_plan_adjustment_rule_handles_dirty_schedule_json_doses():
+def test_training_plan_adjustment_rule_handles_dirty_schedule_json_doses(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan._propose_training_plan_adjustment_with_llm",
+        lambda *args, **kwargs: None,
+    )
     plan = SimpleNamespace(
         id=70,
         title="4 周减脂基础计划",
@@ -1721,7 +1821,11 @@ def test_training_plan_adjustment_rule_handles_dirty_schedule_json_doses():
     assert "罗马尼亚硬拉 10次" not in proposal.weekly_schedule
 
 
-def test_training_plan_adjustment_rule_treats_not_tired_as_increase():
+def test_training_plan_adjustment_rule_treats_not_tired_as_increase(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan._propose_training_plan_adjustment_with_llm",
+        lambda *args, **kwargs: None,
+    )
     schedule = "周一｜全身力量 A：深蹲模式 3 组 x 10 次；俯卧撑 3 组 x 8-12 次"
     plan = SimpleNamespace(
         id=70,
