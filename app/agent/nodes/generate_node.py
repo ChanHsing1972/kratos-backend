@@ -443,6 +443,7 @@ class GenerateNode(BaseNode):
 
         structured_card_requested = self._should_emit_workout_plan(state, final_text)
         draft_ready = state.result.training_plan_draft is not None
+        food_estimate_ready = state.result.food_image_estimate is not None
         if normalized_response_text:
             status_raw = {"answer_stream_complete": True}
             status_raw["node"] = "generate"
@@ -458,8 +459,14 @@ class GenerateNode(BaseNode):
             }
             if structured_card_requested and draft_ready:
                 status_raw["structured_card_pending"] = True
+                status_raw["structured_card_kind"] = "training_plan"
                 status_raw["training_plan_draft_ready"] = True
                 status_content = "标准 Markdown 回答已生成，训练计划草稿已整理"
+            elif food_estimate_ready:
+                status_raw["structured_card_pending"] = True
+                status_raw["structured_card_kind"] = "diet_records"
+                status_raw["food_image_estimate_ready"] = True
+                status_content = "标准 Markdown 回答已生成，饮食记录卡片已整理"
             elif structured_card_requested:
                 status_raw["structured_card_pending"] = False
                 status_raw["training_plan_draft_missing"] = True
@@ -782,9 +789,9 @@ class GenerateNode(BaseNode):
     ) -> None:
         """根据工具结果和最终文本刷新训练/饮食结构化卡片。"""
 
-        food_estimate = self._build_strict_food_image_estimate_from_context(state, response_text)
+        food_estimate = self._build_food_image_estimate_result(response_text)
         if food_estimate is None:
-            food_estimate = self._build_food_image_estimate_result(response_text)
+            food_estimate = self._build_strict_food_image_estimate_from_context(state, response_text)
         if food_estimate is not None:
             state.result.food_image_estimate = food_estimate
 

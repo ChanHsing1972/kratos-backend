@@ -107,12 +107,13 @@ def _schedule_json_from_text(schedule_text: str) -> dict | None:
             action = action.strip()
             if not action:
                 continue
+            exercise_name, target_sets, target_reps = _parse_schedule_action(action)
             exercises.append(
                 {
                     "id": f"exercise-{uuid4().hex[:12]}",
-                    "name": action,
-                    "target_sets": None,
-                    "target_reps": None,
+                    "name": exercise_name,
+                    "target_sets": target_sets,
+                    "target_reps": target_reps,
                     "target_weight_kg": None,
                     "target_rpe": None,
                     "rest_seconds": None,
@@ -131,6 +132,28 @@ def _schedule_json_from_text(schedule_text: str) -> dict | None:
     if not sessions:
         return None
     return {"version": 1, "weeks": [{"week": 1, "sessions": sessions}]}
+
+
+def _parse_schedule_action(action: str) -> tuple[str, int | None, str | None]:
+    normalized = re.sub(r"\s+", " ", action.strip())
+    dose_match = re.search(
+        r"(?P<name>.+?)\s*(?P<sets>\d+)\s*(?:组|sets?)\s*(?:[x×*]|次|个)?\s*(?P<reps>\d+(?:\s*[-~～至到]\s*\d+)?\s*(?:次|个|秒|分钟|min|s)?|力竭|尽力|AMRAP)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not dose_match:
+        dose_match = re.search(
+            r"(?P<name>.+?)\s*(?P<sets>\d+)\s*[x×*]\s*(?P<reps>\d+(?:\s*[-~～至到]\s*\d+)?\s*(?:次|个|秒|分钟|min|s)?)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    if not dose_match:
+        return normalized, None, None
+
+    name = dose_match.group("name").strip(" ：:，,、-")
+    reps = dose_match.group("reps").strip()
+    reps = re.sub(r"\s+", "", reps)
+    return name or normalized, int(dose_match.group("sets")), reps or None
 
 
 def delete_training_plan(db: Session, plan: TrainingPlan) -> None:
@@ -201,13 +224,6 @@ def generate_training_guidance(
     recent_logs: list,
     latest_checkin=None,
 ) -> str:
-    llm_message = _generate_training_guidance_with_llm(
-        plan,
-        recent_logs=recent_logs,
-        latest_checkin=latest_checkin,
-    )
-    if llm_message:
-        return llm_message
     return _generate_training_guidance_fallback(plan, recent_logs, latest_checkin)
 
 

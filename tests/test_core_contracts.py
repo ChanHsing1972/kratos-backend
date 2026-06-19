@@ -1486,7 +1486,25 @@ def test_legacy_weekly_schedule_is_converted_to_structured_sessions():
     sessions = schedule["weeks"][0]["sessions"]
     assert len(sessions) == 2
     assert sessions[0]["weekday"] == "周一"
-    assert sessions[0]["exercises"][0]["name"] == "卧推 4 组 x 8 次"
+    assert sessions[0]["exercises"][0]["name"] == "卧推"
+    assert sessions[0]["exercises"][0]["target_sets"] == 4
+    assert sessions[0]["exercises"][0]["target_reps"] == "8次"
+
+
+def test_legacy_weekly_schedule_preserves_sets_and_reps_for_saved_media_cards():
+    schedule = _schedule_json_from_text(
+        "周二|上肢：哑铃卧推 3组 x 10次；坐姿划船 4组x8-12次；平板支撑 3组 45秒"
+    )
+
+    assert schedule is not None
+    exercises = schedule["weeks"][0]["sessions"][0]["exercises"]
+    assert [exercise["name"] for exercise in exercises] == ["哑铃卧推", "坐姿划船", "平板支撑"]
+    assert exercises[0]["target_sets"] == 3
+    assert exercises[0]["target_reps"] == "10次"
+    assert exercises[1]["target_sets"] == 4
+    assert exercises[1]["target_reps"] == "8-12次"
+    assert exercises[2]["target_sets"] == 3
+    assert exercises[2]["target_reps"] == "45秒"
 
 
 def test_create_training_plan_embeds_exercise_media(monkeypatch):
