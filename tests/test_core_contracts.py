@@ -2466,6 +2466,55 @@ def test_generate_node_stream_keeps_completed_table_rows_visible_while_next_row_
     assert not any(event.get("type") == "answer_replace" for event in answer_events)
 
 
+def test_generate_node_stream_small_chunks_do_not_emit_partial_table_header():
+    class TinyChunkTableLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            text = (
+                "### 每周训练安排\n\n"
+                "| 星期 | 主题 | 动作 | 组数 |\n"
+                "| --- | --- | --- | --- |\n"
+                "| 周一 | 全身力量 A | 深蹲 | 4 |\n"
+                "| 周二 | 上肢力量 | 卧推 | 3 |\n"
+                "| 周三 | 恢复 | 快走 | 30分钟 |\n\n"
+                "结束。\n"
+            )
+            for index in range(0, len(text), 8):
+                yield SimpleNamespace(content=text[index:index + 8])
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请生成本周训练计划"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(TinyChunkTableLLM()).stream_response_events(state))
+    answer_events = [
+        event for event in events if event.get("type") in {"answer_delta", "answer_replace"}
+    ]
+    streamed = ""
+    snapshots = []
+    for event in answer_events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+        snapshots.append(streamed)
+
+    assert streamed == state.result.response
+    assert not any(event.get("type") == "answer_replace" for event in answer_events)
+    assert not any("| 星期" in snapshot and "| --- | --- | --- | --- |" not in snapshot for snapshot in snapshots)
+    assert any(
+        "| 周一 | 全身力量 A | 深蹲 | 4 |" in snapshot
+        and "| 周二 |" not in snapshot
+        for snapshot in snapshots
+    )
+    assert any(
+        "| 周二 | 上肢力量 | 卧推 | 3 |" in snapshot
+        and "| 周三 |" not in snapshot
+        for snapshot in snapshots
+    )
+
+
 def test_runner_streams_only_final_answer_after_replan(monkeypatch):
     sleep_calls = []
     monkeypatch.setattr("app.agent.runner.time.sleep", lambda seconds: sleep_calls.append(seconds))

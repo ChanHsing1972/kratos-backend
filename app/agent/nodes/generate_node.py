@@ -255,10 +255,10 @@ def _line_infos(text: str) -> list[tuple[int, str]]:
 
 def _looks_like_unstable_table_fragment(line: str) -> bool:
     stripped = line.strip()
-    if stripped.count("|") < 2:
-        return False
     if stripped.startswith("|"):
         return True
+    if stripped.count("|") < 2:
+        return False
     return bool(
         re.match(
             r"^[^|\n]{2,32}?(?:安排|计划|明细|概览|建议|数据|结果)\s*\|",
