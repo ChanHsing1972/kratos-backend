@@ -67,8 +67,12 @@ from app.services.conversation_session import (
 from app.models.user import User
 from app.schemas.training_plan import TrainingPlanCreate, TrainingPlanUpdate
 from app.services.training_plan import (
+    _build_training_guidance_prompt,
+    _build_training_plan_adjustment_prompt,
+    _repair_adjustment_proposal_data,
     _schedule_json_from_text,
     create_training_plan,
+    generate_training_guidance,
     progression_guidance_from_history,
     update_training_plan,
 )
@@ -1507,6 +1511,116 @@ def test_legacy_weekly_schedule_preserves_sets_and_reps_for_saved_media_cards():
     assert exercises[2]["target_reps"] == "45秒"
 
 
+def test_training_guidance_still_uses_llm_before_fallback(monkeypatch):
+    calls = []
+
+    class FakeGuidanceLLM:
+        def bind(self, **kwargs):
+            calls.append(("bind", kwargs))
+            return self
+
+        def invoke(self, prompt):
+            calls.append(("invoke", prompt))
+            return SimpleNamespace(content='{"message":"下次卧推保持 RPE 7，先稳住动作质量。"}')
+
+    monkeypatch.setattr(
+        "app.services.training_plan.get_agent_llm_for_route",
+        lambda route: FakeGuidanceLLM(),
+    )
+    plan = SimpleNamespace(
+        title="增肌计划",
+        goal="力量与肌肉",
+        summary="每周三练",
+        weekly_schedule="周一|上肢推：卧推 4组 x 8次",
+        schedule_json=None,
+        recovery_guidance="睡眠不足时降低训练量。",
+    )
+
+    message = generate_training_guidance(plan, recent_logs=[], latest_checkin=None)
+
+    assert message == "下次卧推保持 RPE 7，先稳住动作质量。"
+    assert calls[0] == ("bind", {"max_tokens": 120})
+    assert calls[1][0] == "invoke"
+    assert "next_sessions" in calls[1][1]
+
+
+def test_training_guidance_prompt_uses_compact_context():
+    plan = SimpleNamespace(
+        title="减脂塑形计划",
+        goal="减脂",
+        summary="长期计划" * 100,
+        weekly_schedule=(
+            "周一|上肢：卧推 4组 x 8次\n"
+            "周三|下肢：深蹲 4组 x 8次\n"
+            "周五|拉：坐姿划船 4组 x 10次"
+        ),
+        schedule_json=None,
+        recovery_guidance="第一条\n第二条\n第三条",
+        nutrition_guidance="不应进入短指导 prompt" * 80,
+    )
+
+    prompt = _build_training_guidance_prompt(plan, recent_logs=[], latest_checkin=None)
+
+    assert "周一|上肢" in prompt
+    assert "周三|下肢" in prompt
+    assert "周五|拉" not in prompt
+    assert "不应进入短指导 prompt" not in prompt
+    assert len(prompt) < 1500
+
+
+def test_training_plan_adjustment_prompt_is_compact_and_requires_complete_dose(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.training_plan.list_supported_exercise_names",
+        lambda: [f"库内动作{i}" for i in range(200)],
+    )
+    plan = SimpleNamespace(
+        id=12,
+        title="本周训练",
+        goal="减脂塑形",
+        status="active",
+        start_date=None,
+        end_date=None,
+        summary="计划摘要" * 100,
+        weekly_schedule="周四|全身力量 B：罗马尼亚硬拉 3组 x 10次；死虫 3组 x 10次",
+        schedule_json=None,
+        nutrition_guidance="营养建议" * 100,
+        recovery_guidance="恢复建议" * 100,
+    )
+
+    prompt = _build_training_plan_adjustment_prompt(plan, "整体轻松", completed=True)
+
+    assert "每个动作都必须包含“组数 + 次数/时长”" in prompt
+    assert "禁止写成“罗马尼亚硬拉 10次”" in prompt
+    assert "罗马尼亚硬拉" in prompt
+    assert "库内动作199" not in prompt
+    assert len(prompt) < 3500
+
+
+def test_training_plan_adjustment_preview_repairs_missing_sets():
+    old_schedule = (
+        "周四|全身力量 B：罗马尼亚硬拉 3组 x 10次；"
+        "Dumbbell One Arm Bent-over Row 3组 x 12次；死虫 3组 x 10次"
+    )
+    plan = SimpleNamespace(
+        schedule_json=_schedule_json_from_text(old_schedule),
+        weekly_schedule=old_schedule,
+    )
+
+    repaired = _repair_adjustment_proposal_data(
+        plan,
+        {
+            "weekly_schedule": (
+                "周四|全身力量 B：罗马尼亚硬拉 10次；"
+                "Dumbbell One Arm Bent-over Row 12次；死虫 10次"
+            )
+        },
+    )
+
+    assert "罗马尼亚硬拉 3组 x 10次" in repaired["weekly_schedule"]
+    assert "Dumbbell One Arm Bent-over Row 3组 x 12次" in repaired["weekly_schedule"]
+    assert "死虫 3组 x 10次" in repaired["weekly_schedule"]
+
+
 def test_create_training_plan_embeds_exercise_media(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -1640,6 +1754,62 @@ def test_update_training_plan_embeds_media_from_weekly_schedule(monkeypatch):
         exercise = updated.schedule_json["weeks"][0]["sessions"][0]["exercises"][0]
         assert exercise["name"] == "杠铃深蹲"
         assert exercise["media"]["video_url"] == "https://example.com/squat.mp4"
+    finally:
+        db.close()
+
+
+def test_update_training_plan_preserves_sets_when_adjustment_omits_them(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setattr(
+        "app.services.training_plan_media.get_exercise_media",
+        lambda action_name, db=None: {"source": "skipped"},
+    )
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = session_factory()
+    try:
+        user = User(username="preserve-sets-user", password_hash="hash")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        old_schedule = (
+            "周四|全身力量 B：罗马尼亚硬拉 3组 x 10次；"
+            "Dumbbell One Arm Bent-over Row 3组 x 12次；死虫 3组 x 10次"
+        )
+        plan = create_training_plan(
+            db,
+            user,
+            TrainingPlanCreate(
+                title="旧计划",
+                weekly_schedule=old_schedule,
+            ),
+        )
+
+        updated = update_training_plan(
+            db,
+            plan,
+            TrainingPlanUpdate(
+                weekly_schedule=(
+                    "周四|全身力量 B：罗马尼亚硬拉 10次；"
+                    "Dumbbell One Arm Bent-over Row 12次；死虫 10次"
+                ),
+                schedule_json=None,
+            ),
+        )
+
+        assert "罗马尼亚硬拉 3组 x 10次" in updated.weekly_schedule
+        exercises = updated.schedule_json["weeks"][0]["sessions"][0]["exercises"]
+        assert exercises[0]["name"] == "罗马尼亚硬拉"
+        assert exercises[0]["target_sets"] == 3
+        assert exercises[0]["target_reps"] == "10次"
+        assert exercises[1]["target_sets"] == 3
+        assert exercises[1]["target_reps"] == "12次"
+        assert exercises[2]["target_sets"] == 3
+        assert exercises[2]["target_reps"] == "10次"
     finally:
         db.close()
 

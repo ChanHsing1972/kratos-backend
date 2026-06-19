@@ -1,19 +1,49 @@
 """训练计划持久化与 AI 生成计划解析服务。"""
 
 import json
+import logging
 import re
+import time
+from copy import deepcopy
 from datetime import date
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.agent.llm import get_agent_llm
+from app.agent.llm import get_agent_llm_for_route
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.services.exercise_media import list_supported_exercise_names
 from app.services.training_plan_media import embed_schedule_json_media
 from app.models.training_plan import TrainingPlan
 from app.models.user import User
 from app.schemas.training_plan import TrainingPlanCreate, TrainingPlanUpdate
+
+
+logger = logging.getLogger(__name__)
+
+
+COMMON_ADJUSTMENT_EXERCISES = (
+    "卧推",
+    "哑铃卧推",
+    "俯卧撑",
+    "哑铃肩推",
+    "高位下拉",
+    "坐姿划船",
+    "哑铃划船",
+    "深蹲",
+    "杯式深蹲",
+    "罗马尼亚硬拉",
+    "臀桥",
+    "腿弯举",
+    "反向箭步蹲",
+    "台阶上步",
+    "平板支撑",
+    "死虫",
+    "侧桥",
+    "弹力带划船",
+    "弹力带面拉",
+)
 
 
 def get_training_plans_by_user_id(db: Session, user_id: int) -> list[TrainingPlan]:
@@ -46,7 +76,13 @@ def update_training_plan(
     plan: TrainingPlan,
     plan_in: TrainingPlanUpdate,
 ) -> TrainingPlan:
-    for field, value in _normalize_plan_payload(plan_in.to_update_dict(), existing_plan_kind=plan.plan_kind, db=db).items():
+    for field, value in _normalize_plan_payload(
+        plan_in.to_update_dict(),
+        existing_plan_kind=plan.plan_kind,
+        existing_schedule_json=plan.schedule_json,
+        existing_weekly_schedule=plan.weekly_schedule,
+        db=db,
+    ).items():
         setattr(plan, field, value)
     if plan.status == "active":
         return activate_training_plan(db, plan)
@@ -80,15 +116,29 @@ def _normalize_plan_payload(
     data: dict,
     *,
     existing_plan_kind: str | None = None,
+    existing_schedule_json: dict[str, Any] | None = None,
+    existing_weekly_schedule: str | None = None,
     db: Session | None = None,
 ) -> dict:
     normalized = dict(data)
     schedule_text = normalized.get("weekly_schedule")
+    if schedule_text:
+        schedule_text = _preserve_missing_weekly_schedule_doses(
+            str(schedule_text),
+            existing_schedule_json=existing_schedule_json,
+            existing_weekly_schedule=existing_weekly_schedule,
+        )
+        normalized["weekly_schedule"] = schedule_text
     if normalized.get("schedule_json") is None and schedule_text:
         schedule_json = _schedule_json_from_text(schedule_text)
         if schedule_json:
             normalized["schedule_json"] = schedule_json
     if normalized.get("schedule_json") is not None:
+        normalized["schedule_json"] = _preserve_missing_schedule_doses(
+            normalized["schedule_json"],
+            existing_schedule_json=existing_schedule_json,
+            existing_weekly_schedule=existing_weekly_schedule,
+        )
         normalized["schedule_json"] = embed_schedule_json_media(normalized["schedule_json"], db)
     if "plan_kind" not in normalized and schedule_text and existing_plan_kind is None:
         normalized["plan_kind"] = "daily" if len([line for line in schedule_text.splitlines() if line.strip()]) == 1 else "program"
@@ -148,12 +198,194 @@ def _parse_schedule_action(action: str) -> tuple[str, int | None, str | None]:
             flags=re.IGNORECASE,
         )
     if not dose_match:
+        reps_only_match = re.search(
+            r"(?P<name>.+?)\s*(?P<reps>\d+(?:\s*[-~～至到]\s*\d+)?\s*(?:次|个|秒|分钟|min|s)|力竭|尽力|AMRAP)\s*$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if reps_only_match:
+            name = reps_only_match.group("name").strip(" ：:，,、-")
+            reps = re.sub(r"\s+", "", reps_only_match.group("reps").strip())
+            return name or normalized, None, reps or None
         return normalized, None, None
 
     name = dose_match.group("name").strip(" ：:，,、-")
     reps = dose_match.group("reps").strip()
     reps = re.sub(r"\s+", "", reps)
     return name or normalized, int(dose_match.group("sets")), reps or None
+
+
+def _preserve_missing_weekly_schedule_doses(
+    weekly_schedule: str,
+    *,
+    existing_schedule_json: dict[str, Any] | None = None,
+    existing_weekly_schedule: str | None = None,
+) -> str:
+    dose_index = _existing_dose_index(existing_schedule_json, existing_weekly_schedule)
+    if not dose_index["by_name"] and not dose_index["by_position"]:
+        return weekly_schedule
+
+    action_position = 0
+    repaired_lines: list[str] = []
+    changed = False
+    for line in weekly_schedule.splitlines():
+        match = re.match(r"\s*(周[一二三四五六日天])\s*[|｜]\s*([^：:]+)[：:]\s*(.+)", line)
+        if not match:
+            repaired_lines.append(line)
+            continue
+
+        weekday, title, action_text = match.groups()
+        repaired_actions: list[str] = []
+        for action in re.split(r"[；;]", action_text):
+            stripped = action.strip()
+            if not stripped:
+                continue
+            exercise_name, target_sets, target_reps = _parse_schedule_action(stripped)
+            dose = _find_existing_dose(dose_index, exercise_name, action_position)
+            action_position += 1
+            if target_sets is None and dose and dose.get("target_sets") is not None:
+                target_sets = dose.get("target_sets")
+                target_reps = target_reps or dose.get("target_reps")
+                stripped = _format_schedule_action(exercise_name, target_sets, target_reps)
+                changed = True
+            repaired_actions.append(stripped)
+        repaired_lines.append(f"{weekday}|{title.strip()}：{'；'.join(repaired_actions)}")
+    return "\n".join(repaired_lines) if changed else weekly_schedule
+
+
+def _preserve_missing_schedule_doses(
+    schedule_json: dict[str, Any] | None,
+    *,
+    existing_schedule_json: dict[str, Any] | None = None,
+    existing_weekly_schedule: str | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(schedule_json, dict):
+        return schedule_json
+
+    dose_index = _existing_dose_index(existing_schedule_json, existing_weekly_schedule)
+    if not dose_index["by_name"] and not dose_index["by_position"]:
+        return schedule_json
+
+    repaired = deepcopy(schedule_json)
+    action_position = 0
+    for exercise in _iter_schedule_exercises(repaired):
+        name = str(exercise.get("name") or "").strip()
+        dose = _find_existing_dose(dose_index, name, action_position)
+        action_position += 1
+        if not dose:
+            continue
+        if exercise.get("target_sets") is None and dose.get("target_sets") is not None:
+            exercise["target_sets"] = dose["target_sets"]
+        if exercise.get("target_reps") is None and dose.get("target_reps") is not None:
+            exercise["target_reps"] = dose["target_reps"]
+    return repaired
+
+
+def _existing_dose_index(
+    schedule_json: dict[str, Any] | None = None,
+    weekly_schedule: str | None = None,
+) -> dict[str, Any]:
+    by_name: dict[str, dict[str, Any]] = {}
+    by_position: dict[int, dict[str, Any]] = {}
+
+    def add_exercises(source: dict[str, Any] | None) -> None:
+        for position, exercise in enumerate(_iter_schedule_exercises(source)):
+            name = str(exercise.get("name") or "").strip()
+            if not name:
+                continue
+            dose = {
+                "name": name,
+                "target_sets": _coerce_int(exercise.get("target_sets")),
+                "target_reps": _clean_optional_str(exercise.get("target_reps")),
+            }
+            if dose["target_sets"] is None and dose["target_reps"] is None:
+                continue
+            by_position.setdefault(position, dose)
+            by_name.setdefault(_exercise_key(name), dose)
+
+    add_exercises(schedule_json)
+    if weekly_schedule:
+        add_exercises(_schedule_json_from_text(weekly_schedule))
+    return {"by_name": by_name, "by_position": by_position}
+
+
+def _iter_schedule_exercises(schedule_json: dict[str, Any] | None):
+    if not isinstance(schedule_json, dict):
+        return
+    weeks = schedule_json.get("weeks")
+    if not isinstance(weeks, list):
+        return
+    for week in weeks:
+        if not isinstance(week, dict):
+            continue
+        sessions = week.get("sessions")
+        if not isinstance(sessions, list):
+            continue
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            exercises = session.get("exercises")
+            if not isinstance(exercises, list):
+                continue
+            for exercise in exercises:
+                if isinstance(exercise, dict):
+                    yield exercise
+
+
+def _find_existing_dose(
+    dose_index: dict[str, Any],
+    exercise_name: str,
+    position: int,
+) -> dict[str, Any] | None:
+    key = _exercise_key(exercise_name)
+    if key and key in dose_index["by_name"]:
+        return dose_index["by_name"][key]
+    for old_key, dose in dose_index["by_name"].items():
+        if key and old_key and (key in old_key or old_key in key):
+            return dose
+    return dose_index["by_position"].get(position)
+
+
+def _format_schedule_action(
+    exercise_name: str,
+    target_sets: Any,
+    target_reps: Any,
+) -> str:
+    sets = _coerce_int(target_sets)
+    reps = _clean_optional_str(target_reps)
+    if sets is not None and reps:
+        return f"{exercise_name} {sets}组 x {reps}"
+    if sets is not None:
+        return f"{exercise_name} {sets}组"
+    if reps:
+        return f"{exercise_name} {reps}"
+    return exercise_name
+
+
+def _exercise_key(name: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(name or "").lower())
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    match = re.search(r"\d+", str(value))
+    return int(match.group(0)) if match else None
+
+
+def _clean_optional_str(value: Any, *, limit: int | None = None) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return None
+    if limit is not None and len(text) > limit:
+        return f"{text[:limit].rstrip()}..."
+    return text
 
 
 def delete_training_plan(db: Session, plan: TrainingPlan) -> None:
@@ -224,6 +456,9 @@ def generate_training_guidance(
     recent_logs: list,
     latest_checkin=None,
 ) -> str:
+    llm_message = _generate_training_guidance_with_llm(plan, recent_logs, latest_checkin)
+    if llm_message:
+        return llm_message
     return _generate_training_guidance_fallback(plan, recent_logs, latest_checkin)
 
 
@@ -232,8 +467,10 @@ def _generate_training_guidance_with_llm(
     recent_logs: list,
     latest_checkin=None,
 ) -> str | None:
+    prompt = ""
+    started = time.monotonic()
     try:
-        llm = get_agent_llm()
+        llm = _with_llm_max_tokens(get_agent_llm_for_route("text"), 120)
         prompt = _build_training_guidance_prompt(plan, recent_logs, latest_checkin)
         response = llm.invoke(prompt)
         content = getattr(response, "content", response)
@@ -243,8 +480,21 @@ def _generate_training_guidance_with_llm(
         message = str(data.get("message") or "").strip()
         if not message:
             return None
+        logger.info(
+            "TRAINING_GUIDANCE_LLM prompt_chars=%d prompt_tokens_est=%d elapsed_ms=%d output_chars=%d",
+            len(prompt),
+            _estimate_token_count(prompt),
+            int((time.monotonic() - started) * 1000),
+            len(message),
+        )
         return message[:180]
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "TRAINING_GUIDANCE_LLM_FAILED prompt_chars=%d elapsed_ms=%d error=%s",
+            len(prompt),
+            int((time.monotonic() - started) * 1000),
+            exc,
+        )
         return None
 
 
@@ -253,51 +503,18 @@ def _build_training_guidance_prompt(
     recent_logs: list,
     latest_checkin=None,
 ) -> str:
-    recent_log_snapshot = [
-        {
-            "title": getattr(log, "title", None),
-            "workout_date": log.workout_date.isoformat() if getattr(log, "workout_date", None) else None,
-            "completed": getattr(log, "completed", None),
-            "duration_seconds": getattr(log, "duration_seconds", None),
-            "duration_minutes": getattr(log, "duration_minutes", None),
-            "perceived_exertion": getattr(log, "perceived_exertion", None),
-            "notes": getattr(log, "notes", None),
-        }
-        for log in recent_logs[:5]
-    ]
-    checkin_snapshot = None
-    if latest_checkin is not None:
-        checkin_snapshot = {
-            "checkin_date": latest_checkin.checkin_date.isoformat() if getattr(latest_checkin, "checkin_date", None) else None,
-            "sleep_hours": latest_checkin.sleep_hours,
-            "soreness_level": latest_checkin.soreness_level,
-            "energy_level": latest_checkin.energy_level,
-            "pain_notes": latest_checkin.pain_notes,
-        }
-    plan_snapshot = {
-        "title": plan.title,
-        "goal": plan.goal,
-        "summary": plan.summary,
-        "weekly_schedule": plan.weekly_schedule,
-        "recovery_guidance": plan.recovery_guidance,
-        "nutrition_guidance": plan.nutrition_guidance,
+    payload = {
+        "today": date.today().isoformat(),
+        "plan": _compact_plan_for_guidance(plan),
+        "recent_logs": _compact_recent_logs(recent_logs, limit=2),
+        "latest_checkin": _compact_checkin(latest_checkin),
     }
-    return f"""
-你是 Kratos 的训练建议 Agent。请根据当前训练计划、最近训练记录和最近恢复打卡，给用户一句下一次训练建议。
-
-要求：
-- 只输出 JSON 对象：{{"message": "..."}}
-- message 用中文，控制在 60 字以内。
-- 要具体、可执行，不要泛泛鼓励。
-- 如果有疼痛、高酸痛、低精力或提前结束，优先建议降量/恢复/低冲击。
-- 如果最近完成稳定且恢复良好，可以建议小幅加量。
-- 不要建议冒险冲刺；不要使用 Markdown。
-
-当前日期：{date.today().isoformat()}
-训练计划：{json.dumps(plan_snapshot, ensure_ascii=False)}
-最近训练：{json.dumps(recent_log_snapshot, ensure_ascii=False)}
-最近打卡：{json.dumps(checkin_snapshot, ensure_ascii=False)}
-"""
+    return (
+        "你是 Kratos 的训练页短指导。只输出 JSON：{\"message\":\"...\"}。"
+        "message 用中文，60字内，给下一次训练的个性化建议；"
+        "疼痛/高酸痛/低精力优先降量或恢复，完成稳定且恢复好才小幅加量；不要 Markdown。\n"
+        f"输入：{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+    )
 
 
 def _generate_training_guidance_fallback(
@@ -328,8 +545,10 @@ def _propose_training_plan_adjustment_with_llm(
     workout_title: str | None = None,
     duration_seconds: int | None = None,
 ) -> tuple[TrainingPlanUpdate, list[str]] | None:
+    prompt = ""
+    started = time.monotonic()
     try:
-        llm = get_agent_llm()
+        llm = _with_llm_max_tokens(get_agent_llm_for_route("text"), 900)
         prompt = _build_training_plan_adjustment_prompt(
             plan,
             feedback,
@@ -349,12 +568,27 @@ def _propose_training_plan_adjustment_with_llm(
         if not isinstance(proposal_data, dict):
             raise LLMJsonParseError("Expected proposal to be a JSON object.")
 
+        proposal_data = _repair_adjustment_proposal_data(plan, proposal_data)
         proposal = TrainingPlanUpdate(**proposal_data)
         rationale_list = [str(item).strip() for item in (rationale or []) if str(item).strip()]
         if not rationale_list:
             rationale_list = ["已根据训练反馈生成调整建议。"]
+        logger.info(
+            "TRAINING_PLAN_ADJUSTMENT_LLM prompt_chars=%d prompt_tokens_est=%d elapsed_ms=%d output_chars=%d proposal_fields=%s",
+            len(prompt),
+            _estimate_token_count(prompt),
+            int((time.monotonic() - started) * 1000),
+            len(content),
+            sorted(proposal_data),
+        )
         return proposal, rationale_list
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "TRAINING_PLAN_ADJUSTMENT_LLM_FAILED prompt_chars=%d elapsed_ms=%d error=%s",
+            len(prompt),
+            int((time.monotonic() - started) * 1000),
+            exc,
+        )
         return None
 
 
@@ -365,55 +599,247 @@ def _build_training_plan_adjustment_prompt(
     workout_title: str | None = None,
     duration_seconds: int | None = None,
 ) -> str:
-    supported_exercises = "、".join(list_supported_exercise_names())
-    plan_snapshot = {
-        "id": plan.id,
-        "title": plan.title,
-        "goal": plan.goal,
-        "status": plan.status,
-        "start_date": plan.start_date.isoformat() if plan.start_date else None,
-        "end_date": plan.end_date.isoformat() if plan.end_date else None,
-        "summary": plan.summary,
-        "weekly_schedule": plan.weekly_schedule,
-        "nutrition_guidance": plan.nutrition_guidance,
-        "recovery_guidance": plan.recovery_guidance,
+    plan_snapshot = _compact_plan_for_adjustment(plan)
+    candidate_exercises = "、".join(_candidate_exercise_names(plan, feedback))
+    workout_context = {
+        "title": workout_title or None,
+        "duration_seconds": duration_seconds,
+        "completed": completed,
+        "feedback": feedback.strip()[:1000],
     }
 
     return f"""
-你是一个训练计划调整器。请基于用户反馈直接产出可落库的训练计划修改建议。
+你是 Kratos 的训练计划调整器。根据反馈生成“当前计划未来部分”的轻量修改。
 
-要求：
-- 只输出一个 JSON 对象，不要 Markdown、不要解释文本。
-- JSON 结构必须是：{{"proposal": {{...}}, "rationale": ["...", "..."]}}
-- proposal 只能包含需要修改的训练计划字段，字段名必须使用下面这些英文键：title, goal, status, start_date, end_date, summary, weekly_schedule, nutrition_guidance, recovery_guidance。
-- 如果某个字段不需要改，就不要在 proposal 里输出它；不要输出 null。
-- 如果计划已经有周训练安排，优先修改 weekly_schedule，让后续训练更符合这次反馈。
-- 如果修改 weekly_schedule 或替换动作，动作名称必须优先从“可展示动作库”中选择，并使用动作库里的准确名称；不要随意自造动作名。
-- 如果反馈需要的动作不在可展示动作库里，选择最接近的可展示动作替代，并在 rationale 中说明替代原因。
-- weekly_schedule 必须使用干净训练行，例如：周三|恢复训练：动作A 2组 x 12次；动作B 2组 x 10次。
-- 不要把用户反馈、年龄、身高、体重、训练经验或解释文字放进 weekly_schedule 的训练标题和动作列表；这些内容只允许放在 rationale 或 recovery_guidance。
-- 如果反馈涉及疼痛、疲劳、提前结束、补给不足，请同步调整 recovery_guidance 或 nutrition_guidance。
-- 请保留已经发生的训练历史，不要回写历史日志；你的修改只作用于当前计划及未来训练。
-- 如果用户提供了具体训练名称或时长，请把它们作为上下文，但不要把它们原样塞进 JSON。
+只输出 JSON：{{"proposal":{{...}},"rationale":["..."]}}
+proposal 只能包含需要修改的字段：title, goal, status, start_date, end_date, summary, weekly_schedule, nutrition_guidance, recovery_guidance；不需要改的字段不要输出，禁止 null。
+
+规则：
+- 优先小步调整，不重写整套计划；不要回写历史日志。
+- 修改 weekly_schedule 时保留原格式：周三|训练名：动作A 3组 x 10次；动作B 2组 x 45秒。
+- 每个动作都必须包含“组数 + 次数/时长”。保留动作或只改次数时必须沿用原组数；禁止写成“罗马尼亚硬拉 10次”这类缺组数格式。
+- 动作名优先使用候选动作；确需替换时在 rationale 说明原因。
+- 疼痛/疲劳/提前结束写入 recovery_guidance；补给不足写入 nutrition_guidance。
 
 当前日期：{date.today().isoformat()}
-可展示动作库：{supported_exercises}
-计划上下文：{json.dumps(plan_snapshot, ensure_ascii=False)}
-本次训练名称：{workout_title or "未提供"}
-本次训练时长（秒）：{duration_seconds if duration_seconds is not None else "未提供"}
-本次是否完成：{completed if completed is not None else "未提供"}
-用户反馈：{feedback.strip()}
+候选动作：{candidate_exercises}
+计划摘要：{json.dumps(plan_snapshot, ensure_ascii=False, separators=(',', ':'))}
+本次反馈：{json.dumps(workout_context, ensure_ascii=False, separators=(',', ':'))}
+""".strip()
 
-输出示例：
-{{
-  "proposal": {{
-    "summary": "...",
-    "weekly_schedule": "...",
-    "recovery_guidance": "..."
-  }},
-  "rationale": ["...", "..."]
-}}
-"""
+
+def _repair_adjustment_proposal_data(
+    plan: TrainingPlan,
+    proposal_data: dict[str, Any],
+) -> dict[str, Any]:
+    repaired = dict(proposal_data)
+    weekly_schedule = repaired.get("weekly_schedule")
+    if isinstance(weekly_schedule, str) and weekly_schedule.strip():
+        repaired["weekly_schedule"] = _preserve_missing_weekly_schedule_doses(
+            weekly_schedule,
+            existing_schedule_json=plan.schedule_json,
+            existing_weekly_schedule=plan.weekly_schedule,
+        )
+    schedule_json = repaired.get("schedule_json")
+    if isinstance(schedule_json, dict):
+        repaired["schedule_json"] = _preserve_missing_schedule_doses(
+            schedule_json,
+            existing_schedule_json=plan.schedule_json,
+            existing_weekly_schedule=plan.weekly_schedule,
+        )
+    return repaired
+
+
+def _compact_plan_for_guidance(plan: TrainingPlan) -> dict[str, Any]:
+    return {
+        "title": plan.title,
+        "goal": _clean_optional_str(plan.goal, limit=80),
+        "summary": _clean_optional_str(plan.summary, limit=160),
+        "next_sessions": _compact_schedule_lines(plan, session_limit=2, exercise_limit=4),
+        "recovery": _last_relevant_lines(plan.recovery_guidance, limit=2, chars=160),
+    }
+
+
+def _compact_plan_for_adjustment(plan: TrainingPlan) -> dict[str, Any]:
+    return {
+        "id": plan.id,
+        "title": plan.title,
+        "goal": _clean_optional_str(plan.goal, limit=100),
+        "status": plan.status,
+        "start_date": plan.start_date.isoformat() if plan.start_date else None,
+        "end_date": plan.end_date.isoformat() if plan.end_date else None,
+        "summary": _clean_optional_str(plan.summary, limit=240),
+        "schedule": _compact_schedule_lines(plan, session_limit=8, exercise_limit=6),
+        "nutrition": _last_relevant_lines(plan.nutrition_guidance, limit=2, chars=180),
+        "recovery": _last_relevant_lines(plan.recovery_guidance, limit=3, chars=240),
+    }
+
+
+def _compact_schedule_lines(
+    plan: TrainingPlan,
+    *,
+    session_limit: int,
+    exercise_limit: int,
+) -> list[str]:
+    lines = _schedule_lines_from_json(plan.schedule_json, session_limit=session_limit, exercise_limit=exercise_limit)
+    if lines:
+        return lines
+
+    text = plan.weekly_schedule or ""
+    result: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        result.append(_clean_optional_str(line, limit=220) or line)
+        if len(result) >= session_limit:
+            break
+    return result
+
+
+def _schedule_lines_from_json(
+    schedule_json: dict[str, Any] | None,
+    *,
+    session_limit: int,
+    exercise_limit: int,
+) -> list[str]:
+    if not isinstance(schedule_json, dict):
+        return []
+
+    lines: list[str] = []
+    weeks = schedule_json.get("weeks")
+    if not isinstance(weeks, list):
+        return lines
+
+    for week in weeks:
+        if not isinstance(week, dict):
+            continue
+        sessions = week.get("sessions")
+        if not isinstance(sessions, list):
+            continue
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            actions: list[str] = []
+            exercises = session.get("exercises")
+            if isinstance(exercises, list):
+                for exercise in exercises[:exercise_limit]:
+                    if not isinstance(exercise, dict):
+                        continue
+                    name = str(exercise.get("name") or "").strip()
+                    if not name:
+                        continue
+                    actions.append(
+                        _format_schedule_action(
+                            name,
+                            exercise.get("target_sets"),
+                            exercise.get("target_reps"),
+                        )
+                    )
+            if actions:
+                weekday = str(session.get("weekday") or "").strip() or "本周"
+                title = str(session.get("title") or "").strip() or "训练"
+                lines.append(f"{weekday}|{title}：{'；'.join(actions)}")
+            if len(lines) >= session_limit:
+                return lines
+    return lines
+
+
+def _compact_recent_logs(recent_logs: list, *, limit: int) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for log in recent_logs[:limit]:
+        exercises = [
+            getattr(exercise, "name", None)
+            for exercise in getattr(log, "exercises", [])[:5]
+            if getattr(exercise, "name", None)
+        ]
+        snapshots.append(
+            {
+                "title": getattr(log, "title", None),
+                "date": log.workout_date.isoformat() if getattr(log, "workout_date", None) else None,
+                "completed": getattr(log, "completed", None),
+                "duration_minutes": getattr(log, "duration_minutes", None),
+                "rpe": getattr(log, "perceived_exertion", None),
+                "notes": _clean_optional_str(getattr(log, "notes", None), limit=100),
+                "exercises": exercises,
+            }
+        )
+    return snapshots
+
+
+def _compact_checkin(latest_checkin) -> dict[str, Any] | None:
+    if latest_checkin is None:
+        return None
+    return {
+        "date": latest_checkin.checkin_date.isoformat() if getattr(latest_checkin, "checkin_date", None) else None,
+        "sleep_hours": getattr(latest_checkin, "sleep_hours", None),
+        "soreness_level": getattr(latest_checkin, "soreness_level", None),
+        "energy_level": getattr(latest_checkin, "energy_level", None),
+        "pain_notes": _clean_optional_str(getattr(latest_checkin, "pain_notes", None), limit=100),
+    }
+
+
+def _candidate_exercise_names(plan: TrainingPlan, feedback: str, *, limit: int = 36) -> list[str]:
+    names: list[str] = []
+    for exercise in _iter_schedule_exercises(plan.schedule_json):
+        name = _clean_optional_str(exercise.get("name"))
+        if name:
+            names.append(name)
+
+    if plan.weekly_schedule:
+        parsed = _schedule_json_from_text(plan.weekly_schedule)
+        for exercise in _iter_schedule_exercises(parsed):
+            name = _clean_optional_str(exercise.get("name"))
+            if name:
+                names.append(name)
+
+    names.extend(COMMON_ADJUSTMENT_EXERCISES)
+    feedback_key = _exercise_key(feedback)
+    try:
+        for supported_name in list_supported_exercise_names():
+            key = _exercise_key(supported_name)
+            if key and feedback_key and (key in feedback_key or feedback_key in key):
+                names.append(supported_name)
+            if len(_unique_preserve_order(names)) >= limit:
+                break
+    except Exception:
+        pass
+    return _unique_preserve_order(names)[:limit]
+
+
+def _last_relevant_lines(value: str | None, *, limit: int, chars: int) -> list[str]:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    return [_clean_optional_str(line, limit=chars) or line for line in lines[-limit:]]
+
+
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = _exercise_key(text) or text
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _estimate_token_count(text: str) -> int:
+    if not text:
+        return 0
+    cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    other_chars = max(0, len(text) - cjk_chars)
+    return max(1, int(cjk_chars * 0.8 + other_chars / 4))
+
+
+def _with_llm_max_tokens(llm, max_tokens: int):
+    try:
+        return llm.bind(max_tokens=max_tokens)
+    except Exception:
+        return llm
 
 
 def _propose_training_plan_adjustment_fallback(
