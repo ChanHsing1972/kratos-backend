@@ -2,6 +2,8 @@
 __pycache__/
 .venv/
 .env
+.env.*
+!.env.example
 .pytest_cache/
 .DS_Store
 .idea/
@@ -9,6 +11,8 @@ __pycache__/
 dist/
 build/
 uploads/
+exports/
+reports/
 
 # iCloud/Finder conflict copies
 * 2.py
