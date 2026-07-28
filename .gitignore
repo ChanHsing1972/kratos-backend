@@ -15,5 +15,5 @@ exports/
 reports/
 
 # iCloud/Finder conflict copies
-* 2.py
-* 2.sql
+* 2.*
+* 3.*
