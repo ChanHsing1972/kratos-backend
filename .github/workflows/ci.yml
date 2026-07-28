@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: write
 
 concurrency:
   group: backend-ci-${{ github.ref }}
@@ -75,6 +76,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd /srv/se3
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose pull backend
             docker compose up -d backend
             docker image prune -f
