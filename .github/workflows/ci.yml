@@ -66,11 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ github.ref_name }}
+    env:
+      DEPLOY_ENV: ${{ secrets.DEPLOY_ENV_FILE }}
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1
-        env:
-          DEPLOY_ENV: ${{ secrets.DEPLOY_ENV_FILE }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
