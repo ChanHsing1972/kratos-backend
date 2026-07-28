@@ -66,8 +66,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ github.ref_name }}
-    env:
-      DEPLOY_ENV: ${{ secrets.DEPLOY_ENV_FILE }}
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1
@@ -75,15 +73,13 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: DEPLOY_ENV
           script: |
             cd /srv/se3/backend-src
             git pull origin dev
             docker build -t kratos-backend:dev .
             cd /srv/se3
-            if [ -n "$DEPLOY_ENV" ]; then
-              echo "$DEPLOY_ENV" > .env
-              echo "✓ .env updated"
-            fi
+            cat > .env << 'ENVEOF'
+            ${{ secrets.DEPLOY_ENV_FILE }}
+            ENVEOF
             docker compose up -d backend
             docker image prune -f
