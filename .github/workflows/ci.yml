@@ -69,10 +69,13 @@ jobs:
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_ENV: ${{ secrets.DEPLOY_ENV_FILE }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: DEPLOY_ENV
           script: |
             cd /srv/se3/backend-src
             git pull origin dev
@@ -84,5 +87,3 @@ jobs:
             fi
             docker compose up -d backend
             docker image prune -f
-          env:
-            DEPLOY_ENV: ${{ secrets.DEPLOY_ENV_FILE }}
