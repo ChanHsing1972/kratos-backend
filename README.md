@@ -1,6 +1,6 @@
-# Agent 应用后端
+# Kratos Agent Backend  [![CI](https://github.com/ChanHsing1972/kratos-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/ChanHsing1972/kratos-backend/actions/workflows/ci.yml)  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-本仓库实现 Kratos 智能健身 Agent 的后端。主要负责 Agent 运行时、工具封装、长期/短期记忆存储以及与前端的 REST 接口对接等。
+Kratos 智能健身 Agent 的后端服务。负责 Agent 运行时、工具封装、记忆存储以及 REST API。
 
 ## 快速开始
 
