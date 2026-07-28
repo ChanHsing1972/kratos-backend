@@ -53,7 +53,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=,format=short
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: ${{ github.event_name == 'push' }}
