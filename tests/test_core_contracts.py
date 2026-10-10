@@ -2531,6 +2531,19 @@ def test_generate_prompt_keeps_tool_results_once_and_preserves_json_strings():
     assert prompt.count("estimated_1rm_kg") == 1
 
 
+def test_safety_gate_does_not_read_training_minutes_as_pain_score():
+    tool = get_pain_safety_gate_tool()
+    task = Task(task_id=0, name="安全检查", description="检查今天的训练。")
+    args = repair_tool_args("pain_safety_gate", {}, "21岁，今天训练30分钟，没有伤病。", task, None)
+
+    assert args.get("pain_level") is None
+    assert tool.invoke(args)["action"] == "proceed_with_caution"
+    for message in ["膝盖疼痛7分", "膝盖疼痛7/10"]:
+        scored = repair_tool_args("pain_safety_gate", {}, message, task, None)
+        assert scored["pain_level"] == 7
+        assert tool.invoke(scored)["action"] == "stop_training"
+
+
 def test_generate_node_stream_emits_visible_answer_delta_and_finalizes_result():
     class StandardMarkdownLLM:
         model_name = "fake-stream"
