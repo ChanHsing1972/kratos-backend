@@ -1,6 +1,7 @@
 """FastAPI 应用入口。"""
 
 import logging
+import os
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -72,11 +73,13 @@ def health():
         return {
             "status": "error",
             "db": False,
+            "revision": os.getenv("APP_REVISION", "local"),
         }
 
     return {
         "status": "ok",
         "db": True,
+        "revision": os.getenv("APP_REVISION", "local"),
     }
 
 
