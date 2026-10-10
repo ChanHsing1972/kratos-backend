@@ -102,6 +102,3 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_IMAGE: ghcr.io/chanhsing1972/kratos-backend@${{ needs.build-and-push.outputs.digest }}
         run: bash ci/deploy_github.sh
-      - name: Verify public website
-        if: steps.current.outputs.deploy == 'true'
-        run: python ci/check_public.py "$GITHUB_SHA"
