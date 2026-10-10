@@ -79,6 +79,52 @@ from app.services.training_plan import (
 )
 
 
+def test_model_tls_cap_keeps_verification_and_is_shared_by_agent_and_food(monkeypatch):
+    import ssl
+    import openai
+    import app.agent.llm as model_factory
+    import app.services.diet_image_estimator as food_estimator
+    from app.core.config import settings
+
+    captured = {}
+    transport = object()
+
+    def capture_transport(**kwargs):
+        captured.update(kwargs)
+        return transport
+
+    monkeypatch.setattr(settings, "AGENT_LLM_SSL_VERIFY", True)
+    monkeypatch.setattr(settings, "AGENT_LLM_TLS_MAX_VERSION", "TLSv1_2")
+    monkeypatch.setattr(settings, "FOOD_VISION_API_KEY", "test-key")
+    monkeypatch.setattr(model_factory.httpx, "Client", capture_transport)
+    model_factory._shared_http_client.cache_clear()
+    food_estimator.get_food_vision_client.cache_clear()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kwargs: kwargs)
+
+    try:
+        agent = model_factory.build_chat_openai(llm_cls=lambda **kwargs: kwargs)
+        food = food_estimator.get_food_vision_client()
+        context = captured["verify"]
+        assert context.maximum_version == ssl.TLSVersion.TLSv1_2
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+        assert agent["http_client"] is transport
+        assert food["http_client"] is transport
+    finally:
+        model_factory._shared_http_client.cache_clear()
+        food_estimator.get_food_vision_client.cache_clear()
+
+
+def test_model_tls_default_uses_sdk_transport(monkeypatch):
+    import app.agent.llm as model_factory
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "AGENT_LLM_SSL_VERIFY", True)
+    monkeypatch.setattr(settings, "AGENT_LLM_TLS_MAX_VERSION", None)
+    result = model_factory.build_chat_openai(llm_cls=lambda **kwargs: kwargs)
+    assert "http_client" not in result
+
+
 def test_tool_descriptions_include_usage_and_fallback_metadata():
     tools = load_tools(enabled_tool_names={"calculate_bmr", "pain_safety_gate"})
 
