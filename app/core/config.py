@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     AGENT_LLM_MAX_OUTPUT_TOKENS: int = 1800
     AGENT_LLM_HTTP_USER_AGENT: str = "curl/8.7.1"
     AGENT_LLM_SSL_VERIFY: bool = False
-    AGENT_LLM_TLS_MAX_VERSION: Literal["TLSv1_2", "TLSv1_3"] | None = None
+    AGENT_LLM_TLS_MAX_VERSION: Literal["", "TLSv1_2", "TLSv1_3"] | None = None
     AGENT_ENABLE_MODEL_ROUTER: bool = True
     AGENT_TEXT_LLM_MODEL: str = "deepseek-v4-flash"
     AGENT_TEXT_LLM_BASE_URL: str | None = None

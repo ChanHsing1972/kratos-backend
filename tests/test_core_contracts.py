@@ -120,9 +120,10 @@ def test_model_tls_default_uses_sdk_transport(monkeypatch):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "AGENT_LLM_SSL_VERIFY", True)
-    monkeypatch.setattr(settings, "AGENT_LLM_TLS_MAX_VERSION", None)
-    result = model_factory.build_chat_openai(llm_cls=lambda **kwargs: kwargs)
-    assert "http_client" not in result
+    for value in (None, ""):
+        monkeypatch.setattr(settings, "AGENT_LLM_TLS_MAX_VERSION", value)
+        result = model_factory.build_chat_openai(llm_cls=lambda **kwargs: kwargs)
+        assert "http_client" not in result
 
 
 def test_tool_descriptions_include_usage_and_fallback_metadata():
