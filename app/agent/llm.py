@@ -45,6 +45,7 @@ def build_chat_openai(
     api_key: str | None = None,
     base_url: str | None = None,
     default_headers: dict[str, str] | None = None,
+    extra_body: dict[str, Any] | None = None,
     llm_cls: type[ChatOpenAI] = ChatOpenAI,
     max_retries: int | None = None,
     max_tokens: int | None = None,
@@ -67,6 +68,9 @@ def build_chat_openai(
     }
     if max_tokens is not None:
         client_kwargs["max_tokens"] = max_tokens
+    model_options = settings.AGENT_LLM_EXTRA_BODY if extra_body is None else extra_body
+    if model_options:
+        client_kwargs["extra_body"] = model_options
     transport = get_model_http_client()
     if transport is not None and "http_client" not in client_kwargs:
         client_kwargs["http_client"] = transport
@@ -97,6 +101,7 @@ def get_agent_llm_for_route(route: str) -> ChatOpenAI:
     if route == "text" and settings.AGENT_ENABLE_MODEL_ROUTER:
         return build_chat_openai(
             api_key=settings.AGENT_TEXT_LLM_API_KEY,
+            extra_body=settings.AGENT_TEXT_LLM_EXTRA_BODY,
             base_url=settings.AGENT_TEXT_LLM_BASE_URL,
             max_tokens=settings.AGENT_LLM_MAX_OUTPUT_TOKENS,
             model=settings.AGENT_TEXT_LLM_MODEL,
@@ -105,6 +110,7 @@ def get_agent_llm_for_route(route: str) -> ChatOpenAI:
     if route == "vision" and settings.AGENT_ENABLE_MODEL_ROUTER:
         return build_chat_openai(
             api_key=settings.AGENT_VISION_LLM_API_KEY,
+            extra_body=settings.AGENT_VISION_LLM_EXTRA_BODY,
             base_url=settings.AGENT_VISION_LLM_BASE_URL,
             max_tokens=settings.AGENT_LLM_MAX_OUTPUT_TOKENS,
             model=settings.AGENT_VISION_LLM_MODEL or settings.AGENT_LLM_MODEL,
