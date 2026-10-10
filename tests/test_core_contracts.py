@@ -2510,6 +2510,27 @@ def test_generate_node_prompt_contains_standard_markdown_contract():
     assert "杠铃卧推" in prompt
 
 
+def test_generate_prompt_keeps_tool_results_once_and_preserves_json_strings():
+    import json
+
+    state = SessionState(session_id="compact-prompt", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="安排今天的训练。"))
+    result = {"estimated_1rm_kg": 70, "note": '中文、引号"及换行\n    保留缩进'}
+    state.reasoning.tasks = [Task(
+        task_id=0, name="估算训练负荷", description="按已知负荷计算。",
+        tool_calls=[ToolCall(name="estimate_1rm", args={"weight_kg": 60, "reps": 5},
+                             status=ToolStatus.success, result=result)],
+    )]
+
+    prompt = GenerateNode().build_prompt(state)
+    tools_json = prompt.split("已执行工具摘要(JSON):", 1)[1].split("外部知识库检索结果:", 1)[0].strip()
+    summary = json.loads(tools_json)
+
+    assert summary[0]["args"] == {"weight_kg": 60, "reps": 5}
+    assert summary[0]["result_summary"] == result
+    assert prompt.count("estimated_1rm_kg") == 1
+
+
 def test_generate_node_stream_emits_visible_answer_delta_and_finalizes_result():
     class StandardMarkdownLLM:
         model_name = "fake-stream"
