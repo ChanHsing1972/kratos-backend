@@ -67,7 +67,7 @@ jobs:
         with:
           context: .
           push: ${{ github.ref == 'refs/heads/dev' && github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ghcr.io/chanhsing1972/kratos-backend:${{ github.sha }}
           build-args: APP_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -100,7 +100,7 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEPLOY_IMAGE: ghcr.io/${{ github.repository }}@${{ needs.build-and-push.outputs.digest }}
+          DEPLOY_IMAGE: ghcr.io/chanhsing1972/kratos-backend@${{ needs.build-and-push.outputs.digest }}
         run: bash ci/deploy_github.sh
       - name: Verify public website
         if: steps.current.outputs.deploy == 'true'
