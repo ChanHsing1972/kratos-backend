@@ -513,7 +513,7 @@ def _repair_safety_args(args: dict[str, Any], user_message: str, task: Task) -> 
                 args["pain_area"] = area
                 break
     if args.get("pain_level") is None:
-        level_match = re.search(r"(\d+)\s*(?:分|/10)", user_message)
+        level_match = re.search(r"(\d+)\s*(?:分(?!钟)|/10)", user_message)
         if level_match:
             args["pain_level"] = int(level_match.group(1))
         elif any(word in user_message for word in ["剧痛", "很疼", "特别疼", "急性"]):
