@@ -207,7 +207,8 @@ class BaseNode:
 
         # Standard streaming delta
         delta = getattr(chunk, "content", None)
-        if isinstance(delta, str) and delta.strip():
+        # Whitespace-only chunks carry Markdown row and paragraph boundaries.
+        if isinstance(delta, str) and delta:
             return delta
 
         # GLM-4.6V may stream reasoning_content instead
