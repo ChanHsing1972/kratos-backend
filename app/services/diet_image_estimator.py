@@ -6,7 +6,7 @@ from functools import lru_cache
 from io import BytesIO
 from typing import Any
 
-from app.agent.llm import build_chat_openai
+from app.agent.llm import build_chat_openai, get_model_http_client
 from app.agent.json_utils import LLMJsonParseError, parse_json_object
 from app.core.config import settings
 from app.schemas.diet import FoodEstimateItem, FoodEstimateTotal, FoodImageEstimateResult
@@ -112,6 +112,9 @@ def get_food_vision_client() -> Any:
     }
     if settings.FOOD_VISION_EFFECTIVE_BASE_URL:
         kwargs["base_url"] = settings.FOOD_VISION_EFFECTIVE_BASE_URL
+    transport = get_model_http_client()
+    if transport is not None:
+        kwargs["http_client"] = transport
 
     return OpenAI(**kwargs)
 
