@@ -7,6 +7,7 @@
 
 from functools import lru_cache
 import os
+import ssl
 from typing import Any
 
 import httpx
@@ -18,9 +19,25 @@ from langchain_openai import ChatOpenAI
 from app.core.config import settings
 
 
-@lru_cache(maxsize=2)
-def _shared_http_client(ssl_verify: bool) -> httpx.Client:
-    return httpx.Client(verify=ssl_verify)
+@lru_cache(maxsize=6)
+def _shared_http_client(ssl_verify: bool, tls_max_version: str | None = None) -> httpx.Client:
+    verify: bool | ssl.SSLContext = ssl_verify
+    if tls_max_version:
+        context = ssl.create_default_context()
+        if not ssl_verify:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        context.maximum_version = getattr(ssl.TLSVersion, tls_max_version)
+        verify = context
+    return httpx.Client(verify=verify)
+
+
+def get_model_http_client() -> httpx.Client | None:
+    """Apply the configured TLS policy to all model SDK clients."""
+
+    if settings.AGENT_LLM_SSL_VERIFY and not settings.AGENT_LLM_TLS_MAX_VERSION:
+        return None
+    return _shared_http_client(settings.AGENT_LLM_SSL_VERIFY, settings.AGENT_LLM_TLS_MAX_VERSION)
 
 
 def build_chat_openai(
@@ -50,8 +67,9 @@ def build_chat_openai(
     }
     if max_tokens is not None:
         client_kwargs["max_tokens"] = max_tokens
-    if not settings.AGENT_LLM_SSL_VERIFY:
-        client_kwargs["http_client"] = _shared_http_client(False)
+    transport = get_model_http_client()
+    if transport is not None and "http_client" not in client_kwargs:
+        client_kwargs["http_client"] = transport
     return llm_cls(**client_kwargs)
 
 
