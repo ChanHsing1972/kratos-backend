@@ -2637,6 +2637,46 @@ def test_generate_node_stream_repairs_glued_markdown_before_completion():
     assert all("每周训练安排|" not in snapshot for snapshot in snapshots)
 
 
+def test_generate_node_stream_preserves_whitespace_chunks_for_training_draft():
+    class WhitespaceChunkLLM:
+        model_name = "fake-stream"
+
+        def stream(self, prompt):
+            for part in [
+                "## 30分钟徒手训练计划",
+                "\n\n",
+                "### 训练安排",
+                "\n\n",
+                "| 动作 | 组数 | 次数/时长 | 休息 |",
+                "\n",
+                "| --- | --- | --- | --- |",
+                "\n",
+                "| 深蹲 | 3 | 12次 | 60秒 |",
+                "\n",
+                "| 俯卧撑 | 3 | 8次 | 60秒 |",
+            ]:
+                yield SimpleNamespace(content=part)
+
+    state = SessionState(session_id="s1", user_id="u1")
+    state.conversation.messages.append(HumanMessage(content="请制定30分钟徒手训练计划"))
+    state.reasoning.intent = ["健身计划"]
+
+    events = list(GenerateNode(WhitespaceChunkLLM()).stream_response_events(state))
+    streamed = ""
+    for event in events:
+        if event.get("type") == "answer_delta":
+            streamed += str(event.get("delta") or "")
+        elif event.get("type") == "answer_replace":
+            streamed = str(event.get("answer") or event.get("content") or "")
+
+    assert streamed == state.result.response
+    assert "| --- | --- | --- | --- |\n| 深蹲 | 3 | 12次 | 60秒 |" in streamed
+    draft = state.result.training_plan_draft
+    assert draft is not None
+    exercises = draft["schedule_json"]["weeks"][0]["sessions"][0]["exercises"]
+    assert [(item["name"], item["target_sets"]) for item in exercises] == [("深蹲", 3), ("俯卧撑", 3)]
+
+
 def test_generate_node_stream_holds_incomplete_table_until_it_can_render():
     class DelayedTableLLM:
         model_name = "fake-stream"
