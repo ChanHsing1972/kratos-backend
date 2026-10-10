@@ -609,13 +609,12 @@ class GenerateNode(BaseNode):
             self.describe_tools(state.tools.available_tools)
             if wants_tool_inventory
             else {
-                "executed_tools_this_turn": executed_tools,
                 "available_tool_count": len(state.tools.available_tools),
                 "note": "用户未询问工具清单，完整工具 schema 已省略。",
             },
             ensure_ascii=False,
             default=str,
-            indent=2,
+            separators=(",", ":"),
         )
 
         task_results = "\n".join(
@@ -623,7 +622,7 @@ class GenerateNode(BaseNode):
             for task in tasks
         )
         answer_context_payload, context_stats = build_answer_context(state)
-        memory_context = json.dumps(answer_context_payload, ensure_ascii=False, default=str, indent=2)
+        memory_context = json.dumps(answer_context_payload, ensure_ascii=False, default=str, separators=(",", ":"))
         external_knowledge_context = answer_context_payload.get("selected_database_context", {}).get(
             "knowledge_base_text",
             "未检索到外部知识库上下文。",
@@ -632,13 +631,13 @@ class GenerateNode(BaseNode):
             self.recent_conversation_context(state),
             ensure_ascii=False,
             default=str,
-            indent=2,
+            separators=(",", ":"),
         )
         conversation_summaries = json.dumps(
             state.conversation.summaries[-3:],
             ensure_ascii=False,
             default=str,
-            indent=2,
+            separators=(",", ":"),
         )
 
         prompt = f"""
@@ -684,7 +683,7 @@ class GenerateNode(BaseNode):
         {available_tools}
 
         已执行工具摘要(JSON):
-        {json.dumps(executed_tools, ensure_ascii=False, default=str, indent=2)}
+        {json.dumps(executed_tools, ensure_ascii=False, default=str, separators=(",", ":"))}
 
         外部知识库检索结果:
         {external_knowledge_context}
