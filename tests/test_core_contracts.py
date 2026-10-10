@@ -126,6 +126,30 @@ def test_model_tls_default_uses_sdk_transport(monkeypatch):
         assert "http_client" not in result
 
 
+def test_model_route_options_do_not_leak_text_thinking_settings_to_vision(monkeypatch):
+    import app.agent.llm as model_factory
+    from app.core.config import settings
+
+    options = {"thinking": {"type": "disabled"}}
+    monkeypatch.setattr(settings, "AGENT_LLM_EXTRA_BODY", options)
+    monkeypatch.setattr(settings, "AGENT_TEXT_LLM_EXTRA_BODY", options)
+    monkeypatch.setattr(settings, "AGENT_VISION_LLM_EXTRA_BODY", {})
+    monkeypatch.setattr(settings, "AGENT_ENABLE_MODEL_ROUTER", True)
+    monkeypatch.setattr(model_factory, "ChatOpenAI", lambda **kwargs: kwargs)
+    # build_chat_openai's default class is bound at definition time.
+    build = model_factory.build_chat_openai
+    monkeypatch.setattr(model_factory, "build_chat_openai", lambda **kwargs: build(llm_cls=lambda **data: data, **kwargs))
+    model_factory.get_agent_llm.cache_clear()
+    model_factory.get_agent_llm_for_route.cache_clear()
+    try:
+        assert model_factory.get_agent_llm()["extra_body"] == options
+        assert model_factory.get_agent_llm_for_route("text")["extra_body"] == options
+        assert "extra_body" not in model_factory.get_agent_llm_for_route("vision")
+    finally:
+        model_factory.get_agent_llm.cache_clear()
+        model_factory.get_agent_llm_for_route.cache_clear()
+
+
 def test_tool_descriptions_include_usage_and_fallback_metadata():
     tools = load_tools(enabled_tool_names={"calculate_bmr", "pain_safety_gate"})
 
