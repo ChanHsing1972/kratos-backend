@@ -16,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.agent.llm import get_agent_llm_for_route
 from app.agent.model_router import AgentModelRoute, select_agent_model_route
-from app.agent.runner import AgentCancelledError, AgentRunner, build_agent_nodes
+from app.agent.execution import AgentCancelledError
+from app.agent.nodes.factory import build_agent_nodes
+from app.agent.runtime import LangGraphAgent
 from app.agent.state.result import ExerciseMedia
 from app.agent.state.session_state import SessionState
 from app.db.session import SessionLocal
@@ -55,10 +57,10 @@ logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=4)
-def get_agent_runner(route: str = "default"):
-    """返回按模型路由缓存的 AgentRunner。"""
+def get_agent_runtime(route: str = "default"):
+    """返回按模型路由缓存的 LangGraph 运行时。"""
 
-    return AgentRunner(build_agent_nodes(get_agent_llm_for_route(route)))
+    return LangGraphAgent(build_agent_nodes(get_agent_llm_for_route(route)))
 
 
 def run_agent_chat(
@@ -138,7 +140,7 @@ def run_agent_chat(
             return state, trace
 
     try:
-        final_state = get_agent_runner(model_route.route).run(state)
+        final_state = get_agent_runtime(model_route.route).run(state)
     except BaseException:
         if db is not None:
             fail_reserved_agent_run(db, reserved_run.id if reserved_run else None)
@@ -466,7 +468,7 @@ def _run_streaming_agent(
     model_route: AgentModelRoute | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """运行 AgentRunner 的流式接口，并把 final_state 转为 final 事件。"""
+    """运行 LangGraph 图的流式接口，并把 final_state 转为 final 事件。"""
 
     def emit_trace(_node_name: str, current_state: SessionState) -> Iterator[dict[str, Any]]:
         yield from emit_new_trace(
@@ -477,7 +479,7 @@ def _run_streaming_agent(
         )
 
     route = model_route.route if model_route is not None else "default"
-    for raw_event in get_agent_runner(route).iter_events(
+    for raw_event in get_agent_runtime(route).iter_events(
         state,
         stream_answer=True,
         after_node=emit_trace,

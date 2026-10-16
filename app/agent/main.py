@@ -9,7 +9,8 @@ import logging
 from langchain_core.messages import HumanMessage
 
 from app.agent.llm import get_agent_llm
-from app.agent.runner import AgentRunner, build_agent_nodes
+from app.agent.nodes.factory import build_agent_nodes
+from app.agent.runtime import LangGraphAgent
 from app.agent.state.session_state import SessionState
 from app.agent.state.tools import ToolsState
 from app.agent.tools import load_tools
@@ -29,7 +30,7 @@ def main():
         tools=ToolsState(available_tools=available_tools),
     )
 
-    runner = AgentRunner(build_agent_nodes(get_agent_llm()))
+    agent = LangGraphAgent(build_agent_nodes(get_agent_llm()))
 
     while True:
         user_input = input("你: ")
@@ -40,7 +41,7 @@ def main():
         initial_state.conversation.messages.append(HumanMessage(content=user_input))
         logger.debug("Agent state before run: %s", initial_state)
 
-        initial_state = runner.run(initial_state)
+        initial_state = agent.run(initial_state)
 
         logger.debug("Agent state after run: %s", initial_state)
         logger.info("AI: %s", initial_state.result.response)
