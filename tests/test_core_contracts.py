@@ -15,7 +15,8 @@ from app.agent.nodes.plan_node import PlanNode
 from app.agent.nodes.reason_node import ReasonNode
 from app.agent.nodes.reflect_node import ReflectNode
 from app.agent.markdown_contract import finalize_markdown_response, markdown_contract_violations
-from app.agent.runner import AgentRunner
+from app.agent.events import _surface_unresolved_quality_issues
+from app.agent.runtime import LangGraphAgent
 from app.agent.state.long_term_memory_point import LongTermMemoryPoint
 from app.agent.state.short_term_memory_point import ShortTermMemoryPoint
 from app.agent.state.conversation import AskAns
@@ -1173,7 +1174,7 @@ def test_stream_agent_chat_emits_run_id_final_and_done(monkeypatch):
                 "raw": state.result.model_dump(mode="json"),
             }
 
-    monkeypatch.setattr("app.services.agent_chat.get_agent_runner", lambda route="default": FakeRunner())
+    monkeypatch.setattr("app.services.agent_chat.get_agent_runtime", lambda route="default": FakeRunner())
     monkeypatch.setattr(
         "app.services.training_plan_media.resolve_supported_exercise_name",
         lambda action_name, db=None: "卧推" if action_name == "胸部推举" else action_name,
@@ -1449,7 +1450,7 @@ def test_unresolved_quality_issues_do_not_mutate_visible_answer():
     state.result.final_answer_ready = False
     state.result.reflection_suggestions = ["内部质量提示"]
 
-    diagnostics = AgentRunner._surface_unresolved_quality_issues(state)
+    diagnostics = _surface_unresolved_quality_issues(state)
 
     assert diagnostics == "- 内部质量提示"
     assert "质量校验提示" not in state.result.response
@@ -2982,12 +2983,12 @@ def test_generate_node_stream_small_chunks_do_not_emit_partial_table_header():
     )
 
 
-def test_runner_streams_only_final_answer_after_replan(monkeypatch):
+def test_graph_streams_only_final_answer_after_replan(monkeypatch):
     sleep_calls = []
-    monkeypatch.setattr("app.agent.runner.time.sleep", lambda seconds: sleep_calls.append(seconds))
-    monkeypatch.setattr("app.agent.runner.settings.AGENT_STREAM_CHUNK_CHARS", 100)
-    monkeypatch.setattr("app.agent.runner.settings.AGENT_STREAM_CHUNK_DELAY_SECONDS", 0)
-    monkeypatch.setattr("app.agent.runner.settings.AGENT_STREAM_FINAL_EVENT_DELAY_SECONDS", 0.42)
+    monkeypatch.setattr("app.agent.graph.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("app.agent.graph.settings.AGENT_STREAM_CHUNK_CHARS", 100)
+    monkeypatch.setattr("app.agent.graph.settings.AGENT_STREAM_CHUNK_DELAY_SECONDS", 0)
+    monkeypatch.setattr("app.agent.graph.settings.AGENT_STREAM_FINAL_EVENT_DELAY_SECONDS", 0.42)
 
     class NoopNode:
         def __call__(self, state):
@@ -3044,7 +3045,7 @@ def test_runner_streams_only_final_answer_after_replan(monkeypatch):
     state.reasoning.intent = ["健身计划"]
     state.reasoning.max_replans = 1
 
-    events = list(AgentRunner(nodes).iter_events(state, stream_answer=True))
+    events = list(LangGraphAgent(nodes).iter_events(state, stream_answer=True))
     streamed = ""
     for event in events:
         if event.get("type") == "answer_delta":

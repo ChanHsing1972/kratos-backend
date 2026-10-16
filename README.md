@@ -4,7 +4,7 @@ Kratos 智能健身 Agent 的后端服务。负责 Agent 运行时、工具封�
 
 ## 快速开始
 
-前置条件：Python 3.10+。
+前置条件：Python 3.11+（与 CI 一致）。
 
 在仓库根目录执行：
 
@@ -102,7 +102,12 @@ python -m app.agent.main
 - `app/models/`: ORM 模型。
 - `app/schemas/`: 请求/响应的 Pydantic 模式。
 - `app/services/`: 业务逻辑、工具封装。
-- `app/agent/graph.py`: LangGraph 状态流。
+- `app/agent/graph.py`: 唯一的 LangGraph 流程定义与节点适配。
+- `app/agent/runtime.py`: 普通聊天与 SSE 共用的图运行时。
+- `app/agent/execution.py`: 每次执行独立的事件、取消与步数上下文。
+- `app/agent/nodes/factory.py`: 业务节点构造。
+
+运行时架构、兼容边界和迁移验收见 [LangGraph 运行时说明](docs/LANGGRAPH_RUNTIME.md)。
 
 ## 测试
 

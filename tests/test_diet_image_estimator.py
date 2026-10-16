@@ -129,6 +129,8 @@ def test_estimate_food_from_image_falls_back_to_agent_llm(monkeypatch):
         "app.services.diet_image_estimator.settings.OPENAI_API_KEY",
         None,
     )
+    # 此用例验证 Agent LLM 回退，不能被部署环境中的独立视觉凭据改变分支。
+    monkeypatch.setattr("app.services.diet_image_estimator.settings.FOOD_VISION_API_KEY", None)
     monkeypatch.setattr("app.services.diet_image_estimator.get_food_agent_llm", lambda: fake_llm)
 
     result = estimate_food_from_image(
